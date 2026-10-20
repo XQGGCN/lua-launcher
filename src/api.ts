@@ -1,6 +1,8 @@
 import { categoryFacet } from './mod-categories'
 import { resolveInstanceOptions, validateInstanceOptions, type InstanceOptions } from '../desktop/instance-options'
 export type { InstanceOptions, ResolvedInstanceOptions } from '../desktop/instance-options'
+export type { InventoryKind, InventoryItem, ResourceInventory } from '../desktop/resource-inventory'
+export type { InstanceInventory } from '../desktop/core'
 
 export type ResourceSource = 'modrinth' | 'bbsmc'
 export type Loader = 'vanilla' | 'fabric' | 'forge' | 'neoforge'

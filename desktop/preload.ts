@@ -10,6 +10,7 @@ const methods = new Set([
   'modpackVersions', 'installModpack', 'authConfig', 'saveAuthConfig', 'authState',
   'managedJava', 'runtimeRequirement', 'runtimeTasks', 'installJava', 'cancelJavaInstall', 'chooseJava', 'cancelLaunch',
   'instanceOptions', 'updateInstanceSettings',
+  'inventory',
 ])
 contextBridge.exposeInMainWorld('launcher', {
   call(method: string, ...args: unknown[]) {

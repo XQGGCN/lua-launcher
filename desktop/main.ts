@@ -8,6 +8,7 @@ import { PackSelections } from './pack-selection'
 import { AccountCoordinator } from './accounts'
 import { getMemoryInfo } from './memory'
 import { LaunchPreparations } from './launch-preparation'
+import type { InventoryKind } from './resource-inventory'
 
 declare const __LUA_MICROSOFT_CLIENT_ID__: string
 
@@ -164,6 +165,7 @@ if (hasLock) app.whenReady().then(async () => {
         })
       }
       case 'instanceOptions': return core.instanceOptions(text(args[0], 80))
+      case 'inventory': return core.inventory(text(args[0], 80), text(args[1], 20) as InventoryKind)
       case 'updateInstanceSettings': {
         const id = text(args[0], 80)
         if (launches.has(id)) throw new Error('请等待启动准备结束，再修改实例设置')

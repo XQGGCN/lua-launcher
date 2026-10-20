@@ -14,7 +14,9 @@ import { JavaRuntimeManager, type ManagedJavaRuntime, type JavaRuntimeProgress, 
 import metadata from '../package.json'
 import { validateInstanceOptions, resolveInstanceOptions, type InstanceOptions, type ResolvedInstanceOptions } from './instance-options'
 import { applyGameWindowSettings } from './game-window'
+import { scanResourceInventory, type InventoryKind, type ResourceInventory } from './resource-inventory'
 export type { PackPreview } from './modpack'
+export interface InstanceInventory extends ResourceInventory { instanceId: string }
 
 const execFileAsync = promisify(execFile)
 const MANIFEST_URL = 'https://piston-meta.mojang.com/mc/game/version_manifest_v2.json'
@@ -203,6 +205,7 @@ interface CoreOptions {
   memorySystem?: MemorySystem
   javaRuntimeManager?: Pick<JavaRuntimeManager, 'ensure' | 'discover'>
   javaRuntimeProbe?: JavaRuntimeProbe
+  inventoryScanner?: typeof scanResourceInventory
 }
 interface DownloadJob { file: string; download: Download; allowedHosts?: ReadonlySet<string> }
 
@@ -302,6 +305,8 @@ export class LauncherCore {
   private readonly arch: string
   private readonly memorySystem: MemorySystem
   private readonly javaRuntimeManager: Pick<JavaRuntimeManager, 'ensure' | 'discover'>
+  private readonly inventoryScanner: typeof scanResourceInventory
+  private inventoryScans = new Map<string, { instanceId: string; controller: AbortController; promise: Promise<InstanceInventory> }>()
   private javaTasks = new Map<string, JavaRuntimeTask>()
   private javaDownloads = new Map<string, AbortController>()
   private launchControllers = new Map<string, AbortController>()
@@ -324,6 +329,7 @@ export class LauncherCore {
     this.arch = normalizeArch(options.arch ?? process.arch)
     this.memorySystem = options.memorySystem ?? {}
     this.javaRuntimeManager = options.javaRuntimeManager ?? new JavaRuntimeManager(this.rootDir, { fetch: this.fetcher, probe: options.javaRuntimeProbe })
+    this.inventoryScanner = options.inventoryScanner ?? scanResourceInventory
   }
 
   async init(): Promise<LauncherSnapshot> {
@@ -385,6 +391,33 @@ export class LauncherCore {
   }
   getInstancePath(id: string): string {
     return safeJoin(this.instanceDirectory(id), 'game')
+  }
+
+  async inventory(id: string, kind: InventoryKind): Promise<InstanceInventory> {
+    this.instance(id)
+    if (!['mods', 'resourcepacks', 'shaderpacks', 'worlds'].includes(kind)) throw new Error('无效的资源类型')
+    if (this.installs.has(id)) throw new Error('此实例正在安装，请完成或取消后刷新资源清单')
+    const key = `${id}:${kind}`
+    const active = this.inventoryScans.get(key)
+    if (active) return structuredClone(await active.promise)
+    if (this.inventoryScans.size >= 4) throw new Error('资源扫描任务较多，请稍后刷新')
+    const controller = new AbortController()
+    const promise = this.inventoryScanner(this.getInstancePath(id), kind, {
+      signal: controller.signal,
+      ...(kind === 'mods' ? { managedModsFile: safeJoin(this.instanceDirectory(id), 'managed-mods.json') } : {}),
+    }).then(result => {
+      controller.signal.throwIfAborted()
+      if (this.installs.has(id)) throw new Error('扫描期间此实例开始安装，请完成或取消后刷新资源清单')
+      return { ...result, instanceId: id }
+    }).finally(() => { this.inventoryScans.delete(key) })
+    this.inventoryScans.set(key, { instanceId: id, controller, promise })
+    return structuredClone(await promise)
+  }
+
+  private invalidateInventory(id: string): void {
+    for (const scan of this.inventoryScans.values()) if (scan.instanceId === id) {
+      scan.controller.abort(new DOMException('实例开始安装，原资源扫描已取消；请在安装完成后刷新', 'AbortError'))
+    }
   }
 
   instanceOptions(id: string): ResolvedInstanceOptions {
@@ -646,6 +679,7 @@ export class LauncherCore {
     const signal = controller.signal
     const preferences = this.instanceOptions(id).values
     this.installs.set(id, controller)
+    this.invalidateInventory(id)
     instance.status = 'installing'
     delete instance.error
     let downloadedBytes = 0
@@ -971,7 +1005,8 @@ export class LauncherCore {
   }
 
   cancelPendingOperations(): void {
-    for (const controller of [...this.installs.values(), ...this.javaDownloads.values(), ...this.launchControllers.values()]) {
+    for (const controller of [...this.installs.values(), ...this.javaDownloads.values(), ...this.launchControllers.values(),
+      ...[...this.inventoryScans.values()].map(scan => scan.controller)]) {
       controller.abort(new DOMException('启动器正在退出', 'AbortError'))
     }
   }
@@ -1540,6 +1575,7 @@ export class LauncherCore {
     if (this.installs.has(instanceId)) throw new Error('该实例已有安装任务')
     const controller = new AbortController()
     this.installs.set(instanceId, controller)
+    this.invalidateInventory(instanceId)
     const visited = new Set<string>()
     const projects = new Map<string, string>()
     const plan: Array<{ version: ModrinthVersion; job: DownloadJob }> = []
