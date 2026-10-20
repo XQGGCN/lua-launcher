@@ -13,12 +13,25 @@ const execFileAsync = promisify(execFile)
 const MANIFEST_URL = 'https://piston-meta.mojang.com/mc/game/version_manifest_v2.json'
 const FABRIC_URL = 'https://meta.fabricmc.net/v2'
 const MODRINTH_URL = 'https://api.modrinth.com/v2'
-const USER_AGENT = 'LuaLauncher/0.2.0 (+https://github.com/XQGGCN/lua-launcher)'
+const USER_AGENT = 'LuaLauncher/0.2.1 (+https://github.com/XQGGCN/lua-launcher)'
 const NETWORK_HOSTS = new Set([
   'piston-meta.mojang.com', 'piston-data.mojang.com', 'launchermeta.mojang.com',
   'launcher.mojang.com', 'libraries.minecraft.net', 'resources.download.minecraft.net',
   'meta.fabricmc.net', 'maven.fabricmc.net', 'api.modrinth.com', 'cdn.modrinth.com',
+  'api.bbsmc.net', 'cdn.bbsmc.net',
 ])
+
+export type ResourceSource = 'modrinth' | 'bbsmc'
+const RESOURCE_PROVIDERS = {
+  modrinth: { name: 'Modrinth', api: MODRINTH_URL, website: 'https://modrinth.com', downloads: new Set(['cdn.modrinth.com']) },
+  bbsmc: { name: 'BBSMC', api: 'https://api.bbsmc.net/v2', website: 'https://bbsmc.net', downloads: new Set(['cdn.bbsmc.net']) },
+} as const
+function resourceProvider(source: ResourceSource = 'modrinth') {
+  if (source !== 'modrinth' && source !== 'bbsmc') throw new Error('无效的资源来源')
+  return RESOURCE_PROVIDERS[source]
+}
+/** Permission and browser-verification responses should not trigger automatic download retries. */
+class RemoteAccessError extends Error {}
 
 export type Loader = 'vanilla' | 'fabric'
 export type InstanceStatus = 'not-installed' | 'installing' | 'ready' | 'running' | 'error'
@@ -36,9 +49,10 @@ export interface Instance {
   modpack?: {
     name: string
     versionId: string
-    source: 'local' | 'modrinth'
+    source: 'local' | ResourceSource
     projectId?: string
     modrinthVersionId?: string
+    remoteVersionId?: string
     archiveSha1: string
     archiveSha512: string
     applied: boolean
@@ -70,6 +84,7 @@ export interface JavaRuntime { path: string; version: string; major: number; arc
 export interface VersionSummary { id: string; type: string; releaseTime: string }
 export interface FabricVersion { version: string; stable: boolean }
 export interface ModrinthProject {
+  source?: ResourceSource
   project_id: string
   slug: string
   title: string
@@ -89,6 +104,12 @@ export interface ModrinthSearchResponse {
   total_hits: number
 }
 export interface ModrinthVersion {
+  source?: ResourceSource
+  projectUrl?: string
+  externalOnly?: boolean
+  externalReason?: string
+  /** BBSMC may expose a web/drive link in files instead of a downloadable artifact. */
+  disk_only?: boolean
   id: string
   project_id: string
   name: string
@@ -371,7 +392,18 @@ export class LauncherCore {
       }
       if (!response.ok) {
         await response.body?.cancel()
+        if ([401, 403].includes(response.status) && ['api.bbsmc.net', 'cdn.bbsmc.net'].includes(new URL(current).hostname)) {
+          throw new RemoteAccessError(`BBSMC 此资源需要登录、购买或访问权限，请前往官网处理：https://bbsmc.net（HTTP ${response.status}）`)
+        }
+        if (response.status === 429) {
+          throw new RemoteAccessError('资源站请求次数过多，请稍后再试（HTTP 429）')
+        }
         throw new Error(`下载失败：HTTP ${response.status}（${new URL(current).hostname}）`)
+      }
+      if (['api.bbsmc.net', 'cdn.bbsmc.net'].includes(new URL(current).hostname) &&
+          response.headers.get('content-type')?.toLowerCase().includes('text/html')) {
+        await response.body?.cancel()
+        throw new RemoteAccessError('BBSMC 返回了网页验证页面，请在官网完成验证或获取资源：https://bbsmc.net')
       }
       return response
     }
@@ -473,7 +505,7 @@ export class LauncherCore {
         return
       } catch (error) {
         await fs.rm(temporary, { force: true })
-        if (signal.aborted || attempt === 2) throw error
+        if (signal.aborted || error instanceof RemoteAccessError || attempt === 2) throw error
       }
     }
   }
@@ -786,7 +818,7 @@ export class LauncherCore {
       assets_index_name: installed.version.assetIndex.id,
       natives_directory: safeJoin(directory, 'natives'),
       launcher_name: 'LuaLauncher',
-      launcher_version: '0.2.0',
+      launcher_version: '0.2.1',
       classpath: classpath.join(this.platform === 'win32' ? ';' : ':'),
       classpath_separator: this.platform === 'win32' ? ';' : ':',
       library_directory: safeJoin(this.rootDir, 'libraries'),
@@ -875,7 +907,9 @@ export class LauncherCore {
     this.emit({ type: 'log', instanceId, level, message })
   }
 
-  async searchMods(query: string, options: { loader?: string; gameVersion?: string; offset?: number } = {}): Promise<ModrinthSearchResponse> {
+  async searchMods(query: string, options: { loader?: string; gameVersion?: string; offset?: number; source?: ResourceSource } = {}): Promise<ModrinthSearchResponse> {
+    const source = options.source ?? 'modrinth'
+    const provider = resourceProvider(source)
     if (query.length > 200) throw new Error('搜索关键词过长')
     const facets = [['project_type:mod']]
     if (options.loader) {
@@ -888,10 +922,13 @@ export class LauncherCore {
     const params = new URLSearchParams({
       query, facets: JSON.stringify(facets), offset: String(offset), limit: '20', index: query ? 'relevance' : 'downloads',
     })
-    return this.json<ModrinthSearchResponse>(`${MODRINTH_URL}/search?${params}`)
+    const result = await this.json<ModrinthSearchResponse>(`${provider.api}/search?${params}`)
+    return { ...result, hits: result.hits.map(hit => ({ ...hit, source })) }
   }
 
-  async searchModpacks(query: string, options: { offset?: number } = {}): Promise<ModrinthSearchResponse> {
+  async searchModpacks(query: string, options: { offset?: number; source?: ResourceSource } = {}): Promise<ModrinthSearchResponse> {
+    const source = options.source ?? 'modrinth'
+    const provider = resourceProvider(source)
     if (typeof query !== 'string' || query.length > 200) throw new Error('搜索关键词过长')
     const offset = options.offset ?? 0
     if (!Number.isInteger(offset) || offset < 0 || offset > 100_000) throw new Error('无效的分页参数')
@@ -899,18 +936,45 @@ export class LauncherCore {
       query, offset: String(offset), limit: '20', index: query ? 'relevance' : 'downloads',
       facets: JSON.stringify([['project_type:modpack'], ['categories:fabric', 'categories:minecraft', 'categories:vanilla']]),
     })
-    return this.json<ModrinthSearchResponse>(`${MODRINTH_URL}/search?${params}`)
+    const result = await this.json<ModrinthSearchResponse>(`${provider.api}/search?${params}`)
+    return { ...result, hits: result.hits.map(hit => ({ ...hit, source })) }
   }
 
-  async modpackVersions(projectId: string): Promise<ModrinthVersion[]> {
+  private resourceVersion(version: ModrinthVersion, source: ResourceSource, kind: 'mod' | 'modpack'): ModrinthVersion {
+    const provider = resourceProvider(source)
+    const extension = kind === 'mod' ? '.jar' : '.mrpack'
+    const candidates = version.files.filter(file => file.filename?.toLowerCase().endsWith(extension))
+    const file = candidates.find(file => file.primary) ?? candidates[0]
+    let reason: string | undefined
+    if (version.disk_only) reason = '此版本使用网盘或外部站点下载，请到资源官网获取'
+    else if (!file) reason = `此版本没有可直接安装的 ${extension} 文件，请到资源官网获取`
+    else if (!validHash(file.hashes?.sha1) ||
+        ((kind === 'modpack' || source === 'bbsmc' || file.hashes.sha512 !== undefined) &&
+         !/^[a-f0-9]{128}$/i.test(file.hashes.sha512 ?? ''))) {
+      reason = '此版本缺少有效的文件校验值，请到资源官网获取'
+    } else if (!Number.isSafeInteger(file.size) || file.size <= 0 ||
+        file.size > (kind === 'modpack' ? MODPACK_LIMITS.archiveBytes : MODPACK_LIMITS.downloadedFileBytes)) {
+      reason = '此版本文件大小不符合安装限制，请到资源官网获取'
+    } else {
+      try { assertNetworkUrl(file.url, provider.downloads) }
+      catch { reason = '此版本使用外部下载地址，请到资源官网获取' }
+    }
+    return {
+      ...version, source, projectUrl: `${provider.website}/${kind}/${encodeURIComponent(sanitizeId(version.project_id))}`,
+      externalOnly: Boolean(reason), ...(reason ? { externalReason: reason } : {}),
+    }
+  }
+
+  async modpackVersions(projectId: string, source: ResourceSource = 'modrinth'): Promise<ModrinthVersion[]> {
+    const provider = resourceProvider(source)
     const versions = await this.json<ModrinthVersion[]>(
-      `${MODRINTH_URL}/project/${encodeURIComponent(sanitizeId(projectId))}/version?include_changelog=false`,
+      `${provider.api}/project/${encodeURIComponent(sanitizeId(projectId))}/version?include_changelog=false`,
     )
     return versions.filter(version =>
       version.game_versions.some(isSupportedVersion) &&
       version.loaders.some(loader => ['fabric', 'minecraft', 'vanilla'].includes(loader)) &&
-      version.files.some(file => file.filename.toLowerCase().endsWith('.mrpack')),
-    )
+      (source === 'bbsmc' || version.files.some(file => file.filename.toLowerCase().endsWith('.mrpack'))),
+    ).map(version => this.resourceVersion(version, source, 'modpack'))
   }
 
   async inspectModpack(filePath: string): Promise<PackPreview> {
@@ -921,14 +985,19 @@ export class LauncherCore {
     return this.createPackInstance(await readModpack(filePath), options, { source: 'local' })
   }
 
-  async installModpack(versionId: string, options: { name?: string } = {}): Promise<LauncherSnapshot> {
-    const taskId = `modpack-${sanitizeId(versionId)}`
+  async installModpack(versionId: string, options: { name?: string; source?: ResourceSource } = {}): Promise<LauncherSnapshot> {
+    const source = options.source ?? 'modrinth'
+    const provider = resourceProvider(source)
+    const taskId = source === 'modrinth' ? `modpack-${sanitizeId(versionId)}` : `modpack-${source}-${sanitizeId(versionId)}`
     if (this.installs.has(taskId)) throw new Error('该整合包版本正在下载')
     const controller = new AbortController()
     this.installs.set(taskId, controller)
     try {
       this.emit({ type: 'progress', instanceId: taskId, phase: '正在获取整合包信息', completed: 0, total: 1, bytesDownloaded: 0 })
-      const version = await this.json<ModrinthVersion>(`${MODRINTH_URL}/version/${encodeURIComponent(versionId)}`, controller.signal)
+      const version = this.resourceVersion(
+        await this.json<ModrinthVersion>(`${provider.api}/version/${encodeURIComponent(versionId)}`, controller.signal), source, 'modpack',
+      )
+      if (version.externalOnly) throw new Error(`${version.externalReason}：${version.projectUrl}`)
       if (!version.game_versions.some(isSupportedVersion) ||
           !version.loaders.some(loader => ['fabric', 'minecraft', 'vanilla'].includes(loader))) {
         throw new Error('此整合包需要未支持的 Minecraft 或加载器版本')
@@ -942,12 +1011,13 @@ export class LauncherCore {
         throw new Error('整合包文件缺少 SHA-1 / SHA-512 校验')
       }
       const url = validatePackUrl(file.url)
+      assertNetworkUrl(url, provider.downloads)
       const archivePath = safeJoin(this.rootDir, `packs/${file.hashes.sha512.toLowerCase()}.mrpack`)
       let bytes = 0
       let lastProgress = 0
       await this.download({
         file: archivePath, download: { url, sha1: file.hashes.sha1, sha512: file.hashes.sha512, size: file.size },
-        allowedHosts: PACK_REDIRECT_HOSTS,
+        allowedHosts: provider.downloads,
       }, controller.signal, count => {
         bytes += count
         if (Date.now() - lastProgress > 100) {
@@ -958,14 +1028,15 @@ export class LauncherCore {
       controller.signal.throwIfAborted()
       const pack = await readModpack(archivePath)
       return await this.createPackInstance(pack, options, {
-        source: 'modrinth', projectId: version.project_id, modrinthVersionId: version.id,
+        source, projectId: version.project_id, remoteVersionId: version.id,
+        ...(source === 'modrinth' ? { modrinthVersionId: version.id } : {}),
       }, controller.signal)
     } finally { this.installs.delete(taskId) }
   }
 
   private async createPackInstance(
     pack: ParsedModpack, options: { name?: string },
-    source: Pick<NonNullable<Instance['modpack']>, 'source' | 'projectId' | 'modrinthVersionId'>,
+    source: Pick<NonNullable<Instance['modpack']>, 'source' | 'projectId' | 'modrinthVersionId' | 'remoteVersionId'>,
     signal?: AbortSignal,
   ): Promise<LauncherSnapshot> {
     signal?.throwIfAborted()
@@ -1131,15 +1202,18 @@ export class LauncherCore {
     }
   }
 
-  async modVersions(projectId: string, instanceId: string): Promise<ModrinthVersion[]> {
+  async modVersions(projectId: string, instanceId: string, source: ResourceSource = 'modrinth', signal?: AbortSignal): Promise<ModrinthVersion[]> {
+    const provider = resourceProvider(source)
     const instance = this.instance(instanceId)
     if (instance.loader !== 'fabric') throw new Error('请先选择一个 Fabric 实例')
     const params = new URLSearchParams({ loaders: '["fabric"]', game_versions: JSON.stringify([instance.version]) })
-    return this.json<ModrinthVersion[]>(`${MODRINTH_URL}/project/${encodeURIComponent(sanitizeId(projectId))}/version?${params}`)
+    const versions = await this.json<ModrinthVersion[]>(`${provider.api}/project/${encodeURIComponent(sanitizeId(projectId))}/version?${params}`, signal)
+    return versions.map(version => this.resourceVersion(version, source, 'mod'))
   }
 
   /** Installs required dependencies too; rejects incompatible versions instead of guessing. */
-  async installMod(instanceId: string, versionId: string): Promise<LauncherSnapshot> {
+  async installMod(instanceId: string, versionId: string, source: ResourceSource = 'modrinth'): Promise<LauncherSnapshot> {
+    const provider = resourceProvider(source)
     const instance = this.instance(instanceId)
     if (instance.loader !== 'fabric' || instance.status !== 'ready') throw new Error('请先安装一个 Fabric 实例，并关闭游戏')
     if (this.launching.has(instanceId) || this.processes.has(instanceId)) throw new Error('请先关闭正在运行或启动中的游戏')
@@ -1156,26 +1230,32 @@ export class LauncherCore {
         if (visited.has(id)) return
         if (visited.size >= 100) throw new Error('模组依赖数量超出限制')
         visited.add(id)
-        const version = await this.json<ModrinthVersion>(`${MODRINTH_URL}/version/${encodeURIComponent(sanitizeId(id))}`, controller.signal)
+        const version = this.resourceVersion(
+          await this.json<ModrinthVersion>(`${provider.api}/version/${encodeURIComponent(sanitizeId(id))}`, controller.signal), source, 'mod',
+        )
+        if (version.externalOnly) throw new Error(`${version.externalReason}：${version.projectUrl}`)
         if (!version.loaders.includes('fabric') || !version.game_versions.includes(instance.version)) {
           throw new Error(`模组 ${version.name} 与此 Fabric / Minecraft 版本不兼容`)
         }
         const otherVersion = projects.get(version.project_id)
         if (otherVersion && otherVersion !== version.id) throw new Error(`模组 ${version.name} 的依赖版本发生冲突`)
         projects.set(version.project_id, version.id)
-        const file = version.files.find(file => file.primary) ?? version.files[0]
+        const candidates = version.files.filter(file => file.filename.toLowerCase().endsWith('.jar'))
+        const file = candidates.find(file => file.primary) ?? candidates[0]
         if (!file || !file.filename.toLowerCase().endsWith('.jar') || file.filename.includes('/') || file.filename.includes('\\')) {
           throw new Error('模组文件格式不支持')
         }
         if (!validHash(file.hashes.sha1)) throw new Error('模组缺少 SHA-1 校验值')
         plan.push({ version, job: {
           file: safeJoin(this.instanceDirectory(instanceId), `game/mods/${file.filename}`),
-          download: { url: file.url, sha1: file.hashes.sha1, size: file.size },
+          download: { url: file.url, sha1: file.hashes.sha1, sha512: file.hashes.sha512, size: file.size },
+          allowedHosts: provider.downloads,
         } })
         for (const dependency of version.dependencies.filter(item => item.dependency_type === 'required')) {
           let dependencyVersion = dependency.version_id
           if (!dependencyVersion && dependency.project_id) {
-            dependencyVersion = (await this.modVersions(dependency.project_id, instanceId))[0]?.id
+            dependencyVersion = (await this.modVersions(dependency.project_id, instanceId, source, controller.signal))
+              .find(version => !version.externalOnly)?.id
           }
           if (!dependencyVersion) throw new Error(`找不到 ${version.name} 的兼容依赖，请稍后重试`)
           await visit(dependencyVersion)
@@ -1184,16 +1264,29 @@ export class LauncherCore {
       await visit(versionId)
       const registryPath = safeJoin(this.instanceDirectory(instanceId), 'managed-mods.json')
       const registry: Record<string, { versionId: string; filename: string }> = Object.create(null)
-      try { Object.assign(registry, JSON.parse(await fs.readFile(registryPath, 'utf8'))) }
+      try {
+        const previous = JSON.parse(await fs.readFile(registryPath, 'utf8')) as Record<string, { versionId: string; filename: string }>
+        // Versions before resource providers used unqualified Modrinth project IDs.
+        for (const [key, value] of Object.entries(previous)) {
+          const migrated = key.includes(':') ? key : `modrinth:${key}`
+          if (!(migrated in registry) || key.includes(':')) registry[migrated] = value
+        }
+      }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
       const filenames = new Set<string>()
       const affectedFiles = new Set<string>([registryPath])
       for (const item of plan) {
         const filename = path.basename(item.job.file)
-        if (filenames.has(filename)) throw new Error('不同模组使用了相同文件名，无法安全安装')
-        filenames.add(filename)
+        const canonicalFilename = filename.normalize('NFC').toLowerCase()
+        const registryKey = `${source}:${item.version.project_id}`
+        if (filenames.has(canonicalFilename)) throw new Error('不同模组使用了相同文件名，无法安全安装')
+        filenames.add(canonicalFilename)
+        if (Object.entries(registry).some(([key, value]) => key !== registryKey &&
+            typeof value?.filename === 'string' && value.filename.normalize('NFC').toLowerCase() === canonicalFilename)) {
+          throw new Error(`文件 ${filename} 已由其他来源或项目管理，请先移除该模组后再切换来源`)
+        }
         affectedFiles.add(item.job.file)
-        const previous = registry[item.version.project_id]
+        const previous = registry[registryKey]
         if (previous && previous.filename !== filename) {
           if (typeof previous.filename !== 'string' || previous.filename.includes('/') ||
               previous.filename.includes('\\') || !previous.filename.endsWith('.jar')) {
@@ -1206,7 +1299,7 @@ export class LauncherCore {
           throw error
         })
         if (existing && await sha1File(item.job.file) !== item.job.download.sha1 &&
-            registry[item.version.project_id]?.filename !== filename) {
+            registry[registryKey]?.filename !== filename) {
           throw new Error(`文件 ${filename} 已存在且不是启动器管理的此模组，请先手动移走该文件`)
         }
       }
@@ -1221,7 +1314,7 @@ export class LauncherCore {
         await this.download({ ...item.job, file: safeJoin(staging, `files/${filename}`) }, controller.signal, bytes => { bytesDownloaded += bytes })
         completed++
         this.emit({ type: 'progress', instanceId, phase: `准备模组：${item.version.name}`, completed, total: plan.length, bytesDownloaded })
-        registry[item.version.project_id] = { versionId: item.version.id, filename }
+        registry[`${source}:${item.version.project_id}`] = { versionId: item.version.id, filename }
       }
       const stagedRegistry = safeJoin(staging, 'managed-mods.json')
       await fs.writeFile(stagedRegistry, JSON.stringify(registry, null, 2), { mode: 0o600 })

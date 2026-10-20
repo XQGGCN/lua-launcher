@@ -691,7 +691,7 @@ test('Fabric selection and modpack version lists only offer supported configurat
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'lua-core-pack-versions-'))
   t.after(() => fs.rm(directory, { recursive: true, force: true }))
   const fake = fabricFixture()
-  const version = { id: 'a', game_versions: ['1.20.1'], loaders: ['fabric'], files: [{ filename: 'pack.mrpack' }] }
+  const version = { id: 'a', project_id: 'example', game_versions: ['1.20.1'], loaders: ['fabric'], files: [{ filename: 'pack.mrpack' }] }
   fake.responses.set('https://api.modrinth.com/v2/project/example/version?include_changelog=false', JSON.stringify([
     version, { ...version, id: 'old', game_versions: ['1.19.4'] }, { ...version, id: 'forge', loaders: ['forge'] },
     { ...version, id: 'wrong-file', files: [{ filename: 'something.jar' }] },
@@ -701,4 +701,190 @@ test('Fabric selection and modpack version lists only offer supported configurat
   assert.deepEqual(await core.fabricVersions('1.20.1'), [{ version: '0.16.10', stable: true }])
   assert.deepEqual((await core.modpackVersions('example')).map(version => version.id), ['a'])
   await assert.rejects(core.createInstance({ name: 'Wrong loader', version: '1.20.1', loader: 'fabric', loaderVersion: '99.0.0' }), /不支持所选/)
+})
+
+test('BBSMC searches use their own API and external versions remain visible with official-page guidance', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'lua-core-bbsmc-search-'))
+  t.after(() => fs.rm(directory, { recursive: true, force: true }))
+  const fake = fabricFixture()
+  const searchUrls: URL[] = []
+  const fetcher: typeof fetch = async (input, options) => {
+    const url = new URL(String(input))
+    if (url.hostname === 'api.bbsmc.net' && url.pathname === '/v2/search') {
+      searchUrls.push(url)
+      return new Response(JSON.stringify({ hits: [{ project_id: 'shared', title: '中文资源' }], offset: 0, limit: 20, total_hits: 1 }))
+    }
+    return fake.fetcher(input, options)
+  }
+  const external = { id: 'drive', project_id: 'shared', name: '网盘版本', game_versions: ['1.20.1'], loaders: ['fabric'],
+    disk_only: true, files: [{ filename: '', hashes: {}, size: 0, url: 'https://pan.quark.cn/s/example' }], dependencies: [] }
+  fake.responses.set('https://api.bbsmc.net/v2/project/shared/version?include_changelog=false', JSON.stringify([external]))
+  fake.responses.set('https://api.bbsmc.net/v2/version/drive', JSON.stringify(external))
+  const core = new LauncherCore(directory, undefined, { fetch: fetcher })
+  await core.init()
+  assert.equal((await core.searchMods('中文', { source: 'bbsmc', loader: 'fabric' })).hits[0].source, 'bbsmc')
+  await core.searchModpacks('', { source: 'bbsmc' })
+  assert(searchUrls.every(url => url.hostname === 'api.bbsmc.net'))
+  assert.equal(searchUrls[0].searchParams.get('query'), '中文')
+  assert.deepEqual(JSON.parse(searchUrls[1].searchParams.get('facets')!), [
+    ['project_type:modpack'], ['categories:fabric', 'categories:minecraft', 'categories:vanilla'],
+  ])
+  const versions = await core.modpackVersions('shared', 'bbsmc')
+  assert.equal(versions.length, 1)
+  assert.equal(versions[0].externalOnly, true)
+  assert.match(versions[0].externalReason ?? '', /网盘/)
+  assert.equal(versions[0].projectUrl, 'https://bbsmc.net/modpack/shared')
+  await assert.rejects(core.installModpack('drive', { source: 'bbsmc' }), /官网/)
+  assert.deepEqual(core.snapshot().instances, [])
+  assert.equal(fake.requests.some(url => url.includes('quark')), false)
+  await assert.rejects(core.searchMods('', { source: 'unknown' as 'bbsmc' }), /无效的资源来源/)
+})
+
+test('provider-qualified mod registries preserve colliding project IDs, legacy records, and same-source dependencies', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'lua-core-bbsmc-registry-'))
+  t.after(() => fs.rm(directory, { recursive: true, force: true }))
+  const fake = modFixture()
+  fake.addMod('mr1', 'shared', 'modrinth first')
+  fake.addMod('mr2', 'shared', 'modrinth second')
+  const addBbs = (id: string, project: string, dependencies: unknown[] = [], filename = `${id}.jar`) => {
+    const body = `bbsmc ${id}`
+    const url = `https://cdn.bbsmc.net/bbsmc/data/${project}/versions/${id}/${filename}`
+    fake.responses.set(`https://api.bbsmc.net/v2/version/${id}`, JSON.stringify({
+      id, project_id: project, name: id, game_versions: ['1.20.1'], loaders: ['fabric'], dependencies,
+      files: [{ url, filename, primary: true, size: body.length, hashes: packHashes(body) }],
+    }))
+    fake.responses.set(url, body)
+  }
+  addBbs('dep1', 'dependency')
+  addBbs('bbs1', 'shared', [{ dependency_type: 'required', project_id: 'dependency' }])
+  addBbs('bbs2', 'shared', [{ dependency_type: 'required', version_id: 'dep1' }])
+  addBbs('collision', 'other', [], 'mr2.jar')
+  const dependency = JSON.parse(fake.responses.get('https://api.bbsmc.net/v2/version/dep1')!)
+  const params = new URLSearchParams({ loaders: '["fabric"]', game_versions: '["1.20.1"]' })
+  fake.responses.set(`https://api.bbsmc.net/v2/project/dependency/version?${params}`, JSON.stringify([dependency]))
+  const core = new LauncherCore(directory, undefined, { fetch: fake.fetcher })
+  await core.init()
+  const instance = await core.createInstance({ name: 'Multiple sources', version: '1.20.1', loader: 'fabric' })
+  await core.install(instance.id)
+  await core.installMod(instance.id, 'mr1')
+  const registryFile = path.join(core.instanceDirectory(instance.id), 'managed-mods.json')
+  const firstRegistry = JSON.parse(await fs.readFile(registryFile, 'utf8'))
+  // Simulate the v0.2.0 registry so migration is exercised during a different-source install.
+  await fs.writeFile(registryFile, JSON.stringify({ shared: firstRegistry['modrinth:shared'] }))
+  await core.installMod(instance.id, 'bbs1', 'bbsmc')
+  const mods = path.join(core.getInstancePath(instance.id), 'mods')
+  assert.deepEqual((await fs.readdir(mods)).sort(), ['bbs1.jar', 'dep1.jar', 'mr1.jar'])
+  await core.installMod(instance.id, 'mr2')
+  await core.installMod(instance.id, 'bbs2', 'bbsmc')
+  assert.deepEqual((await fs.readdir(mods)).sort(), ['bbs2.jar', 'dep1.jar', 'mr2.jar'])
+  const registry = JSON.parse(await fs.readFile(registryFile, 'utf8'))
+  assert.equal(registry['modrinth:shared'].versionId, 'mr2')
+  assert.equal(registry['bbsmc:shared'].versionId, 'bbs2')
+  assert.equal(registry['bbsmc:dependency'].versionId, 'dep1')
+  assert.equal(registry.shared, undefined)
+  assert(fake.requests.includes(`https://api.bbsmc.net/v2/project/dependency/version?${params}`))
+  assert.equal(fake.requests.some(url => url.startsWith('https://api.modrinth.com/') && url.includes('dep1')), false)
+  await assert.rejects(core.installMod(instance.id, 'collision', 'bbsmc'), /其他来源或项目/)
+  assert.equal(await fs.readFile(path.join(mods, 'mr2.jar'), 'utf8'), 'modrinth second')
+  await assertNoStaging(core, instance.id)
+})
+
+test('BBSMC rejects permissions, untrusted redirects, and incorrect strong hashes without changing installed files', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'lua-core-bbsmc-download-'))
+  t.after(() => fs.rm(directory, { recursive: true, force: true }))
+  const fake = fabricFixture()
+  const artifactUrl = 'https://cdn.bbsmc.net/bbsmc/data/example/versions/test/test.jar'
+  const version = { id: 'test', project_id: 'example', name: 'Test', loaders: ['fabric'], game_versions: ['1.20.1'],
+    dependencies: [], files: [{ filename: 'test.jar', primary: true, url: artifactUrl, size: 4, hashes: packHashes('body') }] }
+  fake.responses.set('https://api.bbsmc.net/v2/version/test', JSON.stringify(version))
+  let mode = 'forbidden'
+  const requests: string[] = []
+  const fetcher: typeof fetch = async (input, options) => {
+    const url = String(input)
+    requests.push(url)
+    if (mode === 'forbidden' && url === 'https://api.bbsmc.net/v2/version/test') return new Response(null, { status: 403 })
+    if (url === artifactUrl && mode === 'verification') {
+      return new Response('<script src="/_guard/html.js?js=captcha_html"></script>', { headers: { 'content-type': 'text/html; charset=utf-8' } })
+    }
+    if (url === artifactUrl && mode === 'redirect') return new Response(null, { status: 302, headers: { location: 'https://127.0.0.1/private' } })
+    if (url === artifactUrl) return new Response('body')
+    return fake.fetcher(input, options)
+  }
+  const core = new LauncherCore(directory, undefined, { fetch: fetcher })
+  await core.init()
+  const instance = await core.createInstance({ name: 'Verified BBSMC', version: '1.20.1', loader: 'fabric' })
+  await core.install(instance.id)
+  await assert.rejects(core.installMod(instance.id, 'test', 'bbsmc'), /登录、购买或访问权限.*bbsmc.net/)
+  mode = 'verification'
+  const beforeVerification = requests.filter(url => url === artifactUrl).length
+  await assert.rejects(core.installMod(instance.id, 'test', 'bbsmc'), /网页验证.*官网/)
+  assert.equal(requests.filter(url => url === artifactUrl).length - beforeVerification, 1, 'browser verification must not be retried')
+  mode = 'redirect'
+  await assert.rejects(core.installMod(instance.id, 'test', 'bbsmc'), /不允许的下载来源/)
+  assert.equal(requests.some(url => url.includes('127.0.0.1')), false)
+  mode = 'corrupt'
+  version.files[0].hashes.sha512 = '0'.repeat(128)
+  fake.responses.set('https://api.bbsmc.net/v2/version/test', JSON.stringify(version))
+  await assert.rejects(core.installMod(instance.id, 'test', 'bbsmc'), /SHA-512/)
+  await assert.rejects(fs.access(path.join(core.getInstancePath(instance.id), 'mods/test.jar')))
+  assert.equal(core.snapshot().instances[0].status, 'ready')
+  await assertNoStaging(core, instance.id)
+})
+
+test('BBSMC mrpack downloads can cancel by source-specific task ID and install verified BBSMC content on retry', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'lua-core-bbsmc-pack-'))
+  t.after(() => fs.rm(directory, { recursive: true, force: true }))
+  const fake = fabricFixture()
+  const client = packDownload('mods/client.jar', 'client mod', { downloads: ['https://cdn.bbsmc.net/bbsmc/client.jar'] })
+  fake.responses.set(client.downloads[0], 'client mod')
+  const contents = testPack([client], { 'overrides/options.txt': 'fullscreen:false' })
+  const archiveUrl = 'https://cdn.bbsmc.net/bbsmc/data/pack/versions/pack1/test.mrpack'
+  const modrinthArchiveUrl = 'https://cdn.modrinth.com/data/pack/versions/pack1/test.mrpack'
+  fake.responses.set('https://api.bbsmc.net/v2/version/pack1', JSON.stringify({
+    id: 'pack1', project_id: 'testpack', name: 'BBSMC Pack', game_versions: ['1.20.1'], loaders: ['fabric'],
+    files: [{ filename: 'test.mrpack', url: archiveUrl, primary: true, size: contents.length, hashes: packHashes(contents) }],
+    dependencies: [],
+  }))
+  fake.responses.set('https://api.modrinth.com/v2/version/pack1', JSON.stringify({
+    id: 'pack1', project_id: 'testpack', name: 'Modrinth Pack', game_versions: ['1.20.1'], loaders: ['fabric'],
+    files: [{ filename: 'test.mrpack', url: modrinthArchiveUrl, primary: true, size: contents.length, hashes: packHashes(contents) }],
+    dependencies: [],
+  }))
+  let entered!: () => void
+  const downloading = new Promise<void>(resolve => { entered = resolve })
+  let block = true
+  const fetcher: typeof fetch = async (input, options) => {
+    if (String(input) === modrinthArchiveUrl) return new Response(new Uint8Array(contents))
+    if (String(input) !== archiveUrl) return fake.fetcher(input, options)
+    if (block) {
+      entered()
+      await new Promise<void>((_, reject) => {
+        if (options?.signal?.aborted) reject(options.signal.reason)
+        else options?.signal?.addEventListener('abort', () => reject(options.signal?.reason), { once: true })
+      })
+    }
+    return new Response(new Uint8Array(contents))
+  }
+  const events: CoreEvent[] = []
+  const core = new LauncherCore(directory, event => events.push(event), { fetch: fetcher })
+  await core.init()
+  const pending = core.installModpack('pack1', { source: 'bbsmc' })
+  const rejected = assert.rejects(pending, /安装已取消/)
+  await downloading
+  assert(events.some(event => event.type === 'progress' && event.instanceId === 'modpack-bbsmc-pack1'))
+  // The same version ID on another provider must not share or overwrite the active controller.
+  const modrinthResult = await core.installModpack('pack1')
+  assert.equal(modrinthResult.instances[0].modpack?.source, 'modrinth')
+  core.cancelInstall('modpack-bbsmc-pack1')
+  await rejected
+  assert.equal(core.snapshot().instances.length, 1)
+  assert.equal(core.snapshot().instances[0].status, 'ready')
+  block = false
+  const result = await core.installModpack('pack1', { source: 'bbsmc', name: 'Chinese pack' })
+  assert.equal(result.instances.length, 2)
+  const installed = result.instances.find(instance => instance.modpack?.source === 'bbsmc')!
+  assert.equal(installed.modpack?.remoteVersionId, 'pack1')
+  assert.equal(installed.modpack?.modrinthVersionId, undefined)
+  assert.equal(installed.status, 'ready')
+  assert.equal(await fs.readFile(path.join(core.getInstancePath(installed.id), client.path), 'utf8'), 'client mod')
 })

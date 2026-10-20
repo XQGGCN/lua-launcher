@@ -53,6 +53,11 @@ function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('输入参数无效')
   return value as Record<string, unknown>
 }
+function resourceSource(value: unknown): 'modrinth' | 'bbsmc' {
+  if (value === undefined || value === 'modrinth') return 'modrinth'
+  if (value === 'bbsmc') return 'bbsmc'
+  throw new Error('不支持的资源来源')
+}
 async function persistOffline(account: OfflineAccount | null): Promise<void> {
   if (!account) {
     await fs.rm(offlineFile, { force: true })
@@ -76,7 +81,7 @@ function authStatus(stage: string, message: string) {
 }
 function openExternal(input: unknown) {
   const url = new URL(text(input, 2048))
-  const hosts = new Set(['modrinth.com', 'github.com', 'www.minecraft.net', 'minecraft.net',
+  const hosts = new Set(['modrinth.com', 'bbsmc.net', 'github.com', 'www.minecraft.net', 'minecraft.net',
     'microsoft.com', 'www.microsoft.com', 'login.microsoftonline.com', 'login.live.com', 'learn.microsoft.com'])
   if (url.protocol !== 'https:' || url.username || url.password || url.port || !hosts.has(url.hostname)) {
     throw new Error('不支持的外部链接')
@@ -198,10 +203,11 @@ if (hasLock) app.whenReady().then(async () => {
           loader: options.loader === undefined ? undefined : text(options.loader, 30),
           gameVersion: options.gameVersion === undefined ? undefined : text(options.gameVersion, 50),
           offset: options.offset === undefined ? undefined : Number(options.offset),
+          source: resourceSource(options.source),
         })
       }
-      case 'modVersions': return core.modVersions(text(args[0], 80), text(args[1], 80))
-      case 'installMod': return core.installMod(text(args[0], 80), text(args[1], 80))
+      case 'modVersions': return core.modVersions(text(args[0], 80), text(args[1], 80), resourceSource(args[2]))
+      case 'installMod': return core.installMod(text(args[0], 80), text(args[1], 80), resourceSource(args[2]))
       case 'chooseModpack': {
         if (choosingPack) throw new Error('请先完成当前文件选择')
         choosingPack = true
@@ -226,13 +232,15 @@ if (hasLock) app.whenReady().then(async () => {
         const options = args[1] === undefined ? {} : object(args[1])
         return core.searchModpacks(text(args[0], 200), {
           offset: options.offset === undefined ? undefined : Number(options.offset),
+          source: resourceSource(options.source),
         })
       }
-      case 'modpackVersions': return core.modpackVersions(text(args[0], 80))
+      case 'modpackVersions': return core.modpackVersions(text(args[0], 80), resourceSource(args[1]))
       case 'installModpack': {
         const options = args[1] === undefined ? {} : object(args[1])
         return core.installModpack(text(args[0], 80), {
           name: options.name === undefined ? undefined : text(options.name, 80),
+          source: resourceSource(options.source),
         })
       }
       case 'openInstance': {

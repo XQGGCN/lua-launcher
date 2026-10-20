@@ -14,7 +14,7 @@ export const MODPACK_LIMITS = {
 } as const
 
 // Redirect-only GitHub hosts are deliberately not accepted as arbitrary source URLs.
-export const PACK_SOURCE_HOSTS = new Set(['cdn.modrinth.com', 'github.com', 'raw.githubusercontent.com', 'gitlab.com'])
+export const PACK_SOURCE_HOSTS = new Set(['cdn.modrinth.com', 'cdn.bbsmc.net', 'github.com', 'raw.githubusercontent.com', 'gitlab.com'])
 export const PACK_REDIRECT_HOSTS = new Set([
   ...PACK_SOURCE_HOSTS, 'release-assets.githubusercontent.com', 'objects.githubusercontent.com',
 ])
