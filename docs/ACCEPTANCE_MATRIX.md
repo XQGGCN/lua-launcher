@@ -1,6 +1,6 @@
 # 验收矩阵
 
-更新：2026-10-21。发布基线为 0.3.0，0.4/0.5/0.6 本地实现、测试、构建及未签名 macOS ARM64 DMG/ZIP 已完成。0.5 实例设置有浏览器预览证据，0.6 只读清单有真实 Core/隔离文件测试桥交互证据；三版尚未发布，当前提交三平台 CI 与 0.5/0.6 原生验收待完成。0.6.1 资源归位已有 347 项全量测试与真实 Modrinth 两样本证据，最终类型检查/生产构建和测试桥通过，晚修后未签名 macOS ARM64 DMG/ZIP 的版本、架构与 SHA-256 核对通过，尚未发布。0.6.2 单模组改名已有 399 项全量、52 项独立及测试桥证据，生产构建及未签名 macOS ARM64 包版本、架构和 SHA-256 核对通过，尚未发布。L1 静态/类型、L2 确定性测试、L3 真实网络与文件、L4 真实桌面、L5 真实账户/游戏/联机分别记录；低一级结果不能代替高一级。
+更新：2026-10-21。公开基线仍为 0.3.0；0.4–0.6.2 的本地实现与验证保留在各版本记录，均未发布。当前 0.7.0 世界只读详情已实现，全仓 464/464、独立定向 65/65、类型检查与生产构建通过；只有原创世界夹具，真实游戏生成样本、原生桌面、当前提交三平台 CI 和公开发布仍待。最终生产 Core/原创夹具测试桥、24 项只读基准及未签名 macOS ARM64 包版本/架构/hash/内容核对通过，见 0.7.0 开发记录；不继承旧包或 CI 作为本版证据。 L1 静态/类型、L2 确定性测试、L3 真实网络与文件、L4 真实桌面、L5 真实账户/游戏/联机分别记录；低一级结果不能代替高一级。
 
 W=Windows x64，M=macOS ARM64，L=Linux x64。新架构单独列证据，官方有 Java 包不等于 Lua 安装包或游戏已支持。每次结果关联版本/commit、平台、命令/步骤和证据路径；私有日志与截图留在被忽略目录，不保存令牌。
 
@@ -15,7 +15,7 @@ W=Windows x64，M=macOS ARM64，L=Linux x64。新架构单独列证据，官方�
 | 官网与资源 | L3/L4 | 首页、CSS、SVG、截图 HTTP 200；原图一致，CDN 有图片压缩；页面已验收 | [官网](https://lua-launcher.onrender.com)，本地 website-verification-v030 记录 |
 | 完整 Microsoft 登录与游戏 | L5 | 未通过，API 待审；批准前不继续真实流程 | [已知问题](KNOWN_ISSUES.md) |
 
-上述结果不自动继承到 0.4.0/0.5.0/0.6.0/0.6.1/0.6.2，不复用旧 CI 作为新提交通过证据。
+上述结果不自动继承到 0.4–0.7 的开发提交，不复用旧 CI 作为新提交通过证据。
 
 ## 0.4.0 本地结果及剩余验收
 
@@ -111,6 +111,24 @@ W=Windows x64，M=macOS ARM64，L=Linux x64。新架构单独列证据，官方�
 | AC-MODFILE-09 | 完整test/build、包版本架构/hash、当前提交三平台CI和Release | L1/L2；本地包L3/原生待验 | 399/399、生产构建含tsc通过；未签名macOS ARM64包版本/架构/hash核对通过；CI/签名公证/Release外部阻塞 | `.local/test-v062.log`、`.local/build-v062.log`、`.local/local-packages-v062.json` |
 
 原字节/hash、权限、mtime、inode与历史登记保留，不把硬链接引起的ctime/nlink变化说成无变化。禁用后无来源猜测，恢复原名才重关联；实际加载、依赖兼容与所有权认证未验。本轮没有网络、Java、认证或游戏，公开继续为0.3.0。
+
+## 0.7.0 本地结果及剩余验收
+
+基准 `604c7d2061cf66000a24abde6091a31f0a16f8f8`，分支 `codex/world-details-v0.7.0`。新增 NBT 15、文件读取 31、Core 19 共 **65/65** 独立重跑通过；集成者全仓 **464/464**、0 失败/跳过，生产构建（含 TypeScript）通过。所有 NBT 世界均为原创夹具，真实临时文件不等于真实游戏生成样本。
+
+| ID | 场景与通过条件 | 等级 / 平台 | 当前状态 | 证据或计划位置 |
+| --- | --- | --- | --- | --- |
+| AC-WORLDREAD-01 | 完整大端 NBT 验证，canonical MUTF-8、signed long、未知子树、重复键/截断拒绝 | L2，macOS 本地 fixture | NBT 15 项通过；不复制第三方解析实现 | `desktop/nbt-reader.test.ts` |
+| AC-WORLDREAD-02 | 压缩/展开/深度/数量/累计字符串数组/时间预算和取消；无半解析字段返回 | L2 | NBT 与读取模块回归通过；gzip多member共享限额、流和FD关闭；时间为合作式 | `desktop/world-details.test.ts`；独立审查 |
+| AC-WORLDREAD-03 | 固定目录与文件、祖先/FD初末身份、链接/大小写/NFC冲突/同inode编辑拒绝，零写入 | L2 实际临时文件 | 默认模块/Core通过；error实例可读，不清恢复marker/保存state/记录原始值 | 文件读取31项、Core19项 |
+| AC-WORLDREAD-04 | 主/旧来源独立，字段类型/未知/精确long，26.1同文件nested字段、外部文件不读 | L2 原创夹具；真实样本待验 | 不fallback、不合并、不以实例补值；独立种子/时钟保持未知 | 模块/Core测试；官方26.1与维护者资料 |
+| AC-WORLDREAD-05 | 默认无seed；显式120秒/32个实例来源绑定revision，重读同快照才返回 | L2 | 过期、跨实例、改动、刷新和迟到reveal均拒；错误不回显值或绝对路径 | Core19项；main/preload源码复核 |
+| AC-WORLDREAD-06 | 两个全局读槽、同键共享与DTO分离、换源/完整mutation/退出迟到隔离 | L2 明确deferred交错 | 修复前来源竞态实际红灯，修复后通过；取消等待实际worker结算释放 | REVIEW-070-01；Core19项 |
+| AC-WORLDREAD-07 | 世界选择、主/旧来源、查看隐藏复制、错误重试、跨实例迟到与只读基准 | HTTP测试桥；非原生L4 | 主/旧、损坏不fallback、slow main→old、查看/隐藏/复制反馈、A慢读切B查询保留通过；24项只读基准不变；UI独立接线/SSR通过 | `.local/ui-review-v070.json`、`.local/world-api-smoke-v070.json`、`.local/world-ui-v070.png`、`.local/world-ui-v070-cross-instance.png`；集成者执行，非作者操作 |
+| AC-WORLDREAD-08 | 两个授权实际游戏生成世界与原生桌面矩阵 | L3真实样本/L4 | 未验；仅旧人工fixture被识别，未读取用户数据目录或下载世界 | 取得授权副本后单独记录版本/来源/零写入 |
+| AC-WORLDREAD-09 | full/build、本地包、对应提交三平台CI/签名/Release | L1/L2；本地包与发布另验 | 464/464与生产build通过；最终未签名macOS ARM64包版本/架构/hash及构建内容核对通过；三平台CI/签名/公证/Release未完成 | `.local/test-v070.log`、`.local/build-v070.log`、`.local/local-packages-v070.json` |
+
+本轮不运行 Java、认证或游戏，不修改世界、不执行世界内容；没有新增备份/恢复、图标、玩家、区域、数据包或目录总大小。公开版本继续为0.3.0，AC-AUTH-02 / AC-GAME-01 未改变。
 
 ## 未来功能与发布门槛
 

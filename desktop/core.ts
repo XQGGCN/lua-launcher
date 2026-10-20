@@ -15,6 +15,8 @@ import metadata from '../package.json'
 import { validateInstanceOptions, resolveInstanceOptions, type InstanceOptions, type ResolvedInstanceOptions } from './instance-options'
 import { applyGameWindowSettings } from './game-window'
 import { scanResourceInventory, type InventoryKind, type ResourceInventory } from './resource-inventory'
+import { readWorldDetails, type WorldRead } from './world-details'
+import type { WorldSelection, WorldSource, WorldDetails, WorldSeed, WorldMetadata } from './world-types'
 import { installResourceZip, ResourceInstallRecoveryError, type ResourceInstallResult } from './resource-install'
 import { prepareModToggle, commitModToggle, inspectModToggleRecovery, assertNoDisabledModPartners,
   ModToggleRecoveryError, ModToggleBusyError, type ModTogglePrepared, type ModToggleSelection, type ModToggleResult } from './mod-toggle'
@@ -221,6 +223,8 @@ interface CoreOptions {
   modToggleCommitter?: typeof commitModToggle
   modToggleRecovery?: typeof inspectModToggleRecovery
   modToggleNow?: () => number
+  worldDetailsReader?: typeof readWorldDetails
+  worldDetailsNow?: () => number
 }
 interface DownloadJob { file: string; download: Download; allowedHosts?: ReadonlySet<string> }
 
@@ -330,6 +334,13 @@ export class LauncherCore {
   private mutationGeneration = new Map<string, number>()
   private modRecoveryBlocked = new Set<string>()
   private modPreparationEpoch = 0
+  private readonly worldDetailsReader: typeof readWorldDetails
+  private readonly worldDetailsNow: () => number
+  private worldReads = new Map<string, { instanceId: string; controller: AbortController; promise: Promise<WorldRead> }>()
+  private worldViews = new Map<string, { instanceId: string; source: WorldSource }>()
+  private worldRevisions = new Map<string, { instanceId: string; selection: WorldSelection; source: WorldSource;
+    revisionKey: string; generation: number; expiresAt: number; view: { instanceId: string; source: WorldSource } }>()
+  private worldReadEpoch = 0
   private resourceDownloads = new Map<string, { operationId: string; controller: AbortController }>()
   private inventoryScans = new Map<string, { instanceId: string; controller: AbortController; promise: Promise<InstanceInventory> }>()
   private javaTasks = new Map<string, JavaRuntimeTask>()
@@ -360,6 +371,8 @@ export class LauncherCore {
     this.modToggleCommitter = options.modToggleCommitter ?? commitModToggle
     this.modToggleRecovery = options.modToggleRecovery ?? inspectModToggleRecovery
     this.modToggleNow = options.modToggleNow ?? Date.now
+    this.worldDetailsReader = options.worldDetailsReader ?? readWorldDetails
+    this.worldDetailsNow = options.worldDetailsNow ?? Date.now
   }
 
   async init(): Promise<LauncherSnapshot> {
@@ -459,6 +472,131 @@ export class LauncherCore {
   private invalidateModTokens(id: string): void {
     this.mutationGeneration.set(id, (this.mutationGeneration.get(id) || 0) + 1)
     for (const [token, value] of this.modToggleTokens) if (value.instanceId === id) this.modToggleTokens.delete(token)
+    for (const [token, value] of this.worldRevisions) if (value.instanceId === id) this.worldRevisions.delete(token)
+    for (const [key, value] of this.worldViews) if (value.instanceId === id) this.worldViews.delete(key)
+    for (const read of this.worldReads.values()) if (read.instanceId === id) {
+      read.controller.abort(new DOMException('实例状态已变化，请重新读取世界详情', 'AbortError'))
+    }
+  }
+
+  /** Called synchronously before main-process credential refresh reserves a launch. */
+  invalidateInstanceReads(id: string): void { this.instance(id); this.invalidateModTokens(id) }
+
+  private assertWorldReadable(id: string): void {
+    const instance = this.instance(id)
+    if (this.installs.has(id) || this.launching.has(id) || this.processes.has(id) || this.instanceSettingsSaving.has(id) ||
+        instance.status === 'running' || instance.status === 'installing') throw new Error('请先关闭游戏并等待此实例的文件操作或设置保存完成，再读取世界详情')
+    // Error and uninstalled instances may still contain useful worlds. Never call
+    // assertInstanceUsable here: its recovery cleanup would violate read-only access.
+  }
+
+  private worldSelection(input: unknown): WorldSelection {
+    if (!input || typeof input !== 'object' || Array.isArray(input) ||
+        ![Object.prototype, null].includes(Object.getPrototypeOf(input)) || Reflect.ownKeys(input).length !== 2 ||
+        Reflect.ownKeys(input).some(key => typeof key !== 'string' || !['itemId', 'name'].includes(key) ||
+          !('value' in Object.getOwnPropertyDescriptor(input, key)!))) throw new Error('世界选择格式无效')
+    const value = input as WorldSelection
+    if (typeof value.name !== 'string' || !value.name || Buffer.byteLength(value.name) > 255 ||
+        value.name === '.' || value.name === '..' || /[<>:"/\\|?*\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069\ud800-\udfff\ufffd]/u.test(value.name) ||
+        /[ .]$/.test(value.name) || /^(?:CON|PRN|AUX|NUL|CLOCK\$|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.|$)/i.test(value.name) ||
+        value.itemId !== 'worlds:' + createHash('sha256').update(value.name, 'utf8').digest('hex')) throw new Error('世界条目无效，请刷新清单后重新选择')
+    return { itemId: value.itemId, name: value.name }
+  }
+
+  private async readSelectedWorld(id: string, selection: WorldSelection, source: WorldSource, includeSeed: boolean): Promise<WorldRead> {
+    this.assertWorldReadable(id)
+    const key = JSON.stringify([id, selection.itemId, source, includeSeed])
+    const active = this.worldReads.get(key)
+    if (active) return structuredClone(await active.promise)
+    if (this.worldReads.size >= 2) throw new Error('世界详情读取任务较多，请稍后重试')
+    const generation = this.mutationGeneration.get(id) || 0, epoch = this.worldReadEpoch
+    const controller = new AbortController()
+    const promise = Promise.resolve().then(() => this.worldDetailsReader(this.instanceDirectory(id), selection, { source, signal: controller.signal, includeSeed }))
+      .then(result => {
+        controller.signal.throwIfAborted()
+        if (epoch !== this.worldReadEpoch || generation !== (this.mutationGeneration.get(id) || 0)) throw new Error('实例已变化，请重新读取世界详情')
+        this.assertWorldReadable(id)
+        return result
+      }).catch(error => {
+        if (controller.signal.aborted) throw new DOMException('世界详情读取已取消，请刷新后重试', 'AbortError')
+        // Format/path problems are structured results. Unexpected filesystem
+        // exceptions must never expose absolute paths or raw NBT values over IPC.
+        if (error instanceof Error && error.message === '实例已变化，请重新读取世界详情') throw error
+        throw new Error('世界详情读取未完成，请关闭游戏后刷新重试')
+      }).finally(() => { if (this.worldReads.get(key)?.promise === promise) this.worldReads.delete(key) })
+    this.worldReads.set(key, { instanceId: id, controller, promise })
+    return structuredClone(await promise)
+  }
+
+  async worldDetails(id: string, input: unknown, options: { source?: WorldSource } = {}): Promise<WorldDetails> {
+    this.assertWorldReadable(id)
+    const selection = this.worldSelection(input)
+    if (!options || typeof options !== 'object' || Array.isArray(options) ||
+        ![Object.prototype, null].includes(Object.getPrototypeOf(options)) || Reflect.ownKeys(options).some(key =>
+          key !== 'source' || !('value' in Object.getOwnPropertyDescriptor(options, key)!))) throw new Error('世界详情读取选项无效')
+    const source = options.source ?? 'level.dat'
+    if (source !== 'level.dat' && source !== 'level.dat_old') throw new Error('世界元数据来源无效')
+    const generation = this.mutationGeneration.get(id) || 0, epoch = this.worldReadEpoch
+    const viewKey = JSON.stringify([id, selection.itemId])
+    const readKey = JSON.stringify([id, selection.itemId, source, false])
+    let view = this.worldViews.get(viewKey)
+    // Same pending request shares a view. A refresh or source change creates a
+    // new view, so an older completion cannot issue a new reveal capability.
+    if (!view || view.source !== source || !this.worldReads.has(readKey)) {
+      view = { instanceId: id, source }
+      this.worldViews.delete(viewKey)
+      if (this.worldViews.size >= 64) this.worldViews.delete(this.worldViews.keys().next().value!)
+      this.worldViews.set(viewKey, view)
+    }
+    // A fresh read/source selection invalidates earlier views of this world.
+    for (const [token, value] of this.worldRevisions) if (value.instanceId === id && value.selection.itemId === selection.itemId) this.worldRevisions.delete(token)
+    const result = await this.readSelectedWorld(id, selection, source, false)
+    if (epoch !== this.worldReadEpoch || generation !== (this.mutationGeneration.get(id) || 0) ||
+        this.worldViews.get(viewKey) !== view) throw new Error('世界详情来源或实例已变化，请重新读取')
+    this.assertWorldReadable(id)
+    const data = result.details
+    const metadata: WorldMetadata = {}
+    for (const key of ['levelName', 'savedVersionName', 'dataVersion', 'versionId', 'snapshot', 'gameMode', 'difficulty',
+      'hardcore', 'allowCommands', 'timeTicks', 'dayTimeTicks', 'lastPlayed'] as const) {
+      if (Object.hasOwn(data.metadata, key)) Object.assign(metadata, { [key]: structuredClone(data.metadata[key]) })
+    }
+    // Explicit projection is the boundary: no seed, private revisionKey, paths,
+    // or unrequested NBT fields can arrive through a spread of the module result.
+    const dto: WorldDetails = { instanceId: id, itemId: selection.itemId, folderName: selection.name, source,
+      observedAt: data.observedAt, status: data.status, ...(data.reasonCode ? { reasonCode: data.reasonCode } : {}),
+      ...(data.file ? { file: { sizeBytes: data.file.sizeBytes, modifiedAt: data.file.modifiedAt } } : {}),
+      metadata, fieldWarnings: data.fieldWarnings.map(value => ({ field: value.field, code: value.code })),
+      warnings: [...data.warnings], seedAvailable: data.seedAvailable }
+    if (data.status !== 'unavailable' && result.revisionKey) {
+      const now = this.worldDetailsNow()
+      for (const [token, value] of this.worldRevisions) if (value.expiresAt <= now) this.worldRevisions.delete(token)
+      if (this.worldRevisions.size >= 32) this.worldRevisions.delete(this.worldRevisions.keys().next().value!)
+      const revision = randomUUID()
+      this.worldRevisions.set(revision, { instanceId: id, selection, source, revisionKey: result.revisionKey,
+        generation, expiresAt: now + 120_000, view })
+      dto.revision = revision
+    }
+    return dto
+  }
+
+  async worldDetailsWithSeed(id: string, revision: string): Promise<WorldSeed> {
+    this.assertWorldReadable(id)
+    const view = this.worldRevisions.get(revision)
+    if (!view || view.instanceId !== id || view.expiresAt <= this.worldDetailsNow() ||
+        view.generation !== (this.mutationGeneration.get(id) || 0) ||
+        this.worldViews.get(JSON.stringify([id, view.selection.itemId])) !== view.view) throw new Error('世界详情已过期，请先刷新详情再查看种子')
+    const result = await this.readSelectedWorld(id, view.selection, view.source, true)
+    if (this.worldRevisions.get(revision) !== view || this.worldViews.get(JSON.stringify([id, view.selection.itemId])) !== view.view || view.expiresAt <= this.worldDetailsNow() ||
+        view.generation !== (this.mutationGeneration.get(id) || 0) || result.details.status === 'unavailable' ||
+        result.revisionKey !== view.revisionKey) {
+      this.worldRevisions.delete(revision)
+      throw new Error('世界文件已变化或详情已过期，请刷新详情后重试')
+    }
+    const seed = result.seed
+    if (seed !== undefined && (typeof seed !== 'string' || !/^-?\d{1,20}$/.test(seed) ||
+        BigInt(seed) < -(1n << 63n) || BigInt(seed) > (1n << 63n) - 1n)) throw new Error('世界种子格式无效，请刷新详情后重试')
+    return { instanceId: id, itemId: view.selection.itemId, source: view.source, revision,
+      observedAt: result.details.observedAt, available: seed !== undefined, ...(seed === undefined ? {} : { seed }) }
   }
 
   /** Recovery evidence is checked independently of launcher.json's retryable status. */
@@ -1167,8 +1305,11 @@ export class LauncherCore {
   cancelPendingOperations(): void {
     this.modPreparationEpoch++
     this.modToggleTokens.clear()
+    this.worldReadEpoch++
+    this.worldRevisions.clear()
+    this.worldViews.clear()
     for (const controller of [...this.installs.values(), ...this.javaDownloads.values(), ...this.launchControllers.values(),
-      ...[...this.inventoryScans.values()].map(scan => scan.controller)]) {
+      ...[...this.inventoryScans.values()].map(scan => scan.controller), ...[...this.worldReads.values()].map(read => read.controller)]) {
       controller.abort(new DOMException('启动器正在退出', 'AbortError'))
     }
   }

@@ -1,6 +1,6 @@
 {
   "name": "lua-launcher",
-  "version": "0.6.2",
+  "version": "0.7.0",
   "private": true,
   "description": "An independent Minecraft Java launcher with a simple, traditional desktop interface.",
   "type": "module",
@@ -16,7 +16,7 @@
     "build": "tsc --noEmit && vite build && node scripts/build-desktop.mjs",
     "desktop": "node scripts/dev.mjs",
     "start": "electron .",
-    "test": "node --import tsx --test desktop/mod-toggle.test.ts desktop/core-mod-toggle.test.ts desktop/resource-catalog.test.ts desktop/resource-install.test.ts desktop/core-resources.test.ts desktop/core-inventory.test.ts desktop/resource-inventory.test.ts desktop/core-instance-options.test.ts desktop/instance-options.test.ts desktop/game-window.test.ts desktop/java-runtime.test.ts desktop/core-java.test.ts desktop/launch-preparation.test.ts desktop/auth.test.ts desktop/auth-config.test.ts desktop/accounts.test.ts desktop/core.test.ts desktop/core-memory.test.ts desktop/core-loader.test.ts desktop/loader.test.ts desktop/memory.test.ts desktop/modpack.test.ts desktop/pack-selection.test.ts",
+    "test": "node --import tsx --test desktop/nbt-reader.test.ts desktop/world-details.test.ts desktop/core-world-details.test.ts desktop/mod-toggle.test.ts desktop/core-mod-toggle.test.ts desktop/resource-catalog.test.ts desktop/resource-install.test.ts desktop/core-resources.test.ts desktop/core-inventory.test.ts desktop/resource-inventory.test.ts desktop/core-instance-options.test.ts desktop/instance-options.test.ts desktop/game-window.test.ts desktop/java-runtime.test.ts desktop/core-java.test.ts desktop/launch-preparation.test.ts desktop/auth.test.ts desktop/auth-config.test.ts desktop/accounts.test.ts desktop/core.test.ts desktop/core-memory.test.ts desktop/core-loader.test.ts desktop/loader.test.ts desktop/memory.test.ts desktop/modpack.test.ts desktop/pack-selection.test.ts",
     "package": "pnpm build && electron-builder --dir",
     "dist": "pnpm build && electron-builder",
     "check": "tsc --noEmit"

@@ -167,6 +167,16 @@ if (hasLock) app.whenReady().then(async () => {
       }
       case 'instanceOptions': return core.instanceOptions(text(args[0], 80))
       case 'inventory': return core.inventory(text(args[0], 80), text(args[1], 20) as InventoryKind)
+      case 'worldDetails': {
+        const id = text(args[0], 80)
+        if (launches.has(id)) throw new Error('请先完成或取消此实例的启动准备，再读取世界详情')
+        return core.worldDetails(id, object(args[1]), args[2] === undefined ? {} : object(args[2]))
+      }
+      case 'worldDetailsWithSeed': {
+        const id = text(args[0], 80)
+        if (launches.has(id)) throw new Error('请先完成或取消此实例的启动准备，再查看种子')
+        return core.worldDetailsWithSeed(id, text(args[1], 80))
+      }
       case 'prepareModToggle': {
         const id = text(args[0], 80)
         if (launches.has(id)) throw new Error('请先完成或取消此实例的启动准备')
@@ -199,6 +209,7 @@ if (hasLock) app.whenReady().then(async () => {
         const id = text(args[0], 80)
         core.assertLaunchAvailable(id)
         return launches.run(id, async signal => {
+          core.invalidateInstanceReads(id)
           await core.assertInstanceUsable(id, signal)
           signal.throwIfAborted()
           const generation = accounts.generation

@@ -1,8 +1,9 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react'
 import { AlertTriangle, ArrowLeft, File, FileArchive, Folder, FolderOpen, Layers3, Map, Monitor, Package, RefreshCw, Search, Settings2 } from 'lucide-react'
 import type { InventoryItem, InventoryKind, ResourceInventory } from '../../desktop/resource-inventory'
-import { call, errorText, isDesktop, loaderNames, type Instance, type ModTogglePreview, type ModToggleSelection, type ModToggleResult } from '../api'
+import { call, errorText, isDesktop, loaderNames, type Instance, type ModTogglePreview, type ModToggleSelection, type ModToggleResult, type WorldDetails as WorldDetailsData, type WorldSeed } from '../api'
 import ModToggleActions from './ModToggleActions'
+import WorldDetails, { escapeWorldText } from './WorldDetails'
 import { EmptyState, ErrorBox, Spinner } from './ui'
 import './InstanceContent.css'
 
@@ -62,16 +63,16 @@ export function InventoryDetails({ item, kind, id }: { item?: InventoryItem; kin
     <h3 id={`${id}-title`}>条目信息</h3>
     {!item ? <p className="inventory-detail-hint">选择列表中的名称，查看文件信息。</p> : <>
       <dl>
-        <dt>名称</dt><dd>{item.name}</dd>
-        <dt>相对路径</dt><dd><code>{item.relativePath}</code><small>相对于此实例的 game 目录</small></dd>
+        <dt>名称</dt><dd>{kind === 'worlds' ? escapeWorldText(item.name) : item.name}</dd>
+        <dt>相对路径</dt><dd><code>{kind === 'worlds' ? escapeWorldText(item.relativePath) : item.relativePath}</code><small>相对于此实例的 game 目录</small></dd>
         <dt>条目类型</dt><dd>{typeLabel(item)}</dd>
-        <dt>修改时间</dt><dd><time dateTime={item.modifiedAt}>{timeLabel(item.modifiedAt)}</time></dd>
+        <dt>{kind === 'worlds' && item.entryType === 'directory' ? '目录修改时间' : '修改时间'}</dt><dd><time dateTime={item.modifiedAt}>{timeLabel(item.modifiedAt)}</time></dd>
         <dt>大小</dt><dd>{inventorySize(item)}{item.entryType === 'directory' && <small>只列出这一层，不统计目录内文件大小</small>}</dd>
-        <dt>加载状态</dt><dd>{item.activation === 'disabled-suffix' ? '禁用后缀（.disabled）' : '未检查'}<small>仅记录文件名，不判断游戏是否加载或是否兼容</small></dd>
-        <dt>曾登记来源</dt><dd>{item.recordedSource ? <>{sourceNames[item.recordedSource.source]}<small>项目 ID：{item.recordedSource.projectId}<br />版本 ID：{item.recordedSource.versionId}</small></> : '无关联登记'}<small>历史下载登记不证明当前文件内容、完整性或兼容性</small></dd>
+        {kind !== 'worlds' && <><dt>加载状态</dt><dd>{item.activation === 'disabled-suffix' ? '禁用后缀（.disabled）' : '未检查'}<small>仅记录文件名，不判断游戏是否加载或是否兼容</small></dd>
+        <dt>曾登记来源</dt><dd>{item.recordedSource ? <>{sourceNames[item.recordedSource.source]}<small>项目 ID：{item.recordedSource.projectId}<br />版本 ID：{item.recordedSource.versionId}</small></> : '无关联登记'}<small>历史下载登记不证明当前文件内容、完整性或兼容性</small></dd></>}
         {item.recordedDownload && <><dt>下载登记</dt><dd><time dateTime={item.recordedDownload.installedAt}>{timeLabel(item.recordedDownload.installedAt)}</time><small>登记时大小：{item.recordedDownload.size} 字节</small></dd><dt>登记 SHA-512</dt><dd><code>{item.recordedDownload.sha512}</code><small>这是下载时的校验值；本次清单未重新计算当前文件哈希</small></dd></>}
       </dl>
-      {kind === 'worlds' && <p className="inventory-detail-hint">这里只展示 saves 目录中的条目。尚未读取 level.dat / NBT，因此没有解析世界名称、游戏版本、种子、游戏模式或最后游玩时间；文件修改时间不等于最后游玩时间。</p>}
+      {kind === 'worlds' && <p className="inventory-detail-hint">目录时间来自文件系统，和世界记录的最后游玩时间分别展示。选择普通世界目录后可在下方只读查看元数据。</p>}
     </>}
   </section>
 }
@@ -186,15 +187,18 @@ export default function InstanceContent({ instances, selectedId, onSelect, onOpe
       <div className="inventory-toolbar"><label className="inventory-search"><Search size={15} /><input aria-label={`在已读取${tab.label}中按文件名搜索`} placeholder="按文件名搜索已读取条目" value={query} disabled={!inventory || installing} onChange={event => { setQuery(event.target.value); setPage(0); setSelectedItemId('') }} /></label><label className="inventory-sort"><span className="sr-only">清单排序</span><select value={order} onChange={event => { setOrder(event.target.value as SortOrder); setPage(0); setSelectedItemId('') }}><option value="name-asc">文件名：升序</option><option value="name-desc">文件名：降序</option><option value="modified-desc">修改时间：从新到旧</option><option value="modified-asc">修改时间：从旧到新</option></select></label><button type="button" className="button secondary" disabled={!instance || !isDesktop || installing || loading} onClick={refresh}>{loading ? <Spinner size={15} /> : <RefreshCw size={15} />}刷新</button></div>
       <div className="inventory-meta"><span>目录：<code>game/{tab.folder}/</code> · 仅此目录一层</span>{inventory && <span>读取时间：<time dateTime={inventory.observedAt}>{timeLabel(inventory.observedAt)}</time></span>}</div>
       {inventory?.truncated && <div className="inline-notice inventory-notice"><AlertTriangle size={17} /><span>本次扫描未完成，当前不是目录的完整清单。搜索和排序只作用于已经读取的 {inventory.items.length} 个条目，原因见下方扫描提示。</span></div>}
-      {!!inventory?.warnings.length && <details className="inventory-warnings"><summary>扫描提示（{inventory.warnings.length}）</summary><ul>{inventory.warnings.map((warning, index) => <li key={`${warning.code}-${index}`}><span>{warning.message}</span>{warning.relativePath && <code>{warning.relativePath}</code>}</li>)}</ul></details>}
+      {!!inventory?.warnings.length && <details className="inventory-warnings"><summary>扫描提示（{inventory.warnings.length}）</summary><ul>{inventory.warnings.map((warning, index) => <li key={`${warning.code}-${index}`}><span>{kind === 'worlds' ? escapeWorldText(warning.message) : warning.message}</span>{warning.relativePath && <code>{kind === 'worlds' ? escapeWorldText(warning.relativePath) : warning.relativePath}</code>}</li>)}</ul></details>}
       {message ? <ErrorBox message={message} retry={!installing && isDesktop ? refresh : undefined} /> : !instance ? <EmptyState icon={<Folder size={28} />} title={instances.length ? '请选择一个实例' : '还没有游戏实例'}>从上方选择实例，或返回版本列表添加游戏。</EmptyState> : !isDesktop ? <div className="inventory-placeholder"><Monitor size={25} /><h3>桌面版可读取实例内容</h3><p>此预览没有本机文件访问权限，因此不显示文件数量或示例条目。</p></div> : installing ? <div className="inventory-placeholder"><Package size={25} /><h3>安装完成后查看</h3><p>当前不会扫描或展示旧的目录清单。</p></div> : loading || !inventory ? <div className="loading-state" role="status"><Spinner />正在读取 {tab.folder} 目录…</div> : !filtered.length ? <div className="inventory-placeholder"><Folder size={25} /><h3>{query ? '没有匹配的文件名' : inventory.truncated || inventory.warnings.length ? '本次未取得可展示条目' : '此目录暂无条目'}</h3><p>{query ? '搜索仅检查这次已读取的条目，可以修改或清除关键词。' : inventory.truncated || inventory.warnings.length ? '请检查扫描提示，不能据此判断实际目录为空。' : '目录尚未创建或其中没有可展示的文件与文件夹。'}</p>{query && <button type="button" className="text-button" onClick={() => { setQuery(''); setPage(0) }}>清除搜索</button>}</div> : <>
         <p className="inventory-result-count" role="status">{query ? `${filtered.length} 个匹配条目 / 已读取 ${inventory.items.length} 个` : `已读取 ${inventory.items.length} 个条目`}{inventory.truncated && ' · 非完整清单'}</p>
-        <div className="inventory-table-wrap"><table className="inventory-table"><thead><tr><th scope="col">文件名</th><th scope="col">类型 / 后缀</th><th scope="col">大小</th><th scope="col">修改时间</th><th scope="col">曾登记来源</th></tr></thead><tbody>{visibleItems.map(item => <tr key={item.id} className={selectedItemId === item.id ? 'selected' : undefined}><td><button type="button" className="inventory-file-button" aria-pressed={selectedItemId === item.id} aria-controls={`${id}-details`} onClick={() => setSelectedItemId(item.id)}>{item.entryType === 'directory' ? <Folder size={17} /> : <File size={17} />}<span>{item.name}</span></button></td><td>{typeLabel(item)}{item.activation === 'disabled-suffix' && <small>禁用后缀</small>}</td><td className="inventory-size">{inventorySize(item)}</td><td><time dateTime={item.modifiedAt}>{timeLabel(item.modifiedAt)}</time></td><td>{item.recordedSource ? sourceNames[item.recordedSource.source] : '无关联登记'}</td></tr>)}</tbody></table></div>
+        <div className="inventory-table-wrap"><table className="inventory-table"><thead><tr><th scope="col">文件名</th><th scope="col">类型 / 后缀</th><th scope="col">大小</th><th scope="col">修改时间</th><th scope="col">曾登记来源</th></tr></thead><tbody>{visibleItems.map(item => <tr key={item.id} className={selectedItemId === item.id ? 'selected' : undefined}><td><button type="button" className="inventory-file-button" aria-pressed={selectedItemId === item.id} aria-controls={`${id}-details`} onClick={() => setSelectedItemId(item.id)}>{item.entryType === 'directory' ? <Folder size={17} /> : <File size={17} />}<span>{kind === 'worlds' ? escapeWorldText(item.name) : item.name}</span></button></td><td>{typeLabel(item)}{item.activation === 'disabled-suffix' && <small>禁用后缀</small>}</td><td className="inventory-size">{inventorySize(item)}</td><td><time dateTime={item.modifiedAt}>{timeLabel(item.modifiedAt)}</time></td><td>{item.recordedSource ? sourceNames[item.recordedSource.source] : '无关联登记'}</td></tr>)}</tbody></table></div>
         {pageCount > 1 && <div className="inventory-pagination"><button type="button" className="button secondary" disabled={currentPage === 0} onClick={() => { setPage(currentPage - 1); setSelectedItemId('') }}>上一页</button><span>已读取清单第 {currentPage + 1} / {pageCount} 页 · 每页最多 {pageSize} 条</span><button type="button" className="button secondary" disabled={currentPage + 1 >= pageCount} onClick={() => { setPage(currentPage + 1); setSelectedItemId('') }}>下一页</button></div>}
         <InventoryDetails item={selectedItem} kind={kind} id={`${id}-details`} />
+        {kind === 'worlds' && instance && selectedItem?.entryType === 'directory' && <WorldDetails instance={instance} item={selectedItem} busy={fileBusy || loading || installing} refreshRevision={refreshRevision}
+          read={(selection, source) => call<WorldDetailsData>('worldDetails', instance.id, selection, { source })}
+          reveal={revision => call<WorldSeed>('worldDetailsWithSeed', instance.id, revision)} />}
         {kind === 'mods' && instance && selectedItem && onPrepareMod && onCommitMod && <ModToggleActions instance={instance} item={selectedItem} busy={fileBusy || loading || installing} prepare={(selection, enabled) => onPrepareMod(instance.id, selection, enabled)} commit={token => onCommitMod(instance.id, token)} completed={renamed} />}
       </>}
-      <p className="inventory-footer-note">{kind === 'mods' ? '模组操作仅改变一个文件的名称，不自动联动依赖。禁用后下载来源登记不迁移，恢复原名后可重新显示历史来源。' : '不解压资源或推断兼容、启用和实际加载状态。'}{kind === 'worlds' ? '世界版本、种子和其他 NBT 详情尚未解析。' : '“曾登记来源”不代表当前内容已通过哈希验证。'}</p>
+      <p className="inventory-footer-note">{kind === 'worlds' ? '世界详情只读所选目录的 level.dat 或明确选择的旧副本；不检查区块完整性，不修改或升级世界。' : <>{kind === 'mods' ? '模组操作仅改变一个文件的名称，不自动联动依赖。禁用后下载来源登记不迁移，恢复原名后可重新显示历史来源。' : '不解压资源或推断兼容、启用和实际加载状态。'}“曾登记来源”不代表当前内容已通过哈希验证。</>}</p>
     </section>
   </div>
 }

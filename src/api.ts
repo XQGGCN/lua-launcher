@@ -5,6 +5,7 @@ export type { InventoryKind, InventoryItem, ResourceInventory } from '../desktop
 export type { InstanceInventory } from '../desktop/core'
 export type { ModTogglePreview } from '../desktop/core'
 export type { ModToggleSelection, ModToggleResult } from '../desktop/mod-toggle'
+export type { WorldSelection, WorldSource, WorldDetails, WorldSeed, WorldMetadata } from '../desktop/world-types'
 export type { ResourceKind, ResourceVersion, ResourceInstallInput, ResourceDependency, ResourceSearchResult } from '../desktop/resource-catalog'
 export type { ResourceInstallResult as ResourceInstallReceipt } from '../desktop/resource-install'
 import { resourceSearchParameters, normalizeResourceSearch } from '../desktop/resource-catalog'
