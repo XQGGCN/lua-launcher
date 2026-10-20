@@ -14,6 +14,8 @@ Lua's original source is licensed under MIT. Third-party dependencies keep their
 | electron-builder | MIT | https://github.com/electron-userland/electron-builder |
 | tsx | MIT | https://github.com/privatenumber/tsx |
 
-No source or packaged assets from PCL, HMCL or Modrinth App are included. Their names are comparative references, not endorsements. Modrinth API content belongs to individual creators. Minecraft game files, Fabric and user-selected mods are fetched separately at runtime, subject to their own licenses; they are not part of the Lua source distribution.
+No source or packaged assets from PCL, HMCL or Modrinth App are included. Their names are comparative references, not endorsements. Modrinth API content belongs to individual creators. Minecraft game files, Fabric, Forge, NeoForge and user-selected mods are fetched separately at runtime, subject to their own licenses; they are not part of the Lua source distribution.
 
 Minecraft is a trademark of Mojang / Microsoft. Lua is an independent project, not an official Minecraft product.
+
+Forge and NeoForge installer metadata and processor JARs are downloaded on request from their official Maven repositories. Their binaries retain their own licenses and are not bundled with Lua. Lua implements the installer orchestration in original TypeScript. Official projects and support links: [Forge](https://minecraftforge.net/), [Forge support](https://www.patreon.com/LexManos), [NeoForge](https://neoforged.net/).
