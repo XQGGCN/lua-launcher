@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { ArrowRight, ArrowUpRight, Download, FolderOpen, Package, Search, Square } from 'lucide-react'
-import { call, errorText, isDesktop, type ChosenModpack, type Mod, type ModVersion, type Progress, type ResourceSource, type SearchResult } from '../api'
+import { call, errorText, isDesktop, loaderNames, type ChosenModpack, type Mod, type ModVersion, type Progress, type ResourceSource, type SearchResult } from '../api'
 import { bytes, Dialog, EmptyState, ErrorBox, PageHeading, percent, Spinner } from './ui'
 import type { PackTask } from './DownloadsView'
 import ResourceSourcePicker, { resourceProjectUrl, resourceSources } from './ResourceSourcePicker'
@@ -23,7 +23,7 @@ function supportedGame(version: string) {
 }
 function unsupported(version: ModVersion) {
   if (version.externalOnly) return version.externalReason || '此发布需要从官网获取，无法直接安装。'
-  if (!version.loaders.some(loader => ['fabric', 'vanilla', 'minecraft'].includes(loader))) return `此发布使用 ${version.loaders.join(' / ') || '未知加载器'}，当前仅支持原版和 Fabric 整合包。`
+  if (!version.loaders.some(loader => ['fabric', 'forge', 'neoforge', 'vanilla', 'minecraft'].includes(loader))) return `此发布使用 ${version.loaders.join(' / ') || '未知加载器'}，当前支持原版、Fabric、Forge 和 NeoForge 整合包。`
   if (!version.game_versions.some(supportedGame)) return '此发布的 Minecraft 版本暂不支持，请选择 1.20.1 及之后的正式版。'
   if (!version.files.some(file => file.filename.toLowerCase().endsWith('.mrpack'))) return '此发布不包含 .mrpack 文件，暂时无法安装。'
   return ''
@@ -63,7 +63,7 @@ export default function ModpacksView(props: Props) {
   return <>
     <PageHeading title="整合包" subtitle="从资源站安装整合包，或导入本地 .mrpack 文件。" action={<button className="button secondary" disabled={!isDesktop || choosing || Boolean(active)} onClick={() => void choose()}>{choosing ? <Spinner size={16} /> : <FolderOpen size={16} />}导入本地整合包</button>} />
     <ResourceSourcePicker source={source} change={changeSource} openUrl={props.openUrl} />
-    <div className="inline-notice subtle"><Package size={17} /><span>支持 Minecraft 1.20.1 及之后的原版 / Fabric .mrpack 整合包。暂不支持 CurseForge ZIP、Forge、NeoForge 或 Quilt。{source === 'bbsmc' && ' BBSMC 接入为实验性，仅符合以上条件的发布可安装。'}</span></div>
+    <div className="inline-notice subtle"><Package size={17} /><span>可安装 Minecraft 1.20.1 及之后的原版、Fabric、Forge、NeoForge .mrpack 整合包，具体版本以加载器官方兼容元数据为准。暂不支持 CurseForge ZIP 或 Quilt。{source === 'bbsmc' && ' BBSMC 接入为实验性，仅符合以上条件的发布可安装。'}</span></div>
     {importError && <ErrorBox message={importError} retry={() => void choose()} />}
     {active && <div className="pack-active-banner"><Spinner size={16} /><span>正在安装：{active.name} · {active.source === 'local' ? '本地' : resourceSources[active.source].label}</span><button className="text-button" onClick={props.showTasks}>查看下载任务<ArrowRight size={15} /></button></div>}
     <form className="discover-search" onSubmit={event => { event.preventDefault(); setOffset(0); setSubmitted(query.trim()) }}><label className="search-field"><Search size={18} /><input aria-label={`搜索 ${sourceName} 整合包`} value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索整合包名称或关键词" /></label><button className="button primary">搜索<ArrowRight size={15} /></button></form>
@@ -108,7 +108,7 @@ function LocalPackDialog({ chosen, close, ...props }: Props & { chosen: ChosenMo
   }
   return <Dialog title="导入整合包" close={close}>
     <p className="modal-description">确认整合包信息后，将新建独立实例并下载所需文件。</p>
-    <div className="pack-preview"><h3>{preview.name}</h3>{preview.summary && <p>{preview.summary}</p>}<dl><dt>整合包版本</dt><dd>{preview.versionId}</dd><dt>Minecraft</dt><dd>{preview.minecraftVersion}</dd><dt>加载器</dt><dd>{preview.loader === 'fabric' ? `Fabric ${preview.loaderVersion || ''}` : '原版'}</dd><dt>待下载文件</dt><dd>{preview.fileCount} 个 · {bytes(preview.totalBytes)}</dd></dl></div>
+    <div className="pack-preview"><h3>{preview.name}</h3>{preview.summary && <p>{preview.summary}</p>}<dl><dt>整合包版本</dt><dd>{preview.versionId}</dd><dt>Minecraft</dt><dd>{preview.minecraftVersion}</dd><dt>加载器</dt><dd>{loaderNames[preview.loader]}{preview.loaderVersion ? ` ${preview.loaderVersion}` : ''}</dd><dt>待下载文件</dt><dd>{preview.fileCount} 个 · {bytes(preview.totalBytes)}</dd></dl></div>
     {Boolean(preview.optionalFileCount) && <p className="form-hint">包含 {preview.optionalFileCount} 个可选客户端文件，将一并安装。</p>}
     <form onSubmit={event => void submit(event)}><label className="field"><span>实例名称</span><input value={name} onChange={event => setName(event.target.value)} maxLength={60} required disabled={active} /></label>
       {preview.unsupportedReason && <ErrorBox message={preview.unsupportedReason} />}

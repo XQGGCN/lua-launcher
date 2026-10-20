@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
-import { CheckCircle2, Download, Gamepad2, Layers3, Package, Play, Plus, RefreshCw, Square, Terminal } from 'lucide-react'
-import { call, errorText, isDesktop, type FabricVersion, type Instance, type Progress, type ResourceSource, type Version } from '../api'
+import { Blocks, CheckCircle2, Download, Gamepad2, Hammer, Layers3, Package, Play, Plus, RefreshCw, Square, Terminal } from 'lucide-react'
+import { call, errorText, isDesktop, loaderNames, type Loader, type LoaderVersion, type Instance, type Progress, type ResourceSource, type Version } from '../api'
 import { bytes, EmptyState, ErrorBox, PageHeading, percent, Spinner } from './ui'
 import { resourceSources } from './ResourceSourcePicker'
 
-export type DownloadInput = { name: string; version: string; loader: 'vanilla' | 'fabric'; loaderVersion?: string }
+export type DownloadInput = { name: string; version: string; loader: Loader; loaderVersion?: string }
 export type PackTask = {
   id: string
   name: string
@@ -52,7 +52,7 @@ export default function DownloadsView(props: Props) {
     .sort((a, b) => (order[a.state] - order[b.state]) || (b.created - a.created))
   const action = async (operation: () => Promise<void>) => { setError(''); try { await operation() } catch (error) { setError(errorText(error)) } }
   return <>
-    <PageHeading title="游戏下载" subtitle="安装 Minecraft 原版或 Fabric，查看下载进度和失败记录。" action={<button className="button secondary" onClick={() => props.showPacks()}><Package size={16} />安装整合包</button>} />
+    <PageHeading title="游戏下载" subtitle="选择 Minecraft 和加载器版本，查看下载进度和失败记录。" action={<button className="button secondary" onClick={() => props.showPacks()}><Package size={16} />安装整合包</button>} />
     <div className="page-tabs" role="tablist" aria-label="下载页面">
       <button role="tab" aria-selected={tab === 'game'} className={tab === 'game' ? 'selected' : ''} onClick={() => setTab('game')}><Plus size={16} />下载游戏</button>
       <button role="tab" aria-selected={tab === 'tasks'} className={tab === 'tasks' ? 'selected' : ''} onClick={() => setTab('tasks')}><Download size={16} />下载任务{active > 0 && <span className="heading-count">{active}</span>}{failed > 0 && <span className="task-failure-dot" aria-label={`${failed} 个任务需要处理`} />}</button>
@@ -74,7 +74,7 @@ export default function DownloadsView(props: Props) {
           const state = entry.state
           const current = progress[instance.id]
           return <article className={`download-card download-${state}`} key={instance.id}>
-            <div className="download-heading"><span className="download-icon">{state === 'complete' ? <CheckCircle2 size={24} /> : <Package size={24} />}</span><div><h3>{instance.name}</h3><p>Minecraft {instance.version} · {instance.loader === 'fabric' ? 'Fabric' : '原版'}{!isDesktop && ' · 预览实例'}</p></div><div className="task-actions">
+            <div className="download-heading"><span className="download-icon">{state === 'complete' ? <CheckCircle2 size={24} /> : <Package size={24} />}</span><div><h3>{instance.name}</h3><p>Minecraft {instance.version} · {loaderNames[instance.loader]}{instance.loaderVersion ? ` ${instance.loaderVersion}` : ''}{!isDesktop && ' · 预览实例'}</p></div><div className="task-actions">
               {state === 'active' ? <button className="button secondary" disabled={busy[`cancel-${instance.id}`]} onClick={() => void action(() => props.cancel(instance.id))}><Square size={13} />取消</button> : state === 'complete' ? <button className="button secondary" onClick={() => props.showGame(instance.id)}><Play size={14} />前往启动</button> : <button className="button secondary" disabled={!isDesktop || busy[instance.id]} onClick={() => void action(() => props.install(instance.id))}>{state === 'error' ? <RefreshCw size={14} /> : <Download size={14} />}{state === 'error' ? '重试' : '开始安装'}</button>}
               <button className="icon-button" aria-label={`查看 ${instance.name} 的日志`} onClick={() => props.showLogs(instance.id)}><Terminal size={17} /></button>
             </div></div>
@@ -91,13 +91,13 @@ function GameDownloadForm({ download }: { download: (input: DownloadInput) => Pr
   const [versions, setVersions] = useState<Version[]>([])
   const [version, setVersion] = useState('')
   const [name, setName] = useState('')
-  const [loader, setLoader] = useState<'vanilla' | 'fabric'>('vanilla')
-  const [loaderVersions, setLoaderVersions] = useState<FabricVersion[]>([])
+  const [loader, setLoader] = useState<Loader>('vanilla')
+  const [loaderVersions, setLoaderVersions] = useState<LoaderVersion[]>([])
   const [loaderVersion, setLoaderVersion] = useState('')
-  const [fabricForVersion, setFabricForVersion] = useState('')
-  const [fabricLoading, setFabricLoading] = useState(false)
-  const [fabricError, setFabricError] = useState('')
-  const [fabricAttempt, setFabricAttempt] = useState(0)
+  const [loadedFor, setLoadedFor] = useState('')
+  const [loaderLoading, setLoaderLoading] = useState(false)
+  const [loaderError, setLoaderError] = useState('')
+  const [loaderAttempt, setLoaderAttempt] = useState(0)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -110,26 +110,27 @@ function GameDownloadForm({ download }: { download: (input: DownloadInput) => Pr
   useEffect(() => { void load() }, [load])
   useEffect(() => {
     let cancelled = false
-    setLoaderVersions([]); setLoaderVersion(''); setFabricForVersion(''); setFabricError('')
-    if (loader !== 'fabric' || !version) { setFabricLoading(false); return }
-    setFabricLoading(true)
-    void call<FabricVersion[]>('fabricVersions', version)
+    setLoaderVersions([]); setLoaderVersion(''); setLoadedFor(''); setLoaderError('')
+    if (loader === 'vanilla' || !version) { setLoaderLoading(false); return }
+    setLoaderLoading(true)
+    void call<LoaderVersion[]>('loaderVersions', version, loader)
       .then(list => {
         if (cancelled) return
         setLoaderVersions(list)
-        setLoaderVersion((list.find(item => item.stable) || list[0])?.version || '')
-        setFabricForVersion(version)
+        setLoaderVersion((list.find(item => item.recommended) || list.find(item => item.stable) || list[0])?.version || '')
+        setLoadedFor(`${loader}:${version}`)
       })
-      .catch(error => { if (!cancelled) setFabricError(errorText(error)) })
-      .finally(() => { if (!cancelled) setFabricLoading(false) })
+      .catch(error => { if (!cancelled) setLoaderError(errorText(error)) })
+      .finally(() => { if (!cancelled) setLoaderLoading(false) })
     return () => { cancelled = true }
-  }, [loader, version, fabricAttempt])
-  const fabricReady = loader !== 'fabric' || (!fabricLoading && fabricForVersion === version && Boolean(loaderVersion))
+  }, [loader, version, loaderAttempt])
+  const loaderReady = loader === 'vanilla' || (!loaderLoading && loadedFor === `${loader}:${version}` && Boolean(loaderVersion))
+  const defaultName = `Minecraft ${version}${loader === 'vanilla' ? '' : ` ${loaderNames[loader]}`}`
   const submit = async (event: FormEvent) => {
     event.preventDefault()
-    if (saving || loading || !version || !fabricReady) return
+    if (saving || loading || !version || !loaderReady) return
     setSaving(true); setError('')
-    try { await download({ name: name.trim() || `Minecraft ${version}`, version, loader, ...(loader === 'fabric' ? { loaderVersion } : {}) }) }
+    try { await download({ name: name.trim() || defaultName, version, loader, ...(loader !== 'vanilla' ? { loaderVersion } : {}) }) }
     catch (error) { setError(errorText(error)) }
     finally { setSaving(false) }
   }
@@ -137,12 +138,12 @@ function GameDownloadForm({ download }: { download: (input: DownloadInput) => Pr
     <div className="form-section-heading"><h2>新建游戏实例</h2><p>游戏文件从官方来源下载。每个实例使用独立的存档和模组目录。</p></div>
     <div className="download-form-grid">
       <label className="field"><span>Minecraft 版本 {loading && <Spinner size={14} />}</span><select value={version} onChange={event => setVersion(event.target.value)} disabled={loading || saving} required>{loading ? <option value="">正在获取官方版本…</option> : versions.length ? versions.map(item => <option key={item.id} value={item.id}>{item.id}{item.id === versions[0].id ? ' · 最新正式版' : ''}</option>) : <option value="">没有可用版本</option>}</select><small>支持 Minecraft 1.20.1 及之后的正式版本。</small></label>
-      <label className="field"><span>实例名称</span><input value={name} maxLength={60} onChange={event => setName(event.target.value)} placeholder={version ? `Minecraft ${version}` : '例如：原版生存'} disabled={saving} /><small>留空时使用游戏版本命名。</small></label>
+      <label className="field"><span>实例名称</span><input value={name} maxLength={60} onChange={event => setName(event.target.value)} placeholder={version ? defaultName : '例如：原版生存'} disabled={saving} /><small>留空时使用游戏版本和加载器命名。</small></label>
     </div>
-    <div className="field"><span>加载器</span><div className="loader-options">{([{ id: 'vanilla', name: 'Minecraft 原版', description: '标准游戏，不安装模组加载器', icon: Gamepad2 }, { id: 'fabric', name: 'Fabric', description: '可选择加载器版本，支持 Fabric 模组', icon: Layers3 }] as const).map(item => <button type="button" key={item.id} className={`loader-option ${loader === item.id ? 'selected' : ''}`} aria-pressed={loader === item.id} disabled={saving} onClick={() => setLoader(item.id)}><item.icon size={21} /><strong>{item.name}</strong><small>{item.description}</small></button>)}</div></div>
-    {loader === 'fabric' && <label className="field"><span>Fabric Loader 版本 {fabricLoading && <Spinner size={14} />}</span><select value={loaderVersion} onChange={event => setLoaderVersion(event.target.value)} disabled={fabricLoading || saving || !loaderVersions.length} required>{fabricLoading ? <option value="">正在读取兼容版本…</option> : loaderVersions.length ? loaderVersions.map(item => <option key={item.version} value={item.version}>{item.version} · {item.stable ? '稳定版' : '测试版'}</option>) : <option value="">{fabricError ? '版本读取失败' : '没有兼容的加载器版本'}</option>}</select><small>默认选择兼容列表中的首个稳定版；也可以手动指定。</small></label>}
-    {loader === 'fabric' && fabricError && <ErrorBox message={fabricError} retry={() => setFabricAttempt(attempt => attempt + 1)} />}
+    <div className="field"><span>加载器</span><div className="loader-options">{([{ id: 'vanilla', name: 'Minecraft 原版', description: '标准游戏，不安装模组加载器', icon: Gamepad2 }, { id: 'fabric', name: 'Fabric', description: '安装 Fabric 模组', icon: Layers3 }, { id: 'forge', name: 'Forge', description: '安装 Forge 模组', icon: Hammer }, { id: 'neoforge', name: 'NeoForge', description: '安装 NeoForge 模组', icon: Blocks }] as const).map(item => <button type="button" key={item.id} className={`loader-option ${loader === item.id ? 'selected' : ''}`} aria-pressed={loader === item.id} disabled={saving} onClick={() => setLoader(item.id)}><item.icon size={21} /><strong>{item.name}</strong><small>{item.description}</small></button>)}</div></div>
+    {loader !== 'vanilla' && <label className="field"><span>{loaderNames[loader]} 版本 {loaderLoading && <Spinner size={14} />}</span><select value={loaderVersion} onChange={event => setLoaderVersion(event.target.value)} disabled={loaderLoading || saving || !loaderVersions.length} required>{loaderLoading ? <option value="">正在读取兼容版本…</option> : loaderVersions.length ? loaderVersions.map(item => <option key={item.version} value={item.version}>{item.version} · {item.recommended ? '推荐版' : item.stable ? '稳定版' : '测试版'}</option>) : <option value="">{loaderError ? '版本读取失败' : '没有兼容的加载器版本'}</option>}</select><small>优先选择官方推荐版，其次稳定版。没有兼容版本时，请更换 Minecraft 版本。</small></label>}
+    {loader !== 'vanilla' && loaderError && <ErrorBox message={loaderError} retry={() => setLoaderAttempt(attempt => attempt + 1)} />}
     {error && <ErrorBox message={error} retry={!versions.length ? () => void load() : undefined} />}
-    <div className="download-submit"><p>{isDesktop ? '开始后可在“下载任务”查看进度或取消下载。' : '浏览器预览只创建记录；游戏安装和启动需使用桌面版。'}</p><button className="button primary" disabled={loading || saving || !version || !fabricReady}>{saving ? <Spinner size={16} /> : <Download size={16} />}{saving ? '正在创建任务…' : isDesktop ? '下载并安装' : '创建预览实例'}</button></div>
+    <div className="download-submit"><p>{isDesktop ? '开始后可在“下载任务”查看进度或取消下载。' : '浏览器预览只创建记录；游戏安装和启动需使用桌面版。'}</p><button className="button primary" disabled={loading || saving || !version || !loaderReady}>{saving ? <Spinner size={16} /> : <Download size={16} />}{saving ? '正在创建任务…' : isDesktop ? '下载并安装' : '创建预览实例'}</button></div>
   </form>
 }
