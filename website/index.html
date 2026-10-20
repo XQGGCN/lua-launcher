@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="light">
     <meta name="theme-color" content="#f4f6f8">
-    <meta name="description" content="Lua · 未央，一个免费开源的 Minecraft Java 桌面启动器。了解 0.3.0 Alpha、Forge / NeoForge、自动内存、模组分类和 Microsoft 服务接入进度。">
+    <meta name="description" content="Lua · 未央，一个免费开源的 Minecraft Java 桌面启动器。了解 0.4.0 Alpha、Java 自动准备、Forge / NeoForge、自动内存、模组分类和 Microsoft 服务接入进度。">
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self'; style-src 'self'; script-src 'none'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
     <meta name="referrer" content="no-referrer">
     <title>Lua · 未央 | Minecraft Java 启动器</title>
@@ -36,7 +36,7 @@
           <h1 id="hero-title">清楚管理你的<br>Minecraft。</h1>
           <p class="hero-description">把版本、实例、模组与账户放在熟悉的位置。Lua · 未央，为 Minecraft Java 提供简洁实用的桌面界面。</p>
           <div class="hero-actions">
-            <a class="button primary" href="https://github.com/XQGGCN/lua-launcher/releases/tag/v0.3.0">获取 0.3.0 Alpha <span aria-hidden="true">↗</span></a>
+            <a class="button primary" href="https://github.com/XQGGCN/lua-launcher/releases/tag/v0.4.0">获取 0.4.0 Alpha <span aria-hidden="true">↗</span></a>
             <a class="text-link" href="#status">先了解当前状态 <span aria-hidden="true">↓</span></a>
           </div>
         </div>
@@ -79,8 +79,8 @@
           </article>
           <article>
             <h3>Java 与自动内存</h3>
-            <p>探测本机 Java，按系统可用内存自动分配并保留运行余量，也可设置手动值。启动时重新计算，任务与日志方便排查。</p>
-            <span class="feature-detail">Java 需要自行安装，尚不提供自动下载</span>
+            <p>探测并优先复用本机 Java，缺失时从官方来源下载、校验并安装。按可用内存自动分配并保留余量，也可手动设置。</p>
+            <span class="feature-detail">按官方清单自动准备所需 Java，也可手动选择运行时</span>
           </article>
           <article>
             <h3>Microsoft 账户验证</h3>
@@ -94,7 +94,7 @@
         <div class="container download-layout">
           <div class="section-intro">
             <h2 id="download-title">选择你的桌面平台。</h2>
-            <p>0.3.0 是免费公开的 Alpha 预览，适合体验界面、安装流程和反馈问题。当前服务接入仍阻止完整登录与游戏启动。</p>
+            <p>0.4.0 是免费公开的 Alpha 预览，适合体验界面、安装流程和反馈问题。当前服务接入仍阻止完整登录与游戏启动。</p>
             <a class="text-link" href="https://github.com/XQGGCN/lua-launcher#获取构建">阅读构建下载说明 <span aria-hidden="true">↗</span></a>
           </div>
           <div class="download-content">
@@ -103,7 +103,7 @@
               <div><dt>macOS <span>Apple silicon</span></dt><dd>磁盘映像 <code>.dmg</code> / <code>.zip</code></dd></div>
               <div><dt>Linux <span>x64</span></dt><dd>应用包 <code>.AppImage</code></dd></div>
             </dl>
-            <p class="download-help">在 0.3.0 Release 的 Assets 获取已发布的平台安装包，构建状态以 GitHub Actions 为准。Java 需要自行安装，Lua 不捆绑游戏、模组或整合包。安装包尚未代码签名或公证；Windows 与 Linux 的实际游戏运行仍待验证。</p>
+            <p class="download-help">在 0.4.0 Release 的 Assets 获取平台安装包。该发布提交已通过 Windows、macOS 和 Linux 测试与构建；实际游戏运行仍待服务接入验证。Java 支持自动准备，也可手动选择；Lua 不捆绑游戏、模组或整合包。安装包尚未代码签名或公证；Windows 与 Linux 的实际游戏运行仍待验证。</p>
           </div>
         </div>
       </section>
@@ -115,13 +115,13 @@
         </div>
         <div class="release-grid">
           <article class="release-current">
-            <div class="release-heading"><h3>0.3.0</h3><span>公开 Alpha</span></div>
-            <p>新增 Forge / NeoForge 安装、自动内存与 19 个模组分类。本地 156 项确定性测试通过，三平台构建结果以对应 CI 为准。</p>
-            <a class="text-link" href="https://github.com/XQGGCN/lua-launcher#验证状态">验证范围 <span aria-hidden="true">↗</span></a>
+            <div class="release-heading"><h3>0.4.0</h3><span>公开 Alpha</span></div>
+            <p>新增 Java 自动下载、校验、安装与复用；可提前准备 Java 17、21、25。本地 201 项测试通过，三平台测试与构建通过，完整登录及游戏运行仍待服务接入。</p>
+            <a class="text-link" href="https://github.com/XQGGCN/lua-launcher/actions/runs/39515618559">验证范围 <span aria-hidden="true">↗</span></a>
           </article>
           <article class="release-next">
             <div class="release-heading"><h3>验证进度</h3><span>完整游戏运行仍待验证</span></div>
-            <p>macOS ARM64 / Java 17 已完成 Forge 47.4.0 与 NeoForge 20.2.93 的真实安装及产物校验。Minecraft API 已提交审核，当前仍返回 403。</p>
+            <p>0.3.0 加载器安装实测：macOS ARM64 / Java 17 已完成 Forge 47.4.0 与 NeoForge 20.2.93 的真实安装及产物校验。Minecraft API 已提交审核，当前仍返回 403。</p>
             <a class="text-link" href="https://github.com/XQGGCN/lua-launcher/actions">查看平台构建状态 <span aria-hidden="true">↗</span></a>
           </article>
         </div>
