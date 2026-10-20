@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { CheckCircle2, Download, Gamepad2, Layers3, Package, Play, Plus, RefreshCw, Square, Terminal } from 'lucide-react'
-import { call, errorText, isDesktop, type FabricVersion, type Instance, type Progress, type Version } from '../api'
+import { call, errorText, isDesktop, type FabricVersion, type Instance, type Progress, type ResourceSource, type Version } from '../api'
 import { bytes, EmptyState, ErrorBox, PageHeading, percent, Spinner } from './ui'
+import { resourceSources } from './ResourceSourcePicker'
 
 export type DownloadInput = { name: string; version: string; loader: 'vanilla' | 'fabric'; loaderVersion?: string }
 export type PackTask = {
   id: string
   name: string
+  source: ResourceSource | 'local'
   status: 'active' | 'error' | 'complete' | 'cancelled'
   startedAt: number
   existingIds: string[]
@@ -26,7 +28,7 @@ type Props = {
   cancel: (id: string) => Promise<void>
   showGame: (id: string) => void
   showLogs: (id: string) => void
-  showPacks: () => void
+  showPacks: (source?: ResourceSource | 'local') => void
 }
 
 export default function DownloadsView(props: Props) {
@@ -50,7 +52,7 @@ export default function DownloadsView(props: Props) {
     .sort((a, b) => (order[a.state] - order[b.state]) || (b.created - a.created))
   const action = async (operation: () => Promise<void>) => { setError(''); try { await operation() } catch (error) { setError(errorText(error)) } }
   return <>
-    <PageHeading title="游戏下载" subtitle="安装 Minecraft 原版或 Fabric，查看下载进度和失败记录。" action={<button className="button secondary" onClick={props.showPacks}><Package size={16} />安装整合包</button>} />
+    <PageHeading title="游戏下载" subtitle="安装 Minecraft 原版或 Fabric，查看下载进度和失败记录。" action={<button className="button secondary" onClick={() => props.showPacks()}><Package size={16} />安装整合包</button>} />
     <div className="page-tabs" role="tablist" aria-label="下载页面">
       <button role="tab" aria-selected={tab === 'game'} className={tab === 'game' ? 'selected' : ''} onClick={() => setTab('game')}><Plus size={16} />下载游戏</button>
       <button role="tab" aria-selected={tab === 'tasks'} className={tab === 'tasks' ? 'selected' : ''} onClick={() => setTab('tasks')}><Download size={16} />下载任务{active > 0 && <span className="heading-count">{active}</span>}{failed > 0 && <span className="task-failure-dot" aria-label={`${failed} 个任务需要处理`} />}</button>
@@ -63,7 +65,7 @@ export default function DownloadsView(props: Props) {
           if (entry.kind === 'pack') {
             const task = entry.task
             return <article className="download-card" key={task.id}>
-          <div className="download-heading"><span className="download-icon"><Package size={23} /></span><div><h3>{task.name}</h3><p>整合包 · {task.status === 'active' ? '正在获取整合包文件' : task.status === 'error' ? '下载失败' : task.status === 'cancelled' ? '已取消下载' : '安装完成'}</p></div>{task.status === 'active' ? <button className="button secondary" disabled={!task.id.startsWith('modpack-')} onClick={() => void action(() => props.cancel(task.id))}>取消下载</button> : <button className="button secondary" onClick={props.showPacks}>返回整合包</button>}</div>
+          <div className="download-heading"><span className="download-icon"><Package size={23} /></span><div><h3>{task.name}</h3><p>{task.source === 'local' ? '本地' : resourceSources[task.source].label} 整合包 · {task.status === 'active' ? '正在获取整合包文件' : task.status === 'error' ? '下载失败' : task.status === 'cancelled' ? '已取消下载' : '安装完成'}</p></div>{task.status === 'active' ? <button className="button secondary" disabled={!task.id.startsWith('modpack-')} onClick={() => void action(() => props.cancel(task.id))}>取消下载</button> : <button className="button secondary" onClick={() => props.showPacks(task.source)}>返回整合包</button>}</div>
           {task.status === 'active' && <><div className="download-meta"><span>{progress[task.id]?.phase || '正在准备整合包…'}</span><span>{percent(progress[task.id])}%</span></div><progress value={progress[task.id]?.total ? percent(progress[task.id]) : undefined} max="100" aria-label={`${task.name} 下载进度`} /></>}
           {task.error && <ErrorBox message={task.error} />}
             </article>
