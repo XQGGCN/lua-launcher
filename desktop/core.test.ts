@@ -292,7 +292,7 @@ test('one launch owns an instance while Java detection is pending', async t => {
   t.after(() => fs.rm(directory, { recursive: true, force: true }))
   const fake = fixture()
   const processes = processHarness()
-  const core = new LauncherCore(directory, undefined, { fetch: fake.fetcher, spawn: processes.spawn, platform: 'linux', arch: 'x64' })
+  const core = new LauncherCore(directory, undefined, { fetch: fake.fetcher, spawn: processes.spawn, memorySystem: { totalmem: () => 16 * 1024 ** 3, freemem: () => 12 * 1024 ** 3 }, platform: 'linux', arch: 'x64' })
   await core.init()
   const instance = await core.createInstance({ name: 'Launch lock', version: '1.20.1', loader: 'vanilla' })
   await core.install(instance.id)
@@ -325,7 +325,7 @@ test('launch rejects offline and invalid credentials before preparing Java', asy
   t.after(() => fs.rm(directory, { recursive: true, force: true }))
   const fake = fixture()
   const processes = processHarness()
-  const core = new LauncherCore(directory, undefined, { fetch: fake.fetcher, spawn: processes.spawn, platform: 'linux', arch: 'x64' })
+  const core = new LauncherCore(directory, undefined, { fetch: fake.fetcher, spawn: processes.spawn, memorySystem: { totalmem: () => 16 * 1024 ** 3, freemem: () => 12 * 1024 ** 3 }, platform: 'linux', arch: 'x64' })
   await core.init()
   const instance = await core.createInstance({ name: 'Microsoft credentials', version: '1.20.1', loader: 'vanilla' })
   await core.install(instance.id)
@@ -358,7 +358,7 @@ test('the final session guard blocks a logout during preparation and releases th
   t.after(() => fs.rm(directory, { recursive: true, force: true }))
   const fake = fixture()
   const processes = processHarness()
-  const core = new LauncherCore(directory, undefined, { fetch: fake.fetcher, spawn: processes.spawn, platform: 'linux', arch: 'x64' })
+  const core = new LauncherCore(directory, undefined, { fetch: fake.fetcher, spawn: processes.spawn, memorySystem: { totalmem: () => 16 * 1024 ** 3, freemem: () => 12 * 1024 ** 3 }, platform: 'linux', arch: 'x64' })
   await core.init()
   const instance = await core.createInstance({ name: 'Session guard', version: '1.20.1', loader: 'vanilla' })
   await core.install(instance.id)
@@ -397,7 +397,7 @@ test('the final session guard blocks a logout during preparation and releases th
   assert.equal(argument('--userType'), 'msa')
   assert.equal(argument('--clientId'), microsoftAccount.clientId)
   assert.equal(argument('--xuid'), microsoftAccount.xuid)
-  assert.ok(args.includes('-Dminecraft.launcher.version=0.2.2'))
+  assert.ok(args.includes('-Dminecraft.launcher.version=0.3.0'))
   const closed = once(processes.children[0], 'close')
   core.stop(instance.id)
   await closed
@@ -409,7 +409,7 @@ test('a failed prelaunch releases its reservation so the same instance can retry
   t.after(() => fs.rm(directory, { recursive: true, force: true }))
   const fake = fixture()
   const processes = processHarness()
-  const core = new LauncherCore(directory, undefined, { fetch: fake.fetcher, spawn: processes.spawn, platform: 'linux', arch: 'x64' })
+  const core = new LauncherCore(directory, undefined, { fetch: fake.fetcher, spawn: processes.spawn, memorySystem: { totalmem: () => 16 * 1024 ** 3, freemem: () => 12 * 1024 ** 3 }, platform: 'linux', arch: 'x64' })
   await core.init()
   const instance = await core.createInstance({ name: 'Launch retry', version: '1.20.1', loader: 'vanilla' })
   await core.install(instance.id)
@@ -429,7 +429,7 @@ test('a late close from a failed child cannot erase a newer running process', as
   t.after(() => fs.rm(directory, { recursive: true, force: true }))
   const fake = fixture()
   const processes = processHarness(1)
-  const core = new LauncherCore(directory, undefined, { fetch: fake.fetcher, spawn: processes.spawn, platform: 'linux', arch: 'x64' })
+  const core = new LauncherCore(directory, undefined, { fetch: fake.fetcher, spawn: processes.spawn, memorySystem: { totalmem: () => 16 * 1024 ** 3, freemem: () => 12 * 1024 ** 3 }, platform: 'linux', arch: 'x64' })
   await core.init()
   const instance = await core.createInstance({ name: 'Child ownership', version: '1.20.1', loader: 'vanilla' })
   await core.install(instance.id)
@@ -450,7 +450,7 @@ test('unexpected crash signals are reported instead of being treated as normal s
   t.after(() => fs.rm(directory, { recursive: true, force: true }))
   const fake = fixture()
   const processes = processHarness()
-  const core = new LauncherCore(directory, undefined, { fetch: fake.fetcher, spawn: processes.spawn, platform: 'linux', arch: 'x64' })
+  const core = new LauncherCore(directory, undefined, { fetch: fake.fetcher, spawn: processes.spawn, memorySystem: { totalmem: () => 16 * 1024 ** 3, freemem: () => 12 * 1024 ** 3 }, platform: 'linux', arch: 'x64' })
   await core.init()
   const instance = await core.createInstance({ name: 'Crash signals', version: '1.20.1', loader: 'vanilla' })
   await core.install(instance.id)
@@ -741,13 +741,13 @@ test('online pack cancellation interrupts archive, manifest, and Fabric preparat
 test('unsupported modpacks are inspectable but rejected before creating an instance or downloading game files', async t => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'lua-core-pack-unsupported-'))
   t.after(() => fs.rm(directory, { recursive: true, force: true }))
-  const archiveFile = path.join(directory, 'forge.mrpack')
-  await fs.writeFile(archiveFile, testPack([], {}, { minecraft: '1.20.1', forge: '47.0.0' }))
+  const archiveFile = path.join(directory, 'quilt.mrpack')
+  await fs.writeFile(archiveFile, testPack([], {}, { minecraft: '1.20.1', 'quilt-loader': '0.26.0' }))
   const fake = fixture()
   const core = new LauncherCore(path.join(directory, 'data'), undefined, { fetch: fake.fetcher })
   await core.init()
-  assert.match((await core.inspectModpack(archiveFile)).unsupportedReason ?? '', /forge/)
-  await assert.rejects(core.importModpack(archiveFile), /forge/)
+  assert.match((await core.inspectModpack(archiveFile)).unsupportedReason ?? '', /quilt-loader/)
+  await assert.rejects(core.importModpack(archiveFile), /quilt-loader/)
   assert.deepEqual(core.snapshot().instances, [])
   assert.deepEqual(fake.requests, [])
 })
@@ -795,7 +795,7 @@ test('Fabric selection and modpack version lists only offer supported configurat
   const core = new LauncherCore(directory, undefined, { fetch: fake.fetcher })
   await core.init()
   assert.deepEqual(await core.fabricVersions('1.20.1'), [{ version: '0.16.10', stable: true }])
-  assert.deepEqual((await core.modpackVersions('example')).map(version => version.id), ['a'])
+  assert.deepEqual((await core.modpackVersions('example')).map(version => version.id), ['a', 'forge'])
   await assert.rejects(core.createInstance({ name: 'Wrong loader', version: '1.20.1', loader: 'fabric', loaderVersion: '99.0.0' }), /不支持所选/)
 })
 
@@ -823,7 +823,7 @@ test('BBSMC searches use their own API and external versions remain visible with
   assert(searchUrls.every(url => url.hostname === 'api.bbsmc.net'))
   assert.equal(searchUrls[0].searchParams.get('query'), '中文')
   assert.deepEqual(JSON.parse(searchUrls[1].searchParams.get('facets')!), [
-    ['project_type:modpack'], ['categories:fabric', 'categories:minecraft', 'categories:vanilla'],
+    ['project_type:modpack'], ['categories:fabric', 'categories:forge', 'categories:neoforge', 'categories:minecraft', 'categories:vanilla'],
   ])
   const versions = await core.modpackVersions('shared', 'bbsmc')
   assert.equal(versions.length, 1)
@@ -983,4 +983,27 @@ test('BBSMC mrpack downloads can cancel by source-specific task ID and install v
   assert.equal(installed.modpack?.modrinthVersionId, undefined)
   assert.equal(installed.status, 'ready')
   assert.equal(await fs.readFile(path.join(core.getInstancePath(installed.id), client.path), 'utf8'), 'client mod')
+})
+
+test('mod category filters combine with version and loader, mapping BBSMC native labels', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'lua-core-categories-'))
+  t.after(() => fs.rm(directory, { recursive: true, force: true }))
+  const urls: URL[] = []
+  const core = new LauncherCore(directory, undefined, { fetch: async input => {
+    urls.push(new URL(String(input)))
+    return new Response(JSON.stringify({ hits: [], total_hits: 0, offset: 0, limit: 20 }))
+  } })
+  await core.searchMods('', { category: 'optimization', loader: 'neoforge', gameVersion: '1.21.1' })
+  await core.searchMods('', { category: 'optimization', loader: 'forge', gameVersion: '1.20.1', source: 'bbsmc' })
+  assert.equal(urls[0].hostname, 'api.modrinth.com')
+  assert.deepEqual(JSON.parse(urls[0].searchParams.get('facets')!), [
+    ['project_type:mod'], ['categories:optimization'], ['categories:neoforge'], ['versions:1.21.1'],
+  ])
+  assert.equal(urls[1].hostname, 'api.bbsmc.net')
+  assert.deepEqual(JSON.parse(urls[1].searchParams.get('facets')!), [
+    ['project_type:mod'], ['categories:优化'], ['categories:forge'], ['versions:1.20.1'],
+  ])
+  await assert.rejects(core.searchMods('', { category: 'optimization],[project_type:modpack' }), /功能分类/)
+  await assert.rejects(core.searchMods('', { category: '__proto__' }), /功能分类/)
+  assert.equal(urls.length, 2)
 })

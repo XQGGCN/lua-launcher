@@ -49,12 +49,27 @@ test('client selection skips server-only files and applies client overrides last
 })
 
 test('unknown loaders and old Minecraft releases produce an unsupported preview', () => {
-  for (const dependency of ['forge', 'neoforge', 'quilt-loader', 'future-loader']) {
+  for (const dependency of ['quilt-loader', 'future-loader']) {
     const pack = parseModpack(archive({ dependencies: { minecraft: '1.20.1', [dependency]: '1.0' } }))
     assert.match(pack.preview.unsupportedReason ?? '', new RegExp(dependency))
   }
   assert.match(parseModpack(archive({ dependencies: { minecraft: '1.19.4' } })).preview.unsupportedReason ?? '', /1.20.1/)
   assert.equal(parseModpack(archive({ dependencies: { minecraft: '26.1' } })).preview.loader, 'vanilla')
+})
+
+test('Forge and NeoForge packs retain exact pins and reject conflicting loaders', () => {
+  for (const [loader, build] of [['forge', '47.4.0'], ['neoforge', '20.2.93']]) {
+    const pack = parseModpack(archive({ dependencies: { minecraft: '1.20.2', [loader]: build } }))
+    assert.equal(pack.preview.loader, loader)
+    assert.equal(pack.preview.loaderVersion, build)
+    assert.equal(pack.preview.unsupportedReason, undefined)
+  }
+  assert.throws(() => parseModpack(archive({
+    dependencies: { minecraft: '1.20.1', 'fabric-loader': '0.16.10', forge: '47.4.0' },
+  })), /多个模组加载器/)
+  assert.throws(() => parseModpack(archive({
+    dependencies: { minecraft: '1.20.1', forge: '../47' },
+  })), /版本格式无效/)
 })
 
 test('index and ZIP paths reject traversal, Windows aliases, case collisions, and file parents', () => {

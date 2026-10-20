@@ -6,7 +6,7 @@ const methods = new Set([
   'stop', 'updateSettings', 'detectJava', 'searchMods', 'modVersions', 'installMod',
   'openInstance', 'openExternal', 'account', 'login', 'cancelLogin', 'logout',
   'logs',
-  'fabricVersions', 'chooseModpack', 'importModpack', 'searchModpacks',
+  'fabricVersions', 'loaderVersions', 'memoryInfo', 'chooseModpack', 'importModpack', 'searchModpacks',
   'modpackVersions', 'installModpack', 'authConfig', 'saveAuthConfig', 'authState',
 ])
 contextBridge.exposeInMainWorld('launcher', {

@@ -6,6 +6,7 @@ import { AuthError, AuthManager, type DeviceCode } from './auth'
 import { AuthConfigStore } from './auth-config'
 import { PackSelections } from './pack-selection'
 import { AccountCoordinator } from './accounts'
+import { getMemoryInfo } from './memory'
 
 declare const __LUA_MICROSOFT_CLIENT_ID__: string
 
@@ -146,12 +147,17 @@ if (hasLock) app.whenReady().then(async () => {
       case 'snapshot': return core.snapshot()
       case 'versions': return core.versions()
       case 'fabricVersions': return core.fabricVersions(text(args[0], 80))
+      case 'loaderVersions': {
+        const loader = text(args[1], 12)
+        if (loader !== 'fabric' && loader !== 'forge' && loader !== 'neoforge') throw new Error('不支持的模组加载器')
+        return core.loaderVersions(text(args[0], 80), loader)
+      }
       case 'createInstance': {
         const input = object(args[0])
         const loader = text(input.loader)
-        if (loader !== 'vanilla' && loader !== 'fabric') throw new Error('首版支持原版与 Fabric')
+        if (!['vanilla', 'fabric', 'forge', 'neoforge'].includes(loader)) throw new Error('不支持的模组加载器')
         return core.createInstance({
-          name: text(input.name, 80), version: text(input.version, 80), loader,
+          name: text(input.name, 80), version: text(input.version, 80), loader: loader as 'vanilla' | 'fabric' | 'forge' | 'neoforge',
           loaderVersion: input.loaderVersion === undefined || input.loaderVersion === '' ? undefined : text(input.loaderVersion, 80),
         })
       }
@@ -171,17 +177,31 @@ if (hasLock) app.whenReady().then(async () => {
       case 'updateSettings': {
         const input = object(args[0])
         const current = core.snapshot().settings
+        const memoryMode = input.memoryMode === undefined ? current.memoryMode : text(input.memoryMode, 10)
+        if (memoryMode !== 'auto' && memoryMode !== 'manual') throw new Error('不支持的内存分配模式')
         return core.updateSettings({
+          memoryMode,
           memoryMb: input.memoryMb === undefined ? current.memoryMb : Number(input.memoryMb),
           javaPath: input.javaPath === undefined ? current.javaPath : text(input.javaPath, 2048),
           concurrentDownloads: input.concurrentDownloads === undefined ? current.concurrentDownloads : Number(input.concurrentDownloads),
         } as LauncherSettings)
+      }
+      case 'memoryInfo': {
+        const id = args[0] === undefined ? undefined : text(args[0], 80)
+        const instance = id === undefined ? undefined : core.snapshot().instances.find(item => item.id === id)
+        if (id !== undefined && !instance) throw new Error('游戏实例不存在')
+        return getMemoryInfo({
+          gameVersion: instance?.version,
+          modded: instance ? instance.loader !== 'vanilla' : false,
+          javaArch: process.arch,
+        })
       }
       case 'detectJava': return core.detectJava()
       case 'searchMods': {
         const options = args[1] === undefined ? {} : object(args[1])
         return core.searchMods(text(args[0], 200), {
           loader: options.loader === undefined ? undefined : text(options.loader, 30),
+          category: options.category === undefined ? undefined : text(options.category, 40),
           gameVersion: options.gameVersion === undefined ? undefined : text(options.gameVersion, 50),
           offset: options.offset === undefined ? undefined : Number(options.offset),
           source: resourceSource(options.source),

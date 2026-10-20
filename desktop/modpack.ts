@@ -24,7 +24,7 @@ export interface PackPreview {
   versionId: string
   summary?: string
   minecraftVersion: string
-  loader: 'vanilla' | 'fabric'
+  loader: 'vanilla' | 'fabric' | 'forge' | 'neoforge'
   loaderVersion?: string
   fileCount: number
   totalBytes: number
@@ -215,12 +215,15 @@ export function parseModpack(archive: Buffer): ParsedModpack {
   const dependencies = object(index.dependencies, '依赖')
   if (Object.keys(dependencies).length > 16 || Object.keys(dependencies).some(key => key.length > 64)) throw new Error('整合包依赖列表无效')
   const minecraftVersion = text(dependencies.minecraft, 'Minecraft 版本', 64)
-  const unsupported = Object.keys(dependencies).filter(key => key !== 'minecraft' && key !== 'fabric-loader')
-  const loader: PackPreview['loader'] = dependencies['fabric-loader'] === undefined ? 'vanilla' : 'fabric'
-  const loaderVersion = loader === 'fabric' ? text(dependencies['fabric-loader'], 'Fabric 版本', 64) : undefined
-  if (loaderVersion && !/^[a-zA-Z0-9_.+\-]+$/.test(loaderVersion)) throw new Error('Fabric 版本格式无效')
+  const loaderKeys = { 'fabric-loader': 'fabric', forge: 'forge', neoforge: 'neoforge' } as const
+  const selected = Object.keys(loaderKeys).filter(key => dependencies[key] !== undefined) as Array<keyof typeof loaderKeys>
+  if (selected.length > 1) throw new Error('整合包不能同时指定多个模组加载器')
+  const unsupported = Object.keys(dependencies).filter(key => key !== 'minecraft' && !(key in loaderKeys))
+  const loader: PackPreview['loader'] = selected.length ? loaderKeys[selected[0]] : 'vanilla'
+  const loaderVersion = selected.length ? text(dependencies[selected[0]], '加载器版本', 64) : undefined
+  if (loaderVersion && (!/^[a-zA-Z0-9_.+\-]+$/.test(loaderVersion) || loaderVersion.includes('..'))) throw new Error('加载器版本格式无效')
   const unsupportedReason = unsupported.length
-    ? `暂不支持整合包依赖：${unsupported.join('、')}；当前支持原版和 Fabric`
+    ? `暂不支持整合包依赖：${unsupported.join('、')}；当前支持原版、Fabric、Forge 和 NeoForge`
     : !supportedMinecraft(minecraftVersion) ? '当前仅支持 Minecraft 1.20.1 及之后的正式版本' : undefined
   if (!Array.isArray(index.files) || index.files.length > MODPACK_LIMITS.files) throw new Error('整合包文件列表无效或数量超出限制')
   const indexedPaths = new PathIndex()

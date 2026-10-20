@@ -7,18 +7,21 @@ import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import { promisify } from 'node:util'
 import AdmZip from 'adm-zip'
 import { MODPACK_LIMITS, PACK_REDIRECT_HOSTS, readModpack, validatePackPath, validatePackUrl, type PackPreview, type ParsedModpack } from './modpack'
+import { installForge, loaderMetadataUrl, parseLoaderVersions, type LoaderVersion } from './loader'
+import { effectiveMemory, type MemorySystem } from './memory'
 export type { PackPreview } from './modpack'
 
 const execFileAsync = promisify(execFile)
 const MANIFEST_URL = 'https://piston-meta.mojang.com/mc/game/version_manifest_v2.json'
 const FABRIC_URL = 'https://meta.fabricmc.net/v2'
 const MODRINTH_URL = 'https://api.modrinth.com/v2'
-const USER_AGENT = 'LuaLauncher/0.2.2 (+https://github.com/XQGGCN/lua-launcher)'
+const USER_AGENT = 'LuaLauncher/0.3.0 (+https://github.com/XQGGCN/lua-launcher)'
 const NETWORK_HOSTS = new Set([
   'piston-meta.mojang.com', 'piston-data.mojang.com', 'launchermeta.mojang.com',
   'launcher.mojang.com', 'libraries.minecraft.net', 'resources.download.minecraft.net',
   'meta.fabricmc.net', 'maven.fabricmc.net', 'api.modrinth.com', 'cdn.modrinth.com',
   'api.bbsmc.net', 'cdn.bbsmc.net',
+  'maven.minecraftforge.net', 'maven.neoforged.net', 'files.minecraftforge.net',
 ])
 
 export type ResourceSource = 'modrinth' | 'bbsmc'
@@ -30,10 +33,16 @@ function resourceProvider(source: ResourceSource = 'modrinth') {
   if (source !== 'modrinth' && source !== 'bbsmc') throw new Error('无效的资源来源')
   return RESOURCE_PROVIDERS[source]
 }
+const BBSMC_MOD_CATEGORIES: Record<string, string> = {
+  adventure: '冒险', cursed: '诅咒', decoration: '装饰', economy: '经济', equipment: '装备',
+  food: '食物', 'game-mechanics': '游戏机制', library: '前置', magic: '魔法', management: '管理',
+  minigame: '小游戏', mobs: '生物', optimization: '优化', social: '社交', storage: '存储',
+  technology: '科技', transportation: '交通', utility: '实用工具', worldgen: '世界生成',
+}
 /** Permission and browser-verification responses should not trigger automatic download retries. */
 class RemoteAccessError extends Error {}
 
-export type Loader = 'vanilla' | 'fabric'
+export type Loader = 'vanilla' | 'fabric' | 'forge' | 'neoforge'
 export type InstanceStatus = 'not-installed' | 'installing' | 'ready' | 'running' | 'error'
 export interface Instance {
   id: string
@@ -59,6 +68,7 @@ export interface Instance {
   }
 }
 export interface LauncherSettings {
+  memoryMode?: 'auto' | 'manual'
   memoryMb: number
   javaPath: string
   concurrentDownloads: number
@@ -139,7 +149,7 @@ interface VersionManifest {
   type: string
   mainClass: string
   assetIndex: Download & { id: string }
-  downloads: { client: Download }
+  downloads: { client: Download; client_mappings?: Download }
   libraries: Library[]
   arguments: { game: GameArgument[]; jvm: GameArgument[] }
   javaVersion?: { majorVersion: number }
@@ -154,6 +164,7 @@ interface InstalledManifest {
   mainClass: string
   fabricArguments: { game: GameArgument[]; jvm: GameArgument[] }
   loggingFile?: string
+  loaderLibraryDirectory?: string
 }
 interface ManifestIndex { versions: Array<VersionSummary & Download> }
 interface CoreOptions {
@@ -163,6 +174,7 @@ interface CoreOptions {
   renameFile?: typeof fs.rename
   platform?: NodeJS.Platform
   arch?: string
+  memorySystem?: MemorySystem
 }
 interface DownloadJob { file: string; download: Download; allowedHosts?: ReadonlySet<string> }
 
@@ -253,12 +265,13 @@ async function hashFile(file: string, algorithm: 'sha1' | 'sha512'): Promise<str
 
 export class LauncherCore {
   private instances: Instance[] = []
-  private settings: LauncherSettings = { memoryMb: 4096, javaPath: '', concurrentDownloads: 8 }
+  private settings: LauncherSettings = { memoryMode: 'auto', memoryMb: 4096, javaPath: '', concurrentDownloads: 8 }
   private readonly fetcher: typeof globalThis.fetch
   private readonly spawnProcess: typeof spawn
   private readonly renameFile: typeof fs.rename
   private readonly platform: NodeJS.Platform
   private readonly arch: string
+  private readonly memorySystem: MemorySystem
   private installs = new Map<string, AbortController>()
   private processes = new Map<string, ChildProcess>()
   private launching = new Set<string>()
@@ -274,6 +287,7 @@ export class LauncherCore {
     this.renameFile = options.renameFile ?? fs.rename
     this.platform = options.platform ?? process.platform
     this.arch = normalizeArch(options.arch ?? process.arch)
+    this.memorySystem = options.memorySystem ?? {}
   }
 
   async init(): Promise<LauncherSnapshot> {
@@ -283,7 +297,7 @@ export class LauncherCore {
       if (state.schema !== 1 || !Array.isArray(state.instances)) throw new Error('不支持的启动器数据格式')
       this.instances = state.instances.map((item: Instance) => {
         if (!/^[a-f0-9-]{36}$/.test(item.id) || !isSupportedVersion(item.version) ||
-            !['vanilla', 'fabric'].includes(item.loader) || typeof item.name !== 'string') {
+            !['vanilla', 'fabric', 'forge', 'neoforge'].includes(item.loader) || typeof item.name !== 'string') {
           throw new Error('实例数据损坏，请检查 launcher.json')
         }
         return { ...item, status: item.status === 'running' ? 'ready' : item.status === 'installing' ? 'not-installed' : item.status }
@@ -330,10 +344,13 @@ export class LauncherCore {
     const name = String(input.name ?? '').trim()
     if (!name || name.length > 64) throw new Error('实例名称需要 1–64 个字符')
     if (!isSupportedVersion(input.version)) throw new Error('首版支持 Minecraft 1.20.1 及之后的正式版本')
-    if (input.loader !== 'vanilla' && input.loader !== 'fabric') throw new Error('首版仅支持原版和 Fabric')
-    if (input.loaderVersion && input.loader !== 'fabric') throw new Error('只有 Fabric 实例可以指定加载器版本')
-    if (input.loaderVersion && !(await this.fabricVersions(input.version)).some(loader => loader.version === input.loaderVersion)) {
-      throw new Error('此 Minecraft 版本不支持所选 Fabric Loader')
+    if (!['vanilla', 'fabric', 'forge', 'neoforge'].includes(input.loader)) throw new Error('无效的模组加载器')
+    if (input.loaderVersion && input.loader === 'vanilla') throw new Error('原版实例不能指定加载器版本')
+    if (input.loader !== 'vanilla') {
+      const available = await this.loaderVersions(input.version, input.loader)
+      if (!available.length || (input.loaderVersion && !available.some(loader => loader.version === input.loaderVersion))) {
+        throw new Error('此 Minecraft 版本不支持所选加载器版本')
+      }
     }
     const versions = await this.versions()
     if (!versions.some(item => item.id === input.version)) throw new Error('该 Minecraft 正式版本不存在')
@@ -348,6 +365,7 @@ export class LauncherCore {
   }
 
   private validateSettings(input: LauncherSettings): LauncherSettings {
+    if (input.memoryMode !== undefined && input.memoryMode !== 'auto' && input.memoryMode !== 'manual') throw new Error('无效的内存分配方式')
     if (!Number.isInteger(input.memoryMb) || input.memoryMb < 1024 || input.memoryMb > 65536) {
       throw new Error('内存需要在 1024–65536 MB 之间')
     }
@@ -358,7 +376,7 @@ export class LauncherCore {
     if (!Number.isInteger(input.concurrentDownloads) || input.concurrentDownloads < 1 || input.concurrentDownloads > 16) {
       throw new Error('并发下载数需要在 1–16 之间')
     }
-    return { memoryMb: input.memoryMb, javaPath: input.javaPath, concurrentDownloads: input.concurrentDownloads }
+    return { memoryMode: input.memoryMode ?? 'auto', memoryMb: input.memoryMb, javaPath: input.javaPath, concurrentDownloads: input.concurrentDownloads }
   }
 
   async updateSettings(settings: Partial<LauncherSettings>): Promise<LauncherSnapshot> {
@@ -443,6 +461,18 @@ export class LauncherCore {
     if (!isSupportedVersion(version)) throw new Error('当前仅支持 Minecraft 1.20.1 及之后的正式版本')
     const loaders = await this.json<Array<{ loader: FabricVersion }>>(`${FABRIC_URL}/versions/loader/${encodeURIComponent(version)}`, signal)
     return loaders.map(item => ({ version: sanitizeId(item.loader.version), stable: Boolean(item.loader.stable) }))
+  }
+
+  private async text(url: string, signal?: AbortSignal): Promise<string> {
+    return (await this.readResponse(await this.request(url, signal), 4 * 1024 * 1024)).toString('utf8')
+  }
+
+  async loaderVersions(version: string, loader: Exclude<Loader, 'vanilla'>, signal?: AbortSignal): Promise<LoaderVersion[]> {
+    if (!isSupportedVersion(version)) throw new Error('当前仅支持 Minecraft 1.20.1 及之后的正式版本')
+    if (loader === 'fabric') return this.fabricVersions(version, signal)
+    if (loader !== 'forge' && loader !== 'neoforge') throw new Error('无效的模组加载器')
+    const xml = await this.text(loaderMetadataUrl(loader, version), signal)
+    return parseLoaderVersions(xml, loader, version)
   }
 
   private async download(job: DownloadJob, signal: AbortSignal, onBytes: (bytes: number) => void = () => {}): Promise<void> {
@@ -591,7 +621,12 @@ export class LauncherCore {
       }
       const clientRelative = `versions/${sanitizeId(instance.version)}/${sanitizeId(instance.version)}.jar`
       const jobs: DownloadJob[] = [{ file: safeJoin(this.rootDir, clientRelative), download: version.downloads.client }]
-      const classpath: string[] = []
+      let classpath: string[] = []
+      const libraryClasspath = new Map<string, string>()
+      const libraryKey = (name: string) => {
+        const [group, artifact, , classifier = ''] = name.split(':')
+        return `${group}:${artifact}:${classifier}`
+      }
       const natives: Array<{ file: string; exclude: string[] }> = []
       for (const library of libraries) {
         signal.throwIfAborted()
@@ -602,6 +637,7 @@ export class LauncherCore {
           const file = safeJoin(this.rootDir, relative)
           jobs.push({ file, download })
           classpath.push(relative)
+          libraryClasspath.set(libraryKey(library.name), relative)
         }
         const nativeKey = library.natives?.[platformName(this.platform)]?.replace('${arch}', this.arch === 'ia32' ? '32' : '64')
         if (nativeKey) {
@@ -655,9 +691,36 @@ export class LauncherCore {
       await fs.mkdir(nativeDir, { recursive: true })
       progress('正在准备原生库', true)
       for (const native of natives) await this.extractNatives(native.file, nativeDir, native.exclude, signal)
+      let loaderLibraryDirectory: string | undefined
+      if (instance.loader === 'forge' || instance.loader === 'neoforge') {
+        const available = await this.loaderVersions(instance.version, instance.loader, signal)
+        const selected = instance.loaderVersion
+          ? available.find(item => item.version === instance.loaderVersion)
+          : available.find(item => item.recommended) ?? available.find(item => item.stable) ?? available[0]
+        if (!selected) throw new Error('所选加载器版本不可用')
+        const runtime = await this.selectJava(version.javaVersion?.majorVersion ?? 17)
+        signal.throwIfAborted()
+        const result = await installForge({
+          loader: instance.loader, game: instance.version, build: selected.version,
+          rootDir: this.rootDir, instanceDir: this.instanceDirectory(id), java: runtime.path,
+          clientFile: safeJoin(this.rootDir, clientRelative), clientMappings: version.downloads.client_mappings, signal,
+          download: (file, download) => this.download({ file, download }, signal, bytes => { downloadedBytes += bytes }),
+          text: url => this.text(url, signal),
+          progress: message => progress(message, true), log: message => this.log(id, 'info', message),
+        })
+        const relative = (file: string) => path.relative(this.rootDir, file).split(path.sep).join('/')
+        for (const library of result.classpath) libraryClasspath.set(libraryKey(library.name), relative(library.file))
+        classpath = [...libraryClasspath.values(), clientRelative]
+        mainClass = result.profile.mainClass
+        fabricArguments = result.profile.arguments
+        loaderLibraryDirectory = relative(result.directory)
+        if (result.profile.javaVersion) version.javaVersion = result.profile.javaVersion
+        instance.loaderVersion = selected.version
+      }
+      signal.throwIfAborted()
       const installed: InstalledManifest = {
         schema: 1, version, platform: this.platform, arch: this.arch,
-        classpath, mainClass, fabricArguments, loggingFile,
+        classpath, mainClass, fabricArguments, loggingFile, loaderLibraryDirectory,
       }
       await fs.writeFile(safeJoin(this.instanceDirectory(id), 'installed.json'), JSON.stringify(installed, null, 2), { mode: 0o600 })
       if (pack) {
@@ -667,7 +730,8 @@ export class LauncherCore {
       instance.status = 'ready'
       delete instance.error
       progress('安装完成', true)
-      this.log(id, 'info', `${instance.name} 安装完成（${instance.loader === 'fabric' ? `Fabric ${instance.loaderVersion}` : '原版'}）`)
+      const label = { vanilla: '原版', fabric: 'Fabric', forge: 'Forge', neoforge: 'NeoForge' }[instance.loader]
+      this.log(id, 'info', `${instance.name} 安装完成（${label}${instance.loaderVersion ? ` ${instance.loaderVersion}` : ''}）`)
     } catch (error) {
       // Only a user-requested abort has AbortError; worker failures retain their actual error.
       const cancelled = signal.aborted && signal.reason instanceof DOMException && signal.reason.name === 'AbortError'
@@ -764,6 +828,17 @@ export class LauncherCore {
     }
   }
 
+  private async selectJava(required: number): Promise<JavaRuntime> {
+    const runtimes = await this.detectJava()
+    const runtime = this.settings.javaPath && this.settings.javaPath !== 'java'
+      ? runtimes.find(java => java.path === this.settings.javaPath)
+      : runtimes.find(java => java.major === required && java.arch === this.arch)
+    if (!runtime) throw new Error(`需要 Java ${required}（${this.arch}）。请安装对应版本，并在设置中选择 Java 可执行文件。`)
+    if (runtime.major !== required) throw new Error(`该版本需要 Java ${required}，当前选择的是 Java ${runtime.major}`)
+    if (runtime.arch !== this.arch) throw new Error(`Java 架构 ${runtime.arch} 与启动器架构 ${this.arch} 不一致`)
+    return runtime
+  }
+
   private async launchInstance(id: string, account: LaunchAccount, beforeSpawn?: () => void): Promise<{ pid: number | undefined }> {
     const instance = this.instance(id)
     if (this.installs.has(id)) throw new Error('请等待安装完成')
@@ -790,17 +865,7 @@ export class LauncherCore {
       throw new Error('此实例来自其他系统或架构，请重新安装以下载正确的原生库')
     }
     const required = installed.version.javaVersion?.majorVersion ?? 17
-    const runtimes = await this.detectJava()
-    let runtime: JavaRuntime | undefined
-    if (this.settings.javaPath) {
-      runtime = runtimes.find(java => java.path === this.settings.javaPath)
-      if (!runtime && this.settings.javaPath === 'java') runtime = runtimes.find(java => java.major === required && java.arch === this.arch)
-    } else {
-      runtime = runtimes.find(java => java.major === required && java.arch === this.arch)
-    }
-    if (!runtime) throw new Error(`需要 Java ${required}（${this.arch}）。请安装对应版本，并在设置中选择 Java 可执行文件。`)
-    if (runtime.major !== required) throw new Error(`该版本需要 Java ${required}，当前选择的是 Java ${runtime.major}`)
-    if (runtime.arch !== this.arch) throw new Error(`Java 架构 ${runtime.arch} 与启动器架构 ${this.arch} 不一致`)
+    const runtime = await this.selectJava(required)
     const classpath = installed.classpath.map(relative => safeJoin(this.rootDir, relative))
     for (const file of classpath) {
       try { await fs.access(file) } catch { throw new Error(`缺少游戏文件 ${path.basename(file)}，请重新安装修复`) }
@@ -821,10 +886,10 @@ export class LauncherCore {
       assets_index_name: installed.version.assetIndex.id,
       natives_directory: safeJoin(directory, 'natives'),
       launcher_name: 'LuaLauncher',
-      launcher_version: '0.2.2',
+      launcher_version: '0.3.0',
       classpath: classpath.join(this.platform === 'win32' ? ';' : ':'),
       classpath_separator: this.platform === 'win32' ? ';' : ':',
-      library_directory: safeJoin(this.rootDir, 'libraries'),
+      library_directory: safeJoin(this.rootDir, installed.loaderLibraryDirectory ?? 'libraries'),
       user_type: 'msa',
       user_properties: '{}',
       resolution_width: '1280',
@@ -833,12 +898,16 @@ export class LauncherCore {
     const features = { has_custom_resolution: true }
     const jvm = resolveArguments([...installed.version.arguments.jvm, ...installed.fabricArguments.jvm], variables, this.platform, this.arch, features)
     const game = resolveArguments([...installed.version.arguments.game, ...installed.fabricArguments.game], variables, this.platform, this.arch, features)
-    const args = [`-Xms512M`, `-Xmx${this.settings.memoryMb}M`, ...jvm]
+    const allocation = effectiveMemory(this.settings, {
+      gameVersion: instance.version, modded: instance.loader !== 'vanilla', javaArch: runtime.arch,
+    }, this.memorySystem)
+    const args = ['-Xms512M', `-Xmx${allocation.effectiveMb}M`, ...jvm]
     if (installed.loggingFile && installed.version.logging?.client) {
       args.push(installed.version.logging.client.argument.replace('${path}', safeJoin(this.rootDir, installed.loggingFile)))
     }
     args.push(installed.mainClass, ...game)
     this.log(id, 'info', `正在使用 Java ${runtime.version} 启动 ${instance.name}`)
+    this.log(id, 'info', `${allocation.mode === 'auto' ? '自动' : '手动'}分配内存：${allocation.effectiveMb} MB${allocation.clamped ? `（已按当前可用内存限制，原目标 ${allocation.requestedMb} MB）` : ''}`)
     // No await between the coordinator's final session check and creating Java.
     beforeSpawn?.()
     const child = this.spawnProcess(runtime.path, args, { cwd: gameDir, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], shell: false })
@@ -912,11 +981,16 @@ export class LauncherCore {
     this.emit({ type: 'log', instanceId, level, message })
   }
 
-  async searchMods(query: string, options: { loader?: string; gameVersion?: string; offset?: number; source?: ResourceSource } = {}): Promise<ModrinthSearchResponse> {
+  async searchMods(query: string, options: { loader?: string; gameVersion?: string; category?: string; offset?: number; source?: ResourceSource } = {}): Promise<ModrinthSearchResponse> {
     const source = options.source ?? 'modrinth'
     const provider = resourceProvider(source)
     if (query.length > 200) throw new Error('搜索关键词过长')
     const facets = [['project_type:mod']]
+    if (options.category) {
+      if (!Object.hasOwn(BBSMC_MOD_CATEGORIES, options.category)) throw new Error('无效的模组功能分类')
+      const category = source === 'bbsmc' ? BBSMC_MOD_CATEGORIES[options.category] : options.category
+      facets.push([`categories:${category}`])
+    }
     if (options.loader) {
       if (!['fabric', 'forge', 'quilt', 'neoforge'].includes(options.loader)) throw new Error('无效的模组加载器')
       facets.push([`categories:${options.loader}`])
@@ -939,7 +1013,7 @@ export class LauncherCore {
     if (!Number.isInteger(offset) || offset < 0 || offset > 100_000) throw new Error('无效的分页参数')
     const params = new URLSearchParams({
       query, offset: String(offset), limit: '20', index: query ? 'relevance' : 'downloads',
-      facets: JSON.stringify([['project_type:modpack'], ['categories:fabric', 'categories:minecraft', 'categories:vanilla']]),
+      facets: JSON.stringify([['project_type:modpack'], ['categories:fabric', 'categories:forge', 'categories:neoforge', 'categories:minecraft', 'categories:vanilla']]),
     })
     const result = await this.json<ModrinthSearchResponse>(`${provider.api}/search?${params}`)
     return { ...result, hits: result.hits.map(hit => ({ ...hit, source })) }
@@ -977,7 +1051,7 @@ export class LauncherCore {
     )
     return versions.filter(version =>
       version.game_versions.some(isSupportedVersion) &&
-      version.loaders.some(loader => ['fabric', 'minecraft', 'vanilla'].includes(loader)) &&
+      version.loaders.some(loader => ['fabric', 'forge', 'neoforge', 'minecraft', 'vanilla'].includes(loader)) &&
       (source === 'bbsmc' || version.files.some(file => file.filename.toLowerCase().endsWith('.mrpack'))),
     ).map(version => this.resourceVersion(version, source, 'modpack'))
   }
@@ -1004,7 +1078,7 @@ export class LauncherCore {
       )
       if (version.externalOnly) throw new Error(`${version.externalReason}：${version.projectUrl}`)
       if (!version.game_versions.some(isSupportedVersion) ||
-          !version.loaders.some(loader => ['fabric', 'minecraft', 'vanilla'].includes(loader))) {
+          !version.loaders.some(loader => ['fabric', 'forge', 'neoforge', 'minecraft', 'vanilla'].includes(loader))) {
         throw new Error('此整合包需要未支持的 Minecraft 或加载器版本')
       }
       const candidates = version.files.filter(file => file.filename.toLowerCase().endsWith('.mrpack'))
@@ -1050,8 +1124,8 @@ export class LauncherCore {
     const name = (options.name ?? preview.name.slice(0, 64)).trim()
     if (!name || name.length > 64) throw new Error('实例名称需要 1–64 个字符')
     if (!(await this.versions(signal)).some(version => version.id === preview.minecraftVersion)) throw new Error('整合包指定的 Minecraft 正式版本不存在')
-    if (preview.loaderVersion && !(await this.fabricVersions(preview.minecraftVersion, signal)).some(loader => loader.version === preview.loaderVersion)) {
-      throw new Error('整合包指定的 Fabric Loader 版本不可用')
+    if (preview.loader !== 'vanilla' && preview.loaderVersion && !(await this.loaderVersions(preview.minecraftVersion, preview.loader, signal)).some(loader => loader.version === preview.loaderVersion)) {
+      throw new Error('整合包指定的加载器版本不可用')
     }
     signal?.throwIfAborted()
     const instance: Instance = {
@@ -1210,8 +1284,8 @@ export class LauncherCore {
   async modVersions(projectId: string, instanceId: string, source: ResourceSource = 'modrinth', signal?: AbortSignal): Promise<ModrinthVersion[]> {
     const provider = resourceProvider(source)
     const instance = this.instance(instanceId)
-    if (instance.loader !== 'fabric') throw new Error('请先选择一个 Fabric 实例')
-    const params = new URLSearchParams({ loaders: '["fabric"]', game_versions: JSON.stringify([instance.version]) })
+    if (instance.loader === 'vanilla') throw new Error('请先选择 Fabric、Forge 或 NeoForge 实例')
+    const params = new URLSearchParams({ loaders: JSON.stringify([instance.loader]), game_versions: JSON.stringify([instance.version]) })
     const versions = await this.json<ModrinthVersion[]>(`${provider.api}/project/${encodeURIComponent(sanitizeId(projectId))}/version?${params}`, signal)
     return versions.map(version => this.resourceVersion(version, source, 'mod'))
   }
@@ -1220,7 +1294,7 @@ export class LauncherCore {
   async installMod(instanceId: string, versionId: string, source: ResourceSource = 'modrinth'): Promise<LauncherSnapshot> {
     const provider = resourceProvider(source)
     const instance = this.instance(instanceId)
-    if (instance.loader !== 'fabric' || instance.status !== 'ready') throw new Error('请先安装一个 Fabric 实例，并关闭游戏')
+    if (instance.loader === 'vanilla' || instance.status !== 'ready') throw new Error('请先安装 Fabric、Forge 或 NeoForge 实例，并关闭游戏')
     if (this.launching.has(instanceId) || this.processes.has(instanceId)) throw new Error('请先关闭正在运行或启动中的游戏')
     if (this.installs.has(instanceId)) throw new Error('该实例已有安装任务')
     const controller = new AbortController()
@@ -1239,8 +1313,8 @@ export class LauncherCore {
           await this.json<ModrinthVersion>(`${provider.api}/version/${encodeURIComponent(sanitizeId(id))}`, controller.signal), source, 'mod',
         )
         if (version.externalOnly) throw new Error(`${version.externalReason}：${version.projectUrl}`)
-        if (!version.loaders.includes('fabric') || !version.game_versions.includes(instance.version)) {
-          throw new Error(`模组 ${version.name} 与此 Fabric / Minecraft 版本不兼容`)
+        if (!version.loaders.includes(instance.loader) || !version.game_versions.includes(instance.version)) {
+          throw new Error(`模组 ${version.name} 与此加载器 / Minecraft 版本不兼容`)
         }
         const otherVersion = projects.get(version.project_id)
         if (otherVersion && otherVersion !== version.id) throw new Error(`模组 ${version.name} 的依赖版本发生冲突`)
