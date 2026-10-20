@@ -157,6 +157,10 @@ const MICROSOFT_BASE = 'https://login.microsoftonline.com/consumers/oauth2/v2.0'
 const SCOPES = 'XboxLive.signin offline_access'
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const REQUEST_TIMEOUT_MS = 30_000
+const INVALIDATES_SESSION = new Set<AuthErrorCode>([
+  'SESSION_EXPIRED', 'NO_MINECRAFT_OWNERSHIP', 'MINECRAFT_PROFILE_MISSING',
+  'NO_XBOX_PROFILE', 'XBOX_ACCOUNT_RESTRICTED',
+])
 const statusMessages: Record<AuthStage, string> = {
   'requesting-code': '正在获取 Microsoft 登录代码…',
   'waiting-authorization': '请在 Microsoft 官方页面输入代码并完成授权。',
@@ -287,6 +291,9 @@ export class AuthManager {
     await this.#load()
     return this.#session ? publicAccount(this.#session.account) : null
   }
+
+  /** Changes synchronously when credentials are revoked, before secure-store deletion. */
+  get sessionGeneration(): number { return this.#loadGeneration }
 
   async begin(clientId: string): Promise<PublicAccount> {
     const validClientId = validateClientId(clientId)
@@ -423,7 +430,13 @@ export class AuthManager {
       this.#notify('complete', signal)
       return this.#credentials(nextSession, result.access)
     } catch (error) {
-      throw sanitizedError(error, signal)
+      const failure = sanitizedError(error, signal)
+      if (INVALIDATES_SESSION.has(failure.code) && this.#session === session && this.#active === operation) {
+        // Retain the original server error: logout aborts this operation while synchronously
+        // clearing both access and session state, then durably removes the encrypted record.
+        await this.logout()
+      }
+      throw failure
     }
   }
 
@@ -568,7 +581,7 @@ export class AuthManager {
         const encrypted = Buffer.from(envelope.encrypted, 'base64')
         const plaintext = await this.#options.unseal(encrypted)
         const stored = object(JSON.parse(plaintext))
-        const session = {
+        const session: StoredSession = {
           clientId: validateClientId(typeof stored.clientId === 'string' ? stored.clientId : ''),
           refreshToken: token(stored.refreshToken),
           account: publicAccount(stored.account),

@@ -8,7 +8,7 @@ import path from 'node:path'
 import { PassThrough } from 'node:stream'
 import test from 'node:test'
 import AdmZip from 'adm-zip'
-import { LauncherCore, isSupportedVersion, mavenPath, offlineUuid, resolveArguments, rulesAllow, safeJoin, type CoreEvent } from './core'
+import { LauncherCore, isSupportedVersion, mavenPath, resolveArguments, rulesAllow, safeJoin, type CoreEvent, type LaunchAccount } from './core'
 
 const sha1 = (body: string) => createHash('sha1').update(body).digest('hex')
 const packHashes = (body: string | Buffer) => ({
@@ -31,7 +31,14 @@ function fixture(corruptClient = false) {
     libraries: [{ name: 'test:library:1.0', downloads: { artifact: {
       url: LIBRARY, path: 'test/library/1.0/library-1.0.jar', sha1: sha1('test library'), size: 12,
     } } }],
-    arguments: { jvm: ['-cp', '${classpath}'], game: ['--username', '${auth_player_name}'] },
+    arguments: {
+      jvm: ['-cp', '${classpath}', '-Dminecraft.launcher.version=${launcher_version}'],
+      game: [
+        '--username', '${auth_player_name}', '--uuid', '${auth_uuid}',
+        '--accessToken', '${auth_access_token}', '--userType', '${user_type}',
+        '--clientId', '${clientid}', '--xuid', '${auth_xuid}',
+      ],
+    },
   })
   const responses = new Map([
     [MANIFEST, JSON.stringify({ versions: [
@@ -84,7 +91,9 @@ function modFixture() {
 
 function processHarness(failures = 0) {
   const children: ChildProcess[] = []
-  const spawnFake = (() => {
+  const calls: Array<{ command: string; args: string[] }> = []
+  const spawnFake = ((command: string, args: string[]) => {
+    calls.push({ command, args: [...args] })
     const child = Object.assign(new EventEmitter(), {
       pid: 1000 + children.length, stdout: new PassThrough(), stderr: new PassThrough(),
       kill: (signal: NodeJS.Signals = 'SIGTERM') => {
@@ -99,10 +108,15 @@ function processHarness(failures = 0) {
     })
     return child
   }) as typeof spawn
-  return { children, spawn: spawnFake }
+  return { children, calls, spawn: spawnFake }
 }
 
-const offlineAccount = { mode: 'offline' as const, username: 'LuaTest', uuid: '', accessToken: '' }
+// Fictitious credentials are used only with the injected fake process.
+const microsoftAccount: LaunchAccount = {
+  mode: 'microsoft', username: 'LuaTest', uuid: '0123456789abcdef0123456789abcdef',
+  accessToken: 'fictitious-minecraft-access-token', clientId: '11111111-2222-4333-8444-555555555555',
+  xuid: '1234567890123456',
+}
 const testRuntime = { path: '/fake/java', version: '17.0.12', major: 17, arch: 'x64' }
 
 async function assertNoStaging(core: LauncherCore, id: string) {
@@ -157,9 +171,7 @@ test('argument substitution preserves spaces and excludes optional unsupported f
   assert.throws(() => resolveArguments(['${unknown}'], {}), /未支持的变量/)
 })
 
-test('offline identities are stable UUID v3 values and advertised releases are modern', () => {
-  assert.equal(offlineUuid('Steve'), '5627dd98e6be3c21b8a8e92344183641')
-  assert.equal(offlineUuid('Steve').length, 32)
+test('advertised releases are modern stable versions', () => {
   assert.equal(isSupportedVersion('1.20'), false)
   assert.equal(isSupportedVersion('1.20.1'), true)
   assert.equal(isSupportedVersion('1.21.11'), true)
@@ -290,9 +302,9 @@ test('one launch owns an instance while Java detection is pending', async t => {
   const detecting = new Promise<void>(resolve => { entered = resolve })
   let detections = 0
   core.detectJava = async () => { detections++; entered(); await gate; return [testRuntime] }
-  const first = core.launch(instance.id, offlineAccount)
+  const first = core.launch(instance.id, microsoftAccount)
   await detecting
-  await assert.rejects(core.launch(instance.id, offlineAccount), /正在启动/)
+  await assert.rejects(core.launch(instance.id, microsoftAccount), /正在启动/)
   await assert.rejects(core.install(instance.id), /启动中的游戏/)
   assert.equal(detections, 1)
   assert.equal(processes.children.length, 0)
@@ -308,6 +320,90 @@ test('one launch owns an instance while Java detection is pending', async t => {
   assert.equal(core.snapshot().instances[0].error, undefined)
 })
 
+test('launch rejects offline and invalid credentials before preparing Java', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'lua-core-online-only-'))
+  t.after(() => fs.rm(directory, { recursive: true, force: true }))
+  const fake = fixture()
+  const processes = processHarness()
+  const core = new LauncherCore(directory, undefined, { fetch: fake.fetcher, spawn: processes.spawn, platform: 'linux', arch: 'x64' })
+  await core.init()
+  const instance = await core.createInstance({ name: 'Microsoft credentials', version: '1.20.1', loader: 'vanilla' })
+  await core.install(instance.id)
+  let detections = 0
+  core.detectJava = async () => { detections++; return [testRuntime] }
+  const invalid: unknown[] = [
+    null, undefined, { ...microsoftAccount, mode: 'offline' },
+    { ...microsoftAccount, accessToken: '0' }, { ...microsoftAccount, accessToken: '' },
+    { ...microsoftAccount, accessToken: ' ' }, { ...microsoftAccount, accessToken: 'bad\ntoken' },
+    { ...microsoftAccount, accessToken: 123 }, { ...microsoftAccount, uuid: '' },
+    { ...microsoftAccount, uuid: 123 }, { ...microsoftAccount, uuid: `${microsoftAccount.uuid}-` },
+    { ...microsoftAccount, username: '' },
+  ]
+  for (const account of invalid) {
+    await assert.rejects(core.launch(instance.id, account as LaunchAccount), /Microsoft|微软账户/)
+  }
+  assert.equal(detections, 0)
+  assert.equal(processes.children.length, 0)
+  assert.equal(core.snapshot().instances[0].status, 'ready')
+  await core.launch(instance.id, microsoftAccount)
+  assert.equal(processes.children.length, 1, 'invalid requests release the launch reservation')
+  const closed = once(processes.children[0], 'close')
+  core.stop(instance.id)
+  await closed
+  await core.updateSettings({})
+})
+
+test('the final session guard blocks a logout during preparation and releases the launch reservation', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'lua-core-session-guard-'))
+  t.after(() => fs.rm(directory, { recursive: true, force: true }))
+  const fake = fixture()
+  const processes = processHarness()
+  const core = new LauncherCore(directory, undefined, { fetch: fake.fetcher, spawn: processes.spawn, platform: 'linux', arch: 'x64' })
+  await core.init()
+  const instance = await core.createInstance({ name: 'Session guard', version: '1.20.1', loader: 'vanilla' })
+  await core.install(instance.id)
+  let release!: () => void
+  let entered!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const detecting = new Promise<void>(resolve => { entered = resolve })
+  core.detectJava = async () => { entered(); await gate; return [testRuntime] }
+  let generation = 1
+  const authorizedGeneration = generation
+  let guardCalls = 0
+  const guardError = new Error('session changed before spawn')
+  const pending = core.launch(instance.id, microsoftAccount, () => {
+    guardCalls++
+    if (generation !== authorizedGeneration) throw guardError
+  })
+  const rejected = assert.rejects(pending, error => error === guardError)
+  await detecting
+  generation++ // The coordinator increments this immediately on logout.
+  release()
+  await rejected
+  assert.equal(guardCalls, 1)
+  assert.equal(processes.children.length, 0)
+  assert.equal(core.snapshot().instances[0].status, 'ready')
+
+  core.detectJava = async () => [testRuntime]
+  let retriedGuard = false
+  await core.launch(instance.id, microsoftAccount, () => { retriedGuard = true })
+  assert.equal(retriedGuard, true)
+  assert.equal(processes.children.length, 1)
+  const args = processes.calls[0].args
+  const argument = (flag: string) => args[args.indexOf(flag) + 1]
+  assert.equal(argument('--username'), microsoftAccount.username)
+  assert.equal(argument('--uuid'), microsoftAccount.uuid)
+  assert.equal(argument('--accessToken'), microsoftAccount.accessToken)
+  assert.equal(argument('--userType'), 'msa')
+  assert.equal(argument('--clientId'), microsoftAccount.clientId)
+  assert.equal(argument('--xuid'), microsoftAccount.xuid)
+  assert.ok(args.includes('-Dminecraft.launcher.version=0.2.2'))
+  const closed = once(processes.children[0], 'close')
+  core.stop(instance.id)
+  await closed
+  await core.updateSettings({})
+})
+
 test('a failed prelaunch releases its reservation so the same instance can retry', async t => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'lua-core-launch-retry-'))
   t.after(() => fs.rm(directory, { recursive: true, force: true }))
@@ -318,9 +414,9 @@ test('a failed prelaunch releases its reservation so the same instance can retry
   const instance = await core.createInstance({ name: 'Launch retry', version: '1.20.1', loader: 'vanilla' })
   await core.install(instance.id)
   core.detectJava = async () => []
-  await assert.rejects(core.launch(instance.id, offlineAccount), /需要 Java 17/)
+  await assert.rejects(core.launch(instance.id, microsoftAccount), /需要 Java 17/)
   core.detectJava = async () => [testRuntime]
-  await core.launch(instance.id, offlineAccount)
+  await core.launch(instance.id, microsoftAccount)
   assert.equal(processes.children.length, 1)
   const closed = once(processes.children[0], 'close')
   core.stop(instance.id)
@@ -338,8 +434,8 @@ test('a late close from a failed child cannot erase a newer running process', as
   const instance = await core.createInstance({ name: 'Child ownership', version: '1.20.1', loader: 'vanilla' })
   await core.install(instance.id)
   core.detectJava = async () => [testRuntime]
-  await assert.rejects(core.launch(instance.id, offlineAccount), /simulated spawn failure/)
-  await core.launch(instance.id, offlineAccount)
+  await assert.rejects(core.launch(instance.id, microsoftAccount), /simulated spawn failure/)
+  await core.launch(instance.id, microsoftAccount)
   processes.children[0].emit('close', 1, null)
   assert.equal(core.snapshot().instances[0].status, 'running')
   const closed = once(processes.children[1], 'close')
@@ -360,7 +456,7 @@ test('unexpected crash signals are reported instead of being treated as normal s
   await core.install(instance.id)
   core.detectJava = async () => [testRuntime]
   for (const signal of ['SIGSEGV', 'SIGABRT', 'SIGKILL']) {
-    await core.launch(instance.id, offlineAccount)
+    await core.launch(instance.id, microsoftAccount)
     processes.children.at(-1)!.emit('close', null, signal)
     await core.updateSettings({})
     assert.match(core.snapshot().instances[0].error ?? '', new RegExp(signal))

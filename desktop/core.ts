@@ -13,7 +13,7 @@ const execFileAsync = promisify(execFile)
 const MANIFEST_URL = 'https://piston-meta.mojang.com/mc/game/version_manifest_v2.json'
 const FABRIC_URL = 'https://meta.fabricmc.net/v2'
 const MODRINTH_URL = 'https://api.modrinth.com/v2'
-const USER_AGENT = 'LuaLauncher/0.2.1 (+https://github.com/XQGGCN/lua-launcher)'
+const USER_AGENT = 'LuaLauncher/0.2.2 (+https://github.com/XQGGCN/lua-launcher)'
 const NETWORK_HOSTS = new Set([
   'piston-meta.mojang.com', 'piston-data.mojang.com', 'launchermeta.mojang.com',
   'launcher.mojang.com', 'libraries.minecraft.net', 'resources.download.minecraft.net',
@@ -73,7 +73,7 @@ export type CoreEvent =
   | { type: 'progress'; instanceId: string; phase: string; completed: number; total: number; bytesDownloaded: number }
   | { type: 'log'; instanceId: string; level: 'info' | 'warn' | 'error'; message: string }
 export interface LaunchAccount {
-  mode: 'offline' | 'microsoft'
+  mode: 'microsoft'
   username: string
   uuid: string
   accessToken: string
@@ -215,12 +215,6 @@ export function resolveArguments(
     }
   }
   return result
-}
-export function offlineUuid(username: string): string {
-  const hash = createHash('md5').update(`OfflinePlayer:${username}`, 'utf8').digest()
-  hash[6] = (hash[6] & 0x0f) | 0x30
-  hash[8] = (hash[8] & 0x3f) | 0x80
-  return hash.toString('hex')
 }
 export function isSupportedVersion(version: string): boolean {
   // Only stable releases with modern launcher manifests are advertised.
@@ -759,27 +753,37 @@ export class LauncherCore {
       .sort((a, b) => b.major - a.major)
   }
 
-  async launch(id: string, account: LaunchAccount): Promise<{ pid: number | undefined }> {
+  async launch(id: string, account: LaunchAccount, beforeSpawn?: () => void): Promise<{ pid: number | undefined }> {
     if (this.launching.has(id)) throw new Error('该实例正在启动')
     // Acquire synchronously: installed-manifest reads and Java detection both yield before spawn.
     this.launching.add(id)
     try {
-      return await this.launchInstance(id, account)
+      return await this.launchInstance(id, account, beforeSpawn)
     } finally {
       this.launching.delete(id)
     }
   }
 
-  private async launchInstance(id: string, account: LaunchAccount): Promise<{ pid: number | undefined }> {
+  private async launchInstance(id: string, account: LaunchAccount, beforeSpawn?: () => void): Promise<{ pid: number | undefined }> {
     const instance = this.instance(id)
     if (this.installs.has(id)) throw new Error('请等待安装完成')
     if (this.processes.has(id)) throw new Error('该实例已经在运行')
     if (instance.status !== 'ready') throw new Error('请先安装或修复该实例')
-    if (account.mode !== 'offline' && account.mode !== 'microsoft') throw new Error('请选择微软账户或显式离线模式')
-    if (!/^[A-Za-z0-9_]{3,16}$/.test(account.username)) throw new Error('游戏名称需要 3–16 个字母、数字或下划线')
-    if (account.mode === 'microsoft' && (!/^[0-9a-f]{32}$/i.test(account.uuid.replace(/-/g, '')) || !account.accessToken)) {
+    if (!account || account.mode !== 'microsoft') throw new Error('请先登录拥有 Minecraft Java 版的 Microsoft 账户')
+    if (typeof account.username !== 'string' || !/^[A-Za-z0-9_]{1,16}$/.test(account.username)) {
+      throw new Error('微软账户游戏档案无效，请重新登录')
+    }
+    if (
+      typeof account.uuid !== 'string' ||
+      !/^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.test(account.uuid) ||
+      typeof account.accessToken !== 'string' || !account.accessToken || account.accessToken === '0' ||
+      account.accessToken.length > 32_768 || /[\s\u0000-\u001f\u007f]/u.test(account.accessToken)
+    ) {
       throw new Error('微软账户凭据无效，请重新登录')
     }
+    // Keep the validated credentials stable while filesystem and Java checks await.
+    const credentials = { ...account }
+    const token = credentials.accessToken
     const directory = this.instanceDirectory(id)
     const installed: InstalledManifest = JSON.parse(await fs.readFile(safeJoin(directory, 'installed.json'), 'utf8'))
     if (installed.schema !== 1 || installed.platform !== this.platform || installed.arch !== this.arch) {
@@ -803,14 +807,13 @@ export class LauncherCore {
     }
     const gameDir = safeJoin(directory, 'game')
     await fs.mkdir(gameDir, { recursive: true })
-    const token = account.mode === 'offline' ? '0' : account.accessToken
     const variables: Record<string, string> = {
-      auth_player_name: account.username,
-      auth_uuid: account.mode === 'offline' ? offlineUuid(account.username) : account.uuid.replace(/-/g, ''),
+      auth_player_name: credentials.username,
+      auth_uuid: credentials.uuid.replace(/-/g, ''),
       auth_access_token: token,
       auth_session: token,
-      auth_xuid: account.xuid ?? '',
-      clientid: account.clientId ?? '',
+      auth_xuid: credentials.xuid ?? '',
+      clientid: credentials.clientId ?? '',
       version_name: instance.version,
       version_type: installed.version.type ?? 'release',
       game_directory: gameDir,
@@ -818,11 +821,11 @@ export class LauncherCore {
       assets_index_name: installed.version.assetIndex.id,
       natives_directory: safeJoin(directory, 'natives'),
       launcher_name: 'LuaLauncher',
-      launcher_version: '0.2.1',
+      launcher_version: '0.2.2',
       classpath: classpath.join(this.platform === 'win32' ? ';' : ':'),
       classpath_separator: this.platform === 'win32' ? ';' : ':',
       library_directory: safeJoin(this.rootDir, 'libraries'),
-      user_type: account.mode === 'microsoft' ? 'msa' : 'legacy',
+      user_type: 'msa',
       user_properties: '{}',
       resolution_width: '1280',
       resolution_height: '800',
@@ -835,11 +838,13 @@ export class LauncherCore {
       args.push(installed.version.logging.client.argument.replace('${path}', safeJoin(this.rootDir, installed.loggingFile)))
     }
     args.push(installed.mainClass, ...game)
-    this.log(id, 'info', `正在使用 Java ${runtime.version} 启动 ${instance.name}${account.mode === 'offline' ? '（离线模式）' : ''}`)
+    this.log(id, 'info', `正在使用 Java ${runtime.version} 启动 ${instance.name}`)
+    // No await between the coordinator's final session check and creating Java.
+    beforeSpawn?.()
     const child = this.spawnProcess(runtime.path, args, { cwd: gameDir, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], shell: false })
     this.processes.set(id, child)
     const started = Date.now()
-    const scrub = (text: string) => token && token !== '0' ? text.split(token).join('[REDACTED]') : text
+    const scrub = (text: string) => text.split(token).join('[REDACTED]')
     for (const [stream, level] of [[child.stdout, 'info'], [child.stderr, 'warn']] as const) {
       let pending = ''
       let xmlLevel: 'info' | 'warn' | 'error' = level

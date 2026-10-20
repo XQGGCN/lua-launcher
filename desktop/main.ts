@@ -1,13 +1,11 @@
 import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from 'electron'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { randomUUID } from 'node:crypto'
-import * as fs from 'node:fs/promises'
-import { LauncherCore, offlineUuid, type CoreEvent, type LaunchAccount, type LauncherSettings } from './core'
-import { AuthManager, type DeviceCode } from './auth'
+import { LauncherCore, type CoreEvent, type LauncherSettings } from './core'
+import { AuthError, AuthManager, type DeviceCode } from './auth'
 import { AuthConfigStore } from './auth-config'
 import { PackSelections } from './pack-selection'
-import { AccountCoordinator, type OfflineAccount } from './accounts'
+import { AccountCoordinator } from './accounts'
 
 declare const __LUA_MICROSOFT_CLIENT_ID__: string
 
@@ -30,7 +28,6 @@ let authState: {
 const logs = new Map<string, Extract<CoreEvent, { type: 'log' }>[]>()
 const devURL = process.env.LUA_DEV_URL
 const root = process.env.LUA_DATA_DIR || path.join(app.getPath('userData'), 'launcher')
-const offlineFile = path.join(root, 'offline-account.json')
 const entryFile = path.join(__dirname, '../dist/index.html')
 
 function send(event: unknown) {
@@ -58,21 +55,6 @@ function resourceSource(value: unknown): 'modrinth' | 'bbsmc' {
   if (value === 'bbsmc') return 'bbsmc'
   throw new Error('不支持的资源来源')
 }
-async function persistOffline(account: OfflineAccount | null): Promise<void> {
-  if (!account) {
-    await fs.rm(offlineFile, { force: true })
-    return
-  }
-  const temporary = `${offlineFile}.${randomUUID()}.tmp`
-  let replaced = false
-  try {
-    await fs.writeFile(temporary, JSON.stringify(account), { mode: 0o600, flag: 'wx' })
-    await fs.rename(temporary, offlineFile)
-    replaced = true
-  } finally {
-    if (!replaced) await fs.rm(temporary, { force: true }).catch(() => {})
-  }
-}
 function announceAuth() { send({ type: 'authState', state: structuredClone(authState) }) }
 function authStatus(stage: string, message: string) {
   authState.status = { stage, message }
@@ -87,9 +69,6 @@ function openExternal(input: unknown) {
     throw new Error('不支持的外部链接')
   }
   return shell.openExternal(url.href)
-}
-async function credentials(): Promise<LaunchAccount> {
-  return accounts.credentials()
 }
 
 async function createWindow() {
@@ -146,20 +125,13 @@ if (hasLock) app.whenReady().then(async () => {
     },
     onStatus: status => {
       if (!accounts.acceptsAuthEvents) return
-      // Login becomes complete after the offline selection is also persisted.
+      // The coordinator publishes the account before login becomes complete.
       if (status.stage === 'complete' && accounts.loginPending) return
       authStatus(status.stage, status.message)
     },
   })
-  let initialOffline: OfflineAccount | null = null
-  try {
-    const saved = JSON.parse(await fs.readFile(offlineFile, 'utf8'))
-    if (typeof saved.username === 'string' && /^[a-zA-Z0-9_]{3,16}$/.test(saved.username)) {
-      initialOffline = { mode: 'offline', username: saved.username, uuid: offlineUuid(saved.username) }
-    }
-  } catch { /* First run or invalid offline settings: show account setup. */ }
   accounts = new AccountCoordinator(auth, {
-    initialOffline, config: () => authConfig.status(), persistOffline,
+    config: () => authConfig.status(),
     onAccount: account => send({ type: 'account', account }),
   })
   ipcMain.handle('launcher:call', async (ipcEvent, method: unknown, ...args: unknown[]) => {
@@ -185,7 +157,16 @@ if (hasLock) app.whenReady().then(async () => {
       }
       case 'install': return core.install(text(args[0], 80))
       case 'cancelInstall': return core.cancelInstall(text(args[0], 80))
-      case 'launch': return core.launch(text(args[0], 80), await credentials())
+      case 'launch': {
+        const id = text(args[0], 80)
+        const generation = accounts.generation
+        const credentials = await accounts.credentials()
+        return core.launch(id, credentials, () => {
+          // Java discovery and filesystem checks yield. A logout or newer login
+          // during preparation must prevent spawning with the old credentials.
+          if (generation !== accounts.generation) throw new AuthError('CANCELLED')
+        })
+      }
       case 'stop': return core.stop(text(args[0], 80))
       case 'updateSettings': {
         const input = object(args[0])
@@ -281,11 +262,6 @@ if (hasLock) app.whenReady().then(async () => {
       case 'cancelLogin':
         accounts.cancelLogin()
         return
-      case 'setOffline': {
-        const username = text(args[0], 16)
-        if (!/^[a-zA-Z0-9_]{3,16}$/.test(username)) throw new Error('名称需为 3–16 位英文字母、数字或下划线')
-        return accounts.setOffline({ mode: 'offline', username, uuid: offlineUuid(username) })
-      }
       case 'logout':
         return accounts.logout()
       default: throw new Error('不支持的操作')

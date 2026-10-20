@@ -1,19 +1,9 @@
-import { AuthError, type AuthManager, type MinecraftCredentials, type PublicAccount as MicrosoftAccount } from './auth'
+import { AuthError, type AuthManager, type MinecraftCredentials, type PublicAccount } from './auth'
 
-export interface OfflineAccount {
-  username: string
-  uuid: string
-  mode: 'offline'
-}
-export type SelectedAccount = OfflineAccount | MicrosoftAccount
-
-type AuthBackend = Pick<AuthManager, 'begin' | 'cancel' | 'logout' | 'account' | 'credentials'>
+type AuthBackend = Pick<AuthManager, 'begin' | 'cancel' | 'logout' | 'account' | 'credentials' | 'sessionGeneration'>
 interface AccountOptions {
-  initialOffline?: OfflineAccount | null
   config: () => Promise<{ configured: boolean; clientId: string }>
-  /** Persist the selection before publishing it; null removes the offline override. */
-  persistOffline: (account: OfflineAccount | null) => Promise<void>
-  onAccount?: (account: SelectedAccount | null) => void
+  onAccount?: (account: PublicAccount | null) => void
 }
 interface LoginAttempt {
   generation: number
@@ -21,44 +11,51 @@ interface LoginAttempt {
   cancelled: boolean
 }
 
-/** Main-process coordinator. Network login never holds the short selection queue. */
+/** Main-process coordinator for the single, Microsoft-authenticated account. */
 export class AccountCoordinator {
-  #offline: OfflineAccount | null
   #generation = 0
   #login: LoginAttempt | null = null
-  #selectionQueue: Promise<void> = Promise.resolve()
 
-  constructor(private readonly auth: AuthBackend, private readonly options: AccountOptions) {
-    this.#offline = options.initialOffline ?? null
-  }
+  constructor(private readonly auth: AuthBackend, private readonly options: AccountOptions) {}
 
   get loginPending(): boolean { return this.#login !== null }
-  get generation(): number { return this.#generation }
+  /** Also changes during server-side revocation, before pending storage deletion completes. */
+  get generation(): number { return this.#generation + this.auth.sessionGeneration }
   get acceptsAuthEvents(): boolean {
     return !this.#login || (!this.#login.cancelled && this.#login.generation === this.#generation)
   }
 
-  async account(): Promise<SelectedAccount | null> {
+  async account(): Promise<PublicAccount | null> {
     for (;;) {
-      const generation = this.#generation
-      await this.#selectionQueue
-      const result = this.#offline ?? await this.auth.account()
-      if (generation === this.#generation) return result
+      const generation = this.generation
+      const result = await this.auth.account()
+      if (generation === this.generation) return result
     }
   }
 
   /** The result stays in the main process; never expose it through IPC. */
-  async credentials(): Promise<MinecraftCredentials | (OfflineAccount & { accessToken: string })> {
-    const generation = this.#generation
-    await this.#selectionQueue
-    const result = this.#offline
-      ? { ...this.#offline, accessToken: '0' }
-      : await this.auth.credentials()
-    if (generation !== this.#generation) throw new AuthError('CANCELLED')
-    return result
+  async credentials(): Promise<MinecraftCredentials> {
+    // Preflight has already reserved the next account generation, but begin()
+    // may not have started yet. Do not hand out the previous account's token.
+    if (this.#login) throw new AuthError('BUSY')
+    const mutation = this.#generation
+    const generation = this.generation
+    try {
+      const result = await this.auth.credentials()
+      if (generation !== this.generation) throw new AuthError('CANCELLED')
+      return result
+    } catch (error) {
+      // A superseded request cannot announce failure for a newly selected session.
+      if (mutation !== this.#generation) throw new AuthError('CANCELLED')
+      let current: PublicAccount | null | undefined
+      try { current = await this.auth.account() } catch { /* Preserve the credential error. */ }
+      if (mutation !== this.#generation) throw new AuthError('CANCELLED')
+      if (current === null) this.#notify(null)
+      throw error
+    }
   }
 
-  async login(): Promise<MicrosoftAccount> {
+  async login(): Promise<PublicAccount> {
     if (this.#login) throw new AuthError('BUSY')
     const attempt: LoginAttempt = { generation: ++this.#generation, started: false, cancelled: false }
     this.#login = attempt
@@ -66,13 +63,12 @@ export class AccountCoordinator {
       const config = await this.options.config()
       this.#check(attempt)
       if (!config.configured) throw new Error('尚未配置 Lua 的 Microsoft 应用，请先按接入说明配置客户端 ID')
-      // No await between the guard and begin: cancel/logout can now see the
-      // AuthManager operation, rather than cancelling a login that does not exist.
+      // No await between the guard and begin: cancellation can see the actual
+      // AuthManager operation instead of cancelling one that has not started.
       attempt.started = true
       const result = await this.auth.begin(config.clientId)
       this.#check(attempt)
-      await this.#select(attempt.generation, null)
-      this.#check(attempt)
+      this.#notify(result)
       return result
     } finally {
       if (this.#login === attempt) this.#login = null
@@ -81,44 +77,25 @@ export class AccountCoordinator {
 
   cancelLogin(): void {
     if (this.#login && !this.#login.started) this.#login.cancelled = true
-    // Once AuthManager commits, ordinary cancel must still allow success.
+    // After atomic commit, AuthManager lets an ordinary cancel finish successfully.
     this.auth.cancel()
-  }
-
-  async setOffline(account: OfflineAccount): Promise<OfflineAccount> {
-    const generation = ++this.#generation
-    this.cancelLogin()
-    await this.#select(generation, account)
-    if (generation !== this.#generation) throw new AuthError('CANCELLED')
-    return account
   }
 
   async logout(): Promise<void> {
     const generation = ++this.#generation
     this.cancelLogin()
-    // Abort/revoke immediately. A slow secure-store deletion must not hold up a
-    // newer offline selection; the generation guard rejects this later deletion.
-    await this.auth.logout()
-    await this.#select(generation, null)
+    try { await this.auth.logout() }
+    finally {
+      // Logout clears in-memory credentials even if secure-store deletion fails.
+      if (generation === this.#generation) this.#notify(null)
+    }
   }
 
   #check(attempt: LoginAttempt): void {
     if (attempt.cancelled || attempt.generation !== this.#generation) throw new AuthError('CANCELLED')
   }
 
-  async #select(generation: number, next: OfflineAccount | null): Promise<void> {
-    const work = this.#selectionQueue.then(async () => {
-      if (generation !== this.#generation) return
-      await this.options.persistOffline(next)
-      // A newer mutation cannot commit ahead of this one. Keep memory aligned
-      // with the last successful disk write even if a later request now exists.
-      this.#offline = next
-    })
-    this.#selectionQueue = work.catch(() => {})
-    await work
-    if (generation !== this.#generation) return
-    const current = await this.account()
-    if (generation !== this.#generation) return
-    try { this.options.onAccount?.(current) } catch { /* UI delivery is not a storage transaction. */ }
+  #notify(account: PublicAccount | null): void {
+    try { this.options.onAccount?.(account) } catch { /* UI delivery cannot invalidate authentication. */ }
   }
 }

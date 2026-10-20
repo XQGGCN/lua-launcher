@@ -154,6 +154,7 @@ test('a complete device flow exposes only profile and user-code fields, storing 
   for (const secret of Object.values(SECRET)) assert.ok(!disk.includes(secret))
   assert.ok(!Buffer.from(envelope.encrypted, 'base64').toString('utf8').includes(SECRET.refresh))
   const saved = JSON.parse(await f.options.unseal(Buffer.from(envelope.encrypted, 'base64')))
+  assert.deepEqual(Object.keys(saved).sort(), ['account', 'clientId', 'refreshToken'])
   assert.equal(saved.refreshToken, SECRET.refresh)
   assert.equal(saved.accessToken, undefined)
   assert.ok(!JSON.stringify(saved).includes(SECRET.minecraft))
@@ -290,8 +291,88 @@ test('revoked refresh credentials require sign-in and never silently return stal
   const f = await fixture(t, [device(), oauth(), ...minecraft()])
   await f.manager.begin(CLIENT_ID)
   f.advance(3_600_000)
+  const generation = f.manager.sessionGeneration
   f.queue.push({ suffix: '/token', status: 400, body: { error: 'invalid_grant', error_description: SECRET.refresh } })
   await assert.rejects(f.manager.credentials(), isAuthError('SESSION_EXPIRED'))
+  assert.notEqual(f.manager.sessionGeneration, generation)
+  assert.equal(await f.manager.account(), null)
+  await assert.rejects(readFile(f.file), { code: 'ENOENT' })
+  assert.equal(await new AuthManager(f.root, f.options).account(), null)
+  f.advance(-3_600_000)
+  await assert.rejects(f.manager.credentials(), isAuthError('AUTH_REQUIRED'))
+  assert.equal(f.calls.length, 8, 'revoked access cannot be reused even if the clock moves backward')
+})
+
+for (const code of ['NO_MINECRAFT_OWNERSHIP', 'MINECRAFT_PROFILE_MISSING', 'NO_XBOX_PROFILE', 'XBOX_ACCOUNT_RESTRICTED'] as const) {
+  test(`refresh ${code} clears the saved and cached Microsoft session`, async t => {
+    const f = await fixture(t, [device(), oauth(), ...minecraft()])
+    await f.manager.begin(CLIENT_ID)
+    f.advance(3_600_000)
+    const chain = minecraft()
+    if (code === 'NO_MINECRAFT_OWNERSHIP') {
+      f.queue.push(oauth(), ...chain.slice(0, 3), { suffix: '/entitlements/mcstore', body: { items: [] } })
+    } else if (code === 'MINECRAFT_PROFILE_MISSING') {
+      f.queue.push(oauth(), ...chain.slice(0, 4), { suffix: '/minecraft/profile', status: 404, body: {} })
+    } else {
+      f.queue.push(oauth(), chain[0], {
+        suffix: '/xsts/authorize', status: 401,
+        body: { XErr: code === 'NO_XBOX_PROFILE' ? 2148916233 : 2148916238 },
+      })
+    }
+    await assert.rejects(f.manager.credentials(), isAuthError(code))
+    assert.equal(await f.manager.account(), null)
+    await assert.rejects(f.manager.credentials(), isAuthError('AUTH_REQUIRED'))
+    await assert.rejects(readFile(f.file), { code: 'ENOENT' })
+    assert.equal(await new AuthManager(f.root, f.options).account(), null)
+  })
+}
+
+for (const failure of ['network', 'service', 'configuration'] as const) {
+  test(`a temporary ${failure} refresh failure preserves the account but never supplies expired access`, async t => {
+    const f = await fixture(t, [device(), oauth(), ...minecraft()])
+    await f.manager.begin(CLIENT_ID)
+    f.advance(3_600_000)
+    const generation = f.manager.sessionGeneration
+    const disk = await readFile(f.file, 'utf8')
+    f.queue.push(failure === 'network'
+      ? { suffix: '/token', body: {}, hold: async () => { throw new Error(SECRET.refresh) } }
+      : { suffix: '/token', status: failure === 'service' ? 503 : 400, body: { error: failure === 'service' ? 'temporarily_unavailable' : 'invalid_client' } })
+    const code = failure === 'network' ? 'NETWORK_ERROR' : failure === 'service' ? 'SERVICE_UNAVAILABLE' : 'CLIENT_CONFIGURATION'
+    await assert.rejects(f.manager.credentials(), isAuthError(code))
+    assert.equal(f.manager.sessionGeneration, generation)
+    assert.deepEqual(await f.manager.account(), ACCOUNT)
+    assert.equal(await readFile(f.file, 'utf8'), disk)
+    assert.deepEqual(await new AuthManager(f.root, f.options).account(), ACCOUNT)
+    f.queue.push(oauth(), ...minecraft())
+    assert.equal((await f.manager.credentials()).accessToken, SECRET.minecraft)
+    assert.equal(f.queue.length, 0)
+  })
+}
+
+test('a cancelled old refresh cannot revoke the session saved by a newer login', async t => {
+  const started = deferred()
+  const release = deferred()
+  const f = await fixture(t, [device(), oauth(), ...minecraft()])
+  await f.manager.begin(CLIENT_ID)
+  f.advance(3_600_000)
+  f.queue.push({
+    suffix: '/token', status: 400, body: { error: 'invalid_grant' },
+    hold: async () => { started.resolve(); await release.promise },
+  })
+  const pending = f.manager.credentials()
+  const rejected = assert.rejects(pending, isAuthError('CANCELLED'))
+  await started.promise
+  f.queue.push(device(), oauth({ refresh_token: 'newly-verified-refresh-token' }), ...minecraft())
+  await f.manager.begin(CLIENT_ID)
+  const generation = f.manager.sessionGeneration
+  release.resolve()
+  await rejected
+  assert.deepEqual(await f.manager.account(), ACCOUNT)
+  assert.equal(f.manager.sessionGeneration, generation)
+  const envelope = JSON.parse(await readFile(f.file, 'utf8'))
+  const saved = JSON.parse(await f.options.unseal(Buffer.from(envelope.encrypted, 'base64')))
+  assert.equal(saved.refreshToken, 'newly-verified-refresh-token')
+  assert.equal((await f.manager.credentials()).accessToken, SECRET.minecraft)
 })
 
 test('cancel from the device-code callback prevents polling and persistence', async t => {

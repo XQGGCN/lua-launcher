@@ -5,7 +5,7 @@ const methods = new Set([
   'snapshot', 'versions', 'createInstance', 'install', 'cancelInstall', 'launch',
   'stop', 'updateSettings', 'detectJava', 'searchMods', 'modVersions', 'installMod',
   'openInstance', 'openExternal', 'account', 'login', 'cancelLogin', 'logout',
-  'setOffline', 'logs',
+  'logs',
   'fabricVersions', 'chooseModpack', 'importModpack', 'searchModpacks',
   'modpackVersions', 'installModpack', 'authConfig', 'saveAuthConfig', 'authState',
 ])
