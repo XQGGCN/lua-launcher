@@ -6,12 +6,14 @@ import os from 'node:os'
 import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import { promisify } from 'node:util'
 import AdmZip from 'adm-zip'
+import { MODPACK_LIMITS, PACK_REDIRECT_HOSTS, readModpack, validatePackPath, validatePackUrl, type PackPreview, type ParsedModpack } from './modpack'
+export type { PackPreview } from './modpack'
 
 const execFileAsync = promisify(execFile)
 const MANIFEST_URL = 'https://piston-meta.mojang.com/mc/game/version_manifest_v2.json'
 const FABRIC_URL = 'https://meta.fabricmc.net/v2'
 const MODRINTH_URL = 'https://api.modrinth.com/v2'
-const USER_AGENT = 'LuaLauncher/0.1.0 (+https://github.com/XQGGCN/lua-launcher)'
+const USER_AGENT = 'LuaLauncher/0.2.0 (+https://github.com/XQGGCN/lua-launcher)'
 const NETWORK_HOSTS = new Set([
   'piston-meta.mojang.com', 'piston-data.mojang.com', 'launchermeta.mojang.com',
   'launcher.mojang.com', 'libraries.minecraft.net', 'resources.download.minecraft.net',
@@ -31,6 +33,16 @@ export interface Instance {
   lastPlayed?: string
   playtimeMs: number
   error?: string
+  modpack?: {
+    name: string
+    versionId: string
+    source: 'local' | 'modrinth'
+    projectId?: string
+    modrinthVersionId?: string
+    archiveSha1: string
+    archiveSha512: string
+    applied: boolean
+  }
 }
 export interface LauncherSettings {
   memoryMb: number
@@ -56,6 +68,7 @@ export interface LaunchAccount {
 }
 export interface JavaRuntime { path: string; version: string; major: number; arch: string }
 export interface VersionSummary { id: string; type: string; releaseTime: string }
+export interface FabricVersion { version: string; stable: boolean }
 export interface ModrinthProject {
   project_id: string
   slug: string
@@ -84,7 +97,7 @@ export interface ModrinthVersion {
   files: Array<{ url: string; filename: string; primary: boolean; size: number; hashes: { sha1?: string; sha512?: string } }>
   dependencies: Array<{ project_id?: string; version_id?: string; dependency_type: string }>
 }
-interface Download { url: string; sha1?: string; size?: number; path?: string }
+interface Download { url: string; sha1?: string; sha512?: string; size?: number; path?: string }
 export interface Rule {
   action: 'allow' | 'disallow'
   os?: { name?: string; arch?: string; version?: string }
@@ -130,7 +143,7 @@ interface CoreOptions {
   platform?: NodeJS.Platform
   arch?: string
 }
-interface DownloadJob { file: string; download: Download }
+interface DownloadJob { file: string; download: Download; allowedHosts?: ReadonlySet<string> }
 
 /** All remote paths are treated as untrusted, including paths in official manifests. */
 export function safeJoin(root: string, relative: string): string {
@@ -208,14 +221,17 @@ function sanitizeId(value: string): string {
   if (!/^[a-zA-Z0-9_.+\-]+$/.test(value) || value.includes('..')) throw new Error('无效的资源标识')
   return value
 }
-function assertNetworkUrl(input: string): URL {
+function assertNetworkUrl(input: string, allowedHosts: ReadonlySet<string> = NETWORK_HOSTS): URL {
   const url = new URL(input)
-  if (url.protocol !== 'https:' || url.username || url.password || !NETWORK_HOSTS.has(url.hostname) ||
+  if (url.protocol !== 'https:' || url.username || url.password || !allowedHosts.has(url.hostname) ||
       (url.port && url.port !== '443')) throw new Error(`不允许的下载来源：${url.hostname}`)
   return url
 }
 async function sha1File(file: string): Promise<string> {
-  const hash = createHash('sha1')
+  return hashFile(file, 'sha1')
+}
+async function hashFile(file: string, algorithm: 'sha1' | 'sha512'): Promise<string> {
+  const hash = createHash(algorithm)
   for await (const chunk of createReadStream(file)) hash.update(chunk as Buffer)
   return hash.digest('hex')
 }
@@ -295,15 +311,19 @@ export class LauncherCore {
     return safeJoin(this.instanceDirectory(id), 'game')
   }
 
-  async createInstance(input: { name: string; version: string; loader: Loader }): Promise<Instance> {
+  async createInstance(input: { name: string; version: string; loader: Loader; loaderVersion?: string }): Promise<Instance> {
     const name = String(input.name ?? '').trim()
     if (!name || name.length > 64) throw new Error('实例名称需要 1–64 个字符')
     if (!isSupportedVersion(input.version)) throw new Error('首版支持 Minecraft 1.20.1 及之后的正式版本')
     if (input.loader !== 'vanilla' && input.loader !== 'fabric') throw new Error('首版仅支持原版和 Fabric')
+    if (input.loaderVersion && input.loader !== 'fabric') throw new Error('只有 Fabric 实例可以指定加载器版本')
+    if (input.loaderVersion && !(await this.fabricVersions(input.version)).some(loader => loader.version === input.loaderVersion)) {
+      throw new Error('此 Minecraft 版本不支持所选 Fabric Loader')
+    }
     const versions = await this.versions()
     if (!versions.some(item => item.id === input.version)) throw new Error('该 Minecraft 正式版本不存在')
     const instance: Instance = {
-      id: randomUUID(), name, version: input.version, loader: input.loader,
+      id: randomUUID(), name, version: input.version, loader: input.loader, loaderVersion: input.loaderVersion,
       status: 'not-installed', createdAt: new Date().toISOString(), playtimeMs: 0,
     }
     await fs.mkdir(safeJoin(this.rootDir, `instances/${instance.id}/game`), { recursive: true })
@@ -332,8 +352,8 @@ export class LauncherCore {
     return this.snapshot()
   }
 
-  private async request(url: string, signal?: AbortSignal): Promise<Response> {
-    assertNetworkUrl(url)
+  private async request(url: string, signal?: AbortSignal, allowedHosts: ReadonlySet<string> = NETWORK_HOSTS): Promise<Response> {
+    assertNetworkUrl(url, allowedHosts)
     let current = url
     // Follow redirects manually so a remote response cannot redirect into a local/private service.
     for (let redirects = 0; redirects <= 4; redirects++) {
@@ -346,7 +366,7 @@ export class LauncherCore {
         const location = response.headers.get('location')
         if (!location) throw new Error('下载服务器返回了无效重定向')
         current = new URL(location, current).href
-        assertNetworkUrl(current)
+        assertNetworkUrl(current, allowedHosts)
         continue
       }
       if (!response.ok) {
@@ -380,24 +400,36 @@ export class LauncherCore {
     return Buffer.concat(chunks)
   }
   private async manifest(signal?: AbortSignal): Promise<ManifestIndex> {
+    signal?.throwIfAborted()
     if (this.manifestCache && Date.now() - this.manifestCache.at < 5 * 60_000) return this.manifestCache.value
     const value = await this.json<ManifestIndex>(MANIFEST_URL, signal)
     if (!Array.isArray(value.versions)) throw new Error('Minecraft 版本清单格式无效')
     this.manifestCache = { at: Date.now(), value }
     return value
   }
-  async versions(): Promise<VersionSummary[]> {
-    return (await this.manifest()).versions.filter(v => v.type === 'release' && isSupportedVersion(v.id))
+  async versions(signal?: AbortSignal): Promise<VersionSummary[]> {
+    return (await this.manifest(signal)).versions.filter(v => v.type === 'release' && isSupportedVersion(v.id))
       .map(({ id, type, releaseTime }) => ({ id, type, releaseTime }))
+  }
+
+  async fabricVersions(version: string, signal?: AbortSignal): Promise<FabricVersion[]> {
+    signal?.throwIfAborted()
+    if (!isSupportedVersion(version)) throw new Error('当前仅支持 Minecraft 1.20.1 及之后的正式版本')
+    const loaders = await this.json<Array<{ loader: FabricVersion }>>(`${FABRIC_URL}/versions/loader/${encodeURIComponent(version)}`, signal)
+    return loaders.map(item => ({ version: sanitizeId(item.loader.version), stable: Boolean(item.loader.stable) }))
   }
 
   private async download(job: DownloadJob, signal: AbortSignal, onBytes: (bytes: number) => void = () => {}): Promise<void> {
     const { file, download } = job
     if (!validHash(download.sha1)) throw new Error(`缺少有效的 SHA-1 校验：${path.basename(file)}`)
+    if (download.sha512 !== undefined && !/^[a-f0-9]{128}$/i.test(download.sha512)) {
+      throw new Error(`缺少有效的 SHA-512 校验：${path.basename(file)}`)
+    }
     const expectedHash = download.sha1.toLowerCase()
     try {
       const stat = await fs.stat(file)
-      if (stat.isFile() && (download.size === undefined || stat.size === download.size) && await sha1File(file) === expectedHash) return
+      if (stat.isFile() && (download.size === undefined || stat.size === download.size) && await sha1File(file) === expectedHash &&
+          (!download.sha512 || await hashFile(file, 'sha512') === download.sha512.toLowerCase())) return
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
     }
@@ -406,12 +438,13 @@ export class LauncherCore {
       signal.throwIfAborted()
       const temporary = `${file}.${randomUUID()}.part`
       try {
-        const response = await this.request(download.url, signal)
+        const response = await this.request(download.url, signal, job.allowedHosts)
         if (!response.body) throw new Error('服务器返回了空下载')
         const reader = response.body.getReader()
         const handle = await fs.open(temporary, 'wx', 0o600)
         let length = 0
         const hash = createHash('sha1')
+        const strongHash = download.sha512 ? createHash('sha512') : undefined
         try {
           for (;;) {
             signal.throwIfAborted()
@@ -420,6 +453,7 @@ export class LauncherCore {
             length += value.length
             if (length > (download.size ?? 512 * 1024 * 1024)) throw new Error('下载文件大小不符')
             hash.update(value)
+            strongHash?.update(value)
             // FileHandle.write can perform short writes; writeFile on the handle handles these.
             await handle.writeFile(value)
             onBytes(value.length)
@@ -431,6 +465,9 @@ export class LauncherCore {
         }
         if (download.size !== undefined && length !== download.size) throw new Error('下载文件不完整')
         if (hash.digest('hex') !== expectedHash) throw new Error(`SHA-1 校验失败：${path.basename(file)}`)
+        if (strongHash && strongHash.digest('hex') !== download.sha512!.toLowerCase()) {
+          throw new Error(`SHA-512 校验失败：${path.basename(file)}`)
+        }
         signal.throwIfAborted()
         await fs.rename(temporary, file)
         return
@@ -477,6 +514,23 @@ export class LauncherCore {
     await this.save()
     progress('正在获取官方版本信息', true)
     try {
+      let pack: ParsedModpack | undefined
+      if (instance.modpack && !instance.modpack.applied) {
+        const archiveFile = safeJoin(this.instanceDirectory(id), 'pack.mrpack')
+        if (!validHash(instance.modpack.archiveSha1) || !/^[a-f0-9]{128}$/i.test(instance.modpack.archiveSha512)) {
+          throw new Error('整合包安装记录校验值无效，请重新导入')
+        }
+        pack = await readModpack(archiveFile)
+        if (createHash('sha1').update(pack.archive).digest('hex') !== instance.modpack.archiveSha1 ||
+            createHash('sha512').update(pack.archive).digest('hex') !== instance.modpack.archiveSha512) {
+          throw new Error('保存的整合包已被修改，请重新导入')
+        }
+        if (pack.preview.unsupportedReason) throw new Error(pack.preview.unsupportedReason)
+        if (pack.preview.minecraftVersion !== instance.version || pack.preview.loader !== instance.loader ||
+            pack.preview.loaderVersion !== instance.loaderVersion) {
+          throw new Error('整合包与实例的游戏或加载器版本不一致')
+        }
+      }
       const entry = (await this.manifest(signal)).versions.find(v => v.id === instance.version && v.type === 'release')
       if (!entry) throw new Error('找不到该 Minecraft 正式版本')
       const versionFile = safeJoin(this.rootDir, `versions/${sanitizeId(instance.version)}/${sanitizeId(instance.version)}.json`)
@@ -492,8 +546,10 @@ export class LauncherCore {
         const loaders = await this.json<Array<{ loader: { version: string; stable: boolean } }>>(
           `${FABRIC_URL}/versions/loader/${encodeURIComponent(instance.version)}`, signal,
         )
-        const loader = loaders.find(item => item.loader.stable)?.loader
-        if (!loader) throw new Error('此 Minecraft 版本尚无稳定的 Fabric Loader')
+        const loader = instance.loaderVersion
+          ? loaders.find(item => item.loader.version === instance.loaderVersion)?.loader
+          : loaders.find(item => item.loader.stable)?.loader
+        if (!loader) throw new Error(instance.loaderVersion ? '整合包或实例指定的 Fabric Loader 不可用' : '此 Minecraft 版本尚无稳定的 Fabric Loader')
         const profile = await this.json<{ mainClass: string; libraries: Library[]; arguments?: Partial<InstalledManifest['fabricArguments']> }>(
           `${FABRIC_URL}/versions/loader/${encodeURIComponent(instance.version)}/${encodeURIComponent(loader.version)}/profile/json`, signal,
         )
@@ -578,6 +634,10 @@ export class LauncherCore {
         classpath, mainClass, fabricArguments, loggingFile,
       }
       await fs.writeFile(safeJoin(this.instanceDirectory(id), 'installed.json'), JSON.stringify(installed, null, 2), { mode: 0o600 })
+      if (pack) {
+        await this.installPackFiles(id, pack, signal)
+        instance.modpack!.applied = true
+      }
       instance.status = 'ready'
       delete instance.error
       progress('安装完成', true)
@@ -597,8 +657,9 @@ export class LauncherCore {
   }
 
   cancelInstall(id: string): void {
-    this.instance(id)
-    this.installs.get(id)?.abort(new DOMException('安装已取消', 'AbortError'))
+    const controller = this.installs.get(id)
+    if (!controller) { this.instance(id); return }
+    controller.abort(new DOMException('安装已取消', 'AbortError'))
   }
 
   private async extractNatives(file: string, directory: string, excludes: string[], signal: AbortSignal): Promise<void> {
@@ -725,7 +786,7 @@ export class LauncherCore {
       assets_index_name: installed.version.assetIndex.id,
       natives_directory: safeJoin(directory, 'natives'),
       launcher_name: 'LuaLauncher',
-      launcher_version: '0.1.0',
+      launcher_version: '0.2.0',
       classpath: classpath.join(this.platform === 'win32' ? ';' : ':'),
       classpath_separator: this.platform === 'win32' ? ';' : ':',
       library_directory: safeJoin(this.rootDir, 'libraries'),
@@ -828,6 +889,246 @@ export class LauncherCore {
       query, facets: JSON.stringify(facets), offset: String(offset), limit: '20', index: query ? 'relevance' : 'downloads',
     })
     return this.json<ModrinthSearchResponse>(`${MODRINTH_URL}/search?${params}`)
+  }
+
+  async searchModpacks(query: string, options: { offset?: number } = {}): Promise<ModrinthSearchResponse> {
+    if (typeof query !== 'string' || query.length > 200) throw new Error('搜索关键词过长')
+    const offset = options.offset ?? 0
+    if (!Number.isInteger(offset) || offset < 0 || offset > 100_000) throw new Error('无效的分页参数')
+    const params = new URLSearchParams({
+      query, offset: String(offset), limit: '20', index: query ? 'relevance' : 'downloads',
+      facets: JSON.stringify([['project_type:modpack'], ['categories:fabric', 'categories:minecraft', 'categories:vanilla']]),
+    })
+    return this.json<ModrinthSearchResponse>(`${MODRINTH_URL}/search?${params}`)
+  }
+
+  async modpackVersions(projectId: string): Promise<ModrinthVersion[]> {
+    const versions = await this.json<ModrinthVersion[]>(
+      `${MODRINTH_URL}/project/${encodeURIComponent(sanitizeId(projectId))}/version?include_changelog=false`,
+    )
+    return versions.filter(version =>
+      version.game_versions.some(isSupportedVersion) &&
+      version.loaders.some(loader => ['fabric', 'minecraft', 'vanilla'].includes(loader)) &&
+      version.files.some(file => file.filename.toLowerCase().endsWith('.mrpack')),
+    )
+  }
+
+  async inspectModpack(filePath: string): Promise<PackPreview> {
+    return structuredClone((await readModpack(filePath)).preview)
+  }
+
+  async importModpack(filePath: string, options: { name?: string } = {}): Promise<LauncherSnapshot> {
+    return this.createPackInstance(await readModpack(filePath), options, { source: 'local' })
+  }
+
+  async installModpack(versionId: string, options: { name?: string } = {}): Promise<LauncherSnapshot> {
+    const taskId = `modpack-${sanitizeId(versionId)}`
+    if (this.installs.has(taskId)) throw new Error('该整合包版本正在下载')
+    const controller = new AbortController()
+    this.installs.set(taskId, controller)
+    try {
+      this.emit({ type: 'progress', instanceId: taskId, phase: '正在获取整合包信息', completed: 0, total: 1, bytesDownloaded: 0 })
+      const version = await this.json<ModrinthVersion>(`${MODRINTH_URL}/version/${encodeURIComponent(versionId)}`, controller.signal)
+      if (!version.game_versions.some(isSupportedVersion) ||
+          !version.loaders.some(loader => ['fabric', 'minecraft', 'vanilla'].includes(loader))) {
+        throw new Error('此整合包需要未支持的 Minecraft 或加载器版本')
+      }
+      const candidates = version.files.filter(file => file.filename.toLowerCase().endsWith('.mrpack'))
+      const file = candidates.find(file => file.primary) ?? candidates[0]
+      if (!file || !Number.isSafeInteger(file.size) || file.size < 22 || file.size > MODPACK_LIMITS.archiveBytes) {
+        throw new Error('整合包缺少有效的 .mrpack 文件，或文件超过 256 MiB')
+      }
+      if (!validHash(file.hashes.sha1) || !file.hashes.sha512 || !/^[a-f0-9]{128}$/i.test(file.hashes.sha512)) {
+        throw new Error('整合包文件缺少 SHA-1 / SHA-512 校验')
+      }
+      const url = validatePackUrl(file.url)
+      const archivePath = safeJoin(this.rootDir, `packs/${file.hashes.sha512.toLowerCase()}.mrpack`)
+      let bytes = 0
+      let lastProgress = 0
+      await this.download({
+        file: archivePath, download: { url, sha1: file.hashes.sha1, sha512: file.hashes.sha512, size: file.size },
+        allowedHosts: PACK_REDIRECT_HOSTS,
+      }, controller.signal, count => {
+        bytes += count
+        if (Date.now() - lastProgress > 100) {
+          lastProgress = Date.now()
+          this.emit({ type: 'progress', instanceId: taskId, phase: '正在下载整合包', completed: Math.min(bytes, file.size), total: file.size, bytesDownloaded: bytes })
+        }
+      })
+      controller.signal.throwIfAborted()
+      const pack = await readModpack(archivePath)
+      return await this.createPackInstance(pack, options, {
+        source: 'modrinth', projectId: version.project_id, modrinthVersionId: version.id,
+      }, controller.signal)
+    } finally { this.installs.delete(taskId) }
+  }
+
+  private async createPackInstance(
+    pack: ParsedModpack, options: { name?: string },
+    source: Pick<NonNullable<Instance['modpack']>, 'source' | 'projectId' | 'modrinthVersionId'>,
+    signal?: AbortSignal,
+  ): Promise<LauncherSnapshot> {
+    signal?.throwIfAborted()
+    const preview = pack.preview
+    if (preview.unsupportedReason) throw new Error(preview.unsupportedReason)
+    const name = (options.name ?? preview.name.slice(0, 64)).trim()
+    if (!name || name.length > 64) throw new Error('实例名称需要 1–64 个字符')
+    if (!(await this.versions(signal)).some(version => version.id === preview.minecraftVersion)) throw new Error('整合包指定的 Minecraft 正式版本不存在')
+    if (preview.loaderVersion && !(await this.fabricVersions(preview.minecraftVersion, signal)).some(loader => loader.version === preview.loaderVersion)) {
+      throw new Error('整合包指定的 Fabric Loader 版本不可用')
+    }
+    signal?.throwIfAborted()
+    const instance: Instance = {
+      id: randomUUID(), name, version: preview.minecraftVersion, loader: preview.loader,
+      loaderVersion: preview.loaderVersion, status: 'not-installed', createdAt: new Date().toISOString(), playtimeMs: 0,
+      modpack: {
+        name: preview.name, versionId: preview.versionId, ...source,
+        archiveSha1: createHash('sha1').update(pack.archive).digest('hex'),
+        archiveSha512: createHash('sha512').update(pack.archive).digest('hex'), applied: false,
+      },
+    }
+    const directory = safeJoin(this.rootDir, `instances/${instance.id}`)
+    try {
+      await fs.mkdir(safeJoin(directory, 'game'), { recursive: true })
+      await fs.writeFile(safeJoin(directory, 'pack.mrpack'), pack.archive, { mode: 0o600, flag: 'wx' })
+      signal?.throwIfAborted()
+    } catch (error) {
+      await fs.rm(directory, { recursive: true, force: true })
+      throw error
+    }
+    // Persist the immutable source archive and exact loader before the first install attempt.
+    // An interrupted import therefore remains a normal, retryable instance on the next app run.
+    this.instances.push(instance)
+    await this.save()
+    const abort = () => this.cancelInstall(instance.id)
+    signal?.addEventListener('abort', abort, { once: true })
+    try {
+      const installing = this.install(instance.id)
+      if (signal?.aborted) abort()
+      return await installing
+    } finally { signal?.removeEventListener('abort', abort) }
+  }
+
+  private async installPackFiles(id: string, pack: ParsedModpack, signal: AbortSignal): Promise<void> {
+    const directory = this.instanceDirectory(id)
+    const gameDirectory = safeJoin(directory, 'game')
+    const staging = safeJoin(directory, `.pack-staging-${randomUUID()}`)
+    const paths = [...pack.files.map(file => file.path), ...pack.overrides.map(file => file.path)]
+    const backups: Array<{ original: string; backup: string }> = []
+    const placed: string[] = []
+    const createdDirectories: string[] = []
+    let recoveryNeeded = false
+    let bytesDownloaded = 0
+    let completed = 0
+    let lastProgress = 0
+    const progress = (phase: string, force = false) => {
+      if (force || Date.now() - lastProgress > 100) {
+        lastProgress = Date.now()
+        this.emit({ type: 'progress', instanceId: id, phase, completed, total: paths.length, bytesDownloaded })
+      }
+    }
+    try {
+      await fs.mkdir(safeJoin(staging, 'files'), { recursive: true })
+      await fs.mkdir(safeJoin(staging, 'backups'), { recursive: true })
+      progress('正在下载整合包文件', true)
+      const failed = new AbortController()
+      const downloadSignal = AbortSignal.any([signal, failed.signal])
+      let cursor = 0
+      const workers = Array.from({ length: Math.min(pack.files.length, this.settings.concurrentDownloads) }, async () => {
+        for (;;) {
+          downloadSignal.throwIfAborted()
+          const file = pack.files[cursor++]
+          if (!file) return
+          const cacheFile = safeJoin(this.rootDir, `packs/files/${file.hashes.sha512}`)
+          let lastError: unknown
+          for (const url of file.downloads) {
+            try {
+              await this.download({
+                file: cacheFile, download: { url, ...file.hashes, size: file.fileSize }, allowedHosts: PACK_REDIRECT_HOSTS,
+              }, downloadSignal, bytes => { bytesDownloaded += bytes; progress('正在下载整合包文件') })
+              lastError = undefined
+              break
+            } catch (error) {
+              downloadSignal.throwIfAborted()
+              lastError = error
+            }
+          }
+          if (lastError) throw lastError
+          const destination = safeJoin(staging, `files/${file.path}`)
+          await fs.mkdir(path.dirname(destination), { recursive: true })
+          await fs.copyFile(cacheFile, destination)
+          completed++
+          progress('正在下载整合包文件')
+        }
+      })
+      const outcomes = await Promise.allSettled(workers.map(worker => worker.catch(error => { failed.abort(error); throw error })))
+      const failure = outcomes.find(result => result.status === 'rejected') as PromiseRejectedResult | undefined
+      if (failure) throw failure.reason
+      for (const override of pack.overrides) {
+        signal.throwIfAborted()
+        const destination = safeJoin(staging, `files/${override.path}`)
+        await fs.mkdir(path.dirname(destination), { recursive: true })
+        await fs.writeFile(destination, override.data, { mode: 0o600 })
+        completed++
+        progress('正在准备整合包配置')
+      }
+      signal.throwIfAborted()
+      if (!(await fs.lstat(gameDirectory)).isDirectory()) throw new Error('实例游戏目录不是普通目录')
+      // Build parents one component at a time and refuse pre-existing symlinks before commit.
+      for (const relative of paths) {
+        validatePackPath(relative)
+        const parts = relative.split('/')
+        for (let count = 1; count < parts.length; count++) {
+          const parent = safeJoin(gameDirectory, parts.slice(0, count).join('/'))
+          const existing = await fs.lstat(parent).catch(error => {
+            if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+            throw error
+          })
+          if (existing && !existing.isDirectory()) throw new Error(`整合包目标目录包含符号链接或非目录：${relative}`)
+          if (!existing) { await fs.mkdir(parent); createdDirectories.push(parent) }
+        }
+      }
+      try {
+        for (const relative of paths) {
+          signal.throwIfAborted()
+          const original = safeJoin(gameDirectory, relative)
+          const existing = await fs.lstat(original).catch(error => {
+            if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+            throw error
+          })
+          if (!existing) continue
+          if (!existing.isFile()) throw new Error(`整合包目标不是普通文件：${relative}`)
+          const backup = safeJoin(staging, `backups/${backups.length}`)
+          await this.renameFile(original, backup)
+          backups.push({ original, backup })
+        }
+        for (const relative of paths) {
+          signal.throwIfAborted()
+          const target = safeJoin(gameDirectory, relative)
+          await this.renameFile(safeJoin(staging, `files/${relative}`), target)
+          placed.push(target)
+        }
+        signal.throwIfAborted()
+      } catch (error) {
+        const rollbackErrors: unknown[] = []
+        for (const file of placed.reverse()) {
+          try { await fs.rm(file, { force: true }) } catch (rollbackError) { rollbackErrors.push(rollbackError) }
+        }
+        for (const { original, backup } of backups.reverse()) {
+          try { await this.renameFile(backup, original) } catch (rollbackError) { rollbackErrors.push(rollbackError) }
+        }
+        if (rollbackErrors.length) {
+          recoveryNeeded = true
+          throw new AggregateError([error, ...rollbackErrors], `整合包回滚失败；恢复备份保留在 ${staging}`)
+        }
+        throw error
+      }
+      progress('整合包文件安装完成', true)
+    } finally {
+      if (!recoveryNeeded) await fs.rm(staging, { recursive: true, force: true })
+      // Empty directories created by an unsuccessful commit are harmless, but remove them when possible.
+      for (const directory of createdDirectories.reverse()) await fs.rmdir(directory).catch(() => {})
+    }
   }
 
   async modVersions(projectId: string, instanceId: string): Promise<ModrinthVersion[]> {

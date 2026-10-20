@@ -7,9 +7,13 @@ import os from 'node:os'
 import path from 'node:path'
 import { PassThrough } from 'node:stream'
 import test from 'node:test'
+import AdmZip from 'adm-zip'
 import { LauncherCore, isSupportedVersion, mavenPath, offlineUuid, resolveArguments, rulesAllow, safeJoin, type CoreEvent } from './core'
 
 const sha1 = (body: string) => createHash('sha1').update(body).digest('hex')
+const packHashes = (body: string | Buffer) => ({
+  sha1: createHash('sha1').update(body).digest('hex'), sha512: createHash('sha512').update(body).digest('hex'),
+})
 const MANIFEST = 'https://piston-meta.mojang.com/mc/game/version_manifest_v2.json'
 const VERSION = 'https://piston-meta.mojang.com/test/1.20.1.json'
 const INDEX = 'https://piston-meta.mojang.com/test/assets.json'
@@ -103,6 +107,22 @@ const testRuntime = { path: '/fake/java', version: '17.0.12', major: 17, arch: '
 
 async function assertNoStaging(core: LauncherCore, id: string) {
   assert.equal((await fs.readdir(core.instanceDirectory(id))).some(file => file.startsWith('.mod-staging-')), false)
+}
+
+function packDownload(filePath: string, body: string, extra: Record<string, unknown> = {}) {
+  return { path: filePath, downloads: [`https://cdn.modrinth.com/packs/${filePath}`],
+    hashes: packHashes(body), fileSize: Buffer.byteLength(body), ...extra }
+}
+function testPack(files: unknown[] = [], overrides: Record<string, string> = {}, dependencies: Record<string, string> = {
+  minecraft: '1.20.1', 'fabric-loader': '0.16.10',
+}): Buffer {
+  const zip = new AdmZip()
+  zip.addFile('modrinth.index.json', Buffer.from(JSON.stringify({
+    formatVersion: 1, game: 'minecraft', name: 'Test Modpack', versionId: '1.0',
+    dependencies, files,
+  })))
+  for (const [name, body] of Object.entries(overrides)) zip.addFile(name, Buffer.from(body))
+  return zip.toBuffer()
 }
 
 test('remote paths cannot escape the launcher directory', () => {
@@ -455,4 +475,230 @@ test('metadata cannot redirect the downloader into a local service', async t => 
   await core.init()
   await assert.rejects(core.versions(), /不允许的下载来源/)
   assert.deepEqual(requests, [MANIFEST])
+})
+
+test('local modpack import pins its Fabric version and becomes ready only after client files and overrides', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'lua-core-pack-local-'))
+  t.after(() => fs.rm(directory, { recursive: true, force: true }))
+  const fake = fabricFixture()
+  fake.responses.set('https://meta.fabricmc.net/v2/versions/loader/1.20.1', JSON.stringify([
+    { loader: { version: '0.19.5', stable: true } }, { loader: { version: '0.16.10', stable: true } },
+  ]))
+  const client = packDownload('mods/client.jar', 'client mod')
+  const server = packDownload('mods/server.jar', 'server mod', { env: { client: 'unsupported', server: 'required' } })
+  fake.responses.set(client.downloads[0], 'client mod')
+  const archiveFile = path.join(directory, 'import.mrpack')
+  await fs.writeFile(archiveFile, testPack([client, server], {
+    'overrides/config/example.json': 'common', 'client-overrides/config/example.json': 'client',
+    'server-overrides/config/server.json': 'server',
+  }))
+  const readyEvents: boolean[] = []
+  const core = new LauncherCore(path.join(directory, 'data'), event => {
+    if (event.type === 'state') readyEvents.push(event.snapshot.instances.some(instance => instance.status === 'ready'))
+  }, { fetch: fake.fetcher })
+  await core.init()
+  const result = await core.importModpack(archiveFile, { name: 'My pack' })
+  const instance = result.instances[0]
+  assert.equal(instance.status, 'ready')
+  assert.equal(instance.loaderVersion, '0.16.10')
+  assert.equal(instance.modpack?.applied, true)
+  assert.deepEqual(readyEvents, [false, false, false, true])
+  assert.equal(await fs.readFile(path.join(core.getInstancePath(instance.id), 'mods/client.jar'), 'utf8'), 'client mod')
+  assert.equal(await fs.readFile(path.join(core.getInstancePath(instance.id), 'config/example.json'), 'utf8'), 'client')
+  await assert.rejects(fs.access(path.join(core.getInstancePath(instance.id), 'config/server.json')))
+  assert.equal(fake.requests.includes(server.downloads[0]), false)
+  assert(fake.requests.includes('https://meta.fabricmc.net/v2/versions/loader/1.20.1/0.16.10/profile/json'))
+  assert.equal(fake.requests.some(url => url.endsWith('/0.19.5/profile/json')), false)
+})
+
+test('cancelled modpack imports retain their source and retry successfully after an app restart', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'lua-core-pack-cancel-'))
+  t.after(() => fs.rm(directory, { recursive: true, force: true }))
+  const fake = fabricFixture()
+  const file = packDownload('mods/client.jar', 'client mod')
+  fake.responses.set(file.downloads[0], 'client mod')
+  const archiveFile = path.join(directory, 'source.mrpack')
+  await fs.writeFile(archiveFile, testPack([file]))
+  let entered!: () => void
+  const downloadingPackFile = new Promise<void>(resolve => { entered = resolve })
+  const slowFetch: typeof fetch = async (url, options) => {
+    if (String(url) === file.downloads[0]) {
+      entered()
+      await new Promise<void>((_, reject) => {
+        if (options?.signal?.aborted) return reject(options.signal.reason)
+        options?.signal?.addEventListener('abort', () => reject(options.signal?.reason), { once: true })
+      })
+    }
+    return fake.fetcher(url, options)
+  }
+  const core = new LauncherCore(path.join(directory, 'data'), undefined, { fetch: slowFetch })
+  await core.init()
+  const pending = core.importModpack(archiveFile)
+  const rejected = assert.rejects(pending, /安装已取消/)
+  await downloadingPackFile
+  const instance = core.snapshot().instances[0]
+  assert.equal(instance.status, 'installing')
+  core.cancelInstall(instance.id)
+  await rejected
+  assert.equal(core.snapshot().instances[0].status, 'not-installed')
+  assert.equal(core.snapshot().instances[0].modpack?.applied, false)
+  await fs.rm(archiveFile)
+  const reopened = new LauncherCore(path.join(directory, 'data'), undefined, { fetch: fake.fetcher })
+  await reopened.init()
+  await reopened.install(instance.id)
+  assert.equal(reopened.snapshot().instances[0].status, 'ready')
+  assert.equal(reopened.snapshot().instances[0].modpack?.applied, true)
+  assert.equal(await fs.readFile(path.join(reopened.getInstancePath(instance.id), file.path), 'utf8'), 'client mod')
+  assert.equal((await fs.readdir(reopened.instanceDirectory(instance.id))).some(name => name.startsWith('.pack-staging-')), false)
+})
+
+test('pack files require SHA-512 as well as SHA-1 and failed imports never publish a ready instance', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'lua-core-pack-hash-'))
+  t.after(() => fs.rm(directory, { recursive: true, force: true }))
+  const fake = fixture()
+  const file = packDownload('mods/untrusted.jar', 'jar body', {
+    hashes: { sha1: sha1('jar body'), sha512: '0'.repeat(128) },
+  })
+  fake.responses.set(file.downloads[0], 'jar body')
+  const archiveFile = path.join(directory, 'bad-hash.mrpack')
+  await fs.writeFile(archiveFile, testPack([file], {}, { minecraft: '1.20.1' }))
+  const core = new LauncherCore(path.join(directory, 'data'), undefined, { fetch: fake.fetcher })
+  await core.init()
+  await assert.rejects(core.importModpack(archiveFile), /SHA-512/)
+  const instance = core.snapshot().instances[0]
+  assert.equal(instance.status, 'error')
+  assert.equal(instance.modpack?.applied, false)
+  await assert.rejects(fs.access(path.join(core.getInstancePath(instance.id), file.path)))
+  await fs.access(path.join(core.instanceDirectory(instance.id), 'pack.mrpack'))
+})
+
+test('online modpack installs verify the archive and expose a cancellable download task', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'lua-core-pack-online-'))
+  t.after(() => fs.rm(directory, { recursive: true, force: true }))
+  const fake = fixture()
+  const contents = testPack([], { 'overrides/options.txt': 'fullscreen:false' }, { minecraft: '1.20.1' })
+  const archiveUrl = 'https://cdn.modrinth.com/data/pack/versions/pack1/test.mrpack'
+  fake.responses.set('https://api.modrinth.com/v2/version/pack1', JSON.stringify({
+    id: 'pack1', project_id: 'testpack', name: 'Online Pack', game_versions: ['1.20.1'], loaders: ['minecraft'],
+    files: [{ filename: 'test.mrpack', url: archiveUrl, primary: true, size: contents.length, hashes: packHashes(contents) }],
+    dependencies: [],
+  }))
+  const events: CoreEvent[] = []
+  const fetcher: typeof fetch = (input, options) => String(input) === archiveUrl
+    ? Promise.resolve(new Response(new Uint8Array(contents))) : fake.fetcher(input, options)
+  const core = new LauncherCore(directory, event => events.push(event), { fetch: fetcher })
+  await core.init()
+  const result = await core.installModpack('pack1', { name: 'Online copy' })
+  assert.equal(result.instances[0].status, 'ready')
+  assert.equal(result.instances[0].modpack?.source, 'modrinth')
+  assert.equal(result.instances[0].modpack?.projectId, 'testpack')
+  assert.equal(result.instances[0].modpack?.modrinthVersionId, 'pack1')
+  assert(events.some(event => event.type === 'progress' && event.instanceId === 'modpack-pack1'))
+  assert.equal(await fs.readFile(path.join(core.getInstancePath(result.instances[0].id), 'options.txt'), 'utf8'), 'fullscreen:false')
+})
+
+test('online pack cancellation interrupts archive, manifest, and Fabric preparation and permits a retry', { timeout: 5000 }, async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'lua-core-pack-preparation-'))
+  t.after(() => fs.rm(directory, { recursive: true, force: true }))
+  const archiveUrl = 'https://cdn.modrinth.com/data/pack/versions/pack1/test.mrpack'
+  const fabricUrl = 'https://meta.fabricmc.net/v2/versions/loader/1.20.1'
+  for (const [index, blockedUrl] of [archiveUrl, MANIFEST, fabricUrl].entries()) {
+    const fake = fabricFixture()
+    const contents = testPack()
+    fake.responses.set('https://api.modrinth.com/v2/version/pack1', JSON.stringify({
+      id: 'pack1', project_id: 'testpack', name: 'Online Pack', game_versions: ['1.20.1'], loaders: ['fabric'],
+      files: [{ filename: 'test.mrpack', url: archiveUrl, primary: true, size: contents.length, hashes: packHashes(contents) }],
+      dependencies: [],
+    }))
+    let entered!: () => void
+    const preparationStarted = new Promise<void>(resolve => { entered = resolve })
+    let block = true
+    let observedAbort = false
+    const fetcher: typeof fetch = async (input, options) => {
+      if (block && String(input) === blockedUrl) {
+        entered()
+        await new Promise<void>((_, reject) => {
+          const abort = () => { observedAbort = true; reject(options?.signal?.reason) }
+          if (options?.signal?.aborted) abort()
+          else options?.signal?.addEventListener('abort', abort, { once: true })
+        })
+      }
+      return String(input) === archiveUrl ? new Response(new Uint8Array(contents)) : fake.fetcher(input, options)
+    }
+    const core = new LauncherCore(path.join(directory, String(index)), undefined, { fetch: fetcher })
+    await core.init()
+    const pending = core.installModpack('pack1')
+    const rejected = assert.rejects(pending, /安装已取消/)
+    await preparationStarted
+    core.cancelInstall('modpack-pack1')
+    await rejected
+    assert.equal(observedAbort, true, `request must receive cancellation: ${blockedUrl}`)
+    assert.deepEqual(core.snapshot().instances, [])
+    block = false
+    const result = await core.installModpack('pack1')
+    assert.equal(result.instances.length, 1)
+    assert.equal(result.instances[0].status, 'ready')
+    assert.equal(result.instances[0].loaderVersion, '0.16.10')
+  }
+})
+
+test('unsupported modpacks are inspectable but rejected before creating an instance or downloading game files', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'lua-core-pack-unsupported-'))
+  t.after(() => fs.rm(directory, { recursive: true, force: true }))
+  const archiveFile = path.join(directory, 'forge.mrpack')
+  await fs.writeFile(archiveFile, testPack([], {}, { minecraft: '1.20.1', forge: '47.0.0' }))
+  const fake = fixture()
+  const core = new LauncherCore(path.join(directory, 'data'), undefined, { fetch: fake.fetcher })
+  await core.init()
+  assert.match((await core.inspectModpack(archiveFile)).unsupportedReason ?? '', /forge/)
+  await assert.rejects(core.importModpack(archiveFile), /forge/)
+  assert.deepEqual(core.snapshot().instances, [])
+  assert.deepEqual(fake.requests, [])
+})
+
+test('modpack commit failure rolls back changed files and the saved package supports retry', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'lua-core-pack-rollback-'))
+  t.after(() => fs.rm(directory, { recursive: true, force: true }))
+  const fake = fixture()
+  const file = packDownload('mods/client.jar', 'client mod')
+  fake.responses.set(file.downloads[0], 'client mod')
+  const archiveFile = path.join(directory, 'test.mrpack')
+  await fs.writeFile(archiveFile, testPack([file], { 'overrides/config/example.json': 'new config' }, { minecraft: '1.20.1' }))
+  let failCommit = true
+  let partialCommitObserved = false
+  const renameFile: typeof fs.rename = async (from, to) => {
+    if (failCommit && String(from).includes('.pack-staging-') && String(from).includes(`${path.sep}files${path.sep}config${path.sep}`)) {
+      partialCommitObserved = true
+      throw new Error('simulated pack commit failure')
+    }
+    await fs.rename(from, to)
+  }
+  const core = new LauncherCore(path.join(directory, 'data'), undefined, { fetch: fake.fetcher, renameFile })
+  await core.init()
+  await assert.rejects(core.importModpack(archiveFile), /simulated pack commit failure/)
+  const instance = core.snapshot().instances[0]
+  assert.equal(partialCommitObserved, true)
+  assert.equal(instance.status, 'error')
+  await assert.rejects(fs.access(path.join(core.getInstancePath(instance.id), file.path)))
+  failCommit = false
+  await fs.rm(archiveFile)
+  await core.install(instance.id)
+  assert.equal(core.snapshot().instances[0].status, 'ready')
+  assert.equal(await fs.readFile(path.join(core.getInstancePath(instance.id), 'config/example.json'), 'utf8'), 'new config')
+})
+
+test('Fabric selection and modpack version lists only offer supported configurations', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'lua-core-pack-versions-'))
+  t.after(() => fs.rm(directory, { recursive: true, force: true }))
+  const fake = fabricFixture()
+  const version = { id: 'a', game_versions: ['1.20.1'], loaders: ['fabric'], files: [{ filename: 'pack.mrpack' }] }
+  fake.responses.set('https://api.modrinth.com/v2/project/example/version?include_changelog=false', JSON.stringify([
+    version, { ...version, id: 'old', game_versions: ['1.19.4'] }, { ...version, id: 'forge', loaders: ['forge'] },
+    { ...version, id: 'wrong-file', files: [{ filename: 'something.jar' }] },
+  ]))
+  const core = new LauncherCore(directory, undefined, { fetch: fake.fetcher })
+  await core.init()
+  assert.deepEqual(await core.fabricVersions('1.20.1'), [{ version: '0.16.10', stable: true }])
+  assert.deepEqual((await core.modpackVersions('example')).map(version => version.id), ['a'])
+  await assert.rejects(core.createInstance({ name: 'Wrong loader', version: '1.20.1', loader: 'fabric', loaderVersion: '99.0.0' }), /不支持所选/)
 })

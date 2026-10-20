@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import test, { type TestContext } from 'node:test'
 import {
   AuthError, AuthManager, redactAuthSecrets,
-  type AuthErrorCode, type AuthOptions, type DeviceCode,
+  type AuthErrorCode, type AuthOptions, type AuthStatus, type DeviceCode,
 } from './auth'
 
 // Deliberately fictitious application ID and credentials. No live accounts or
@@ -68,6 +68,7 @@ async function fixture(t: TestContext, steps: Step[]) {
   t.after(async () => { await rm(root, { recursive: true, force: true }) })
   const key = randomBytes(32)
   const codes: DeviceCode[] = []
+  const statuses: AuthStatus[] = []
   const calls: Call[] = []
   const sleeps: number[] = []
   let time = 1_700_000_000_000
@@ -85,6 +86,7 @@ async function fixture(t: TestContext, steps: Step[]) {
       return Buffer.concat([decipher.update(encrypted.subarray(28)), decipher.final()]).toString('utf8')
     },
     onDeviceCode(code) { codes.push(code) },
+    onStatus(status) { statuses.push(status) },
     now: () => time,
     sleep: async (ms, signal) => {
       signal.throwIfAborted()
@@ -104,7 +106,7 @@ async function fixture(t: TestContext, steps: Step[]) {
     },
   }
   return {
-    root, options, codes, calls, sleeps, queue,
+    root, options, codes, statuses, calls, sleeps, queue,
     manager: new AuthManager(root, options),
     advance: (ms: number) => { time += ms },
     file: join(root, 'microsoft-session.json'),
@@ -157,7 +159,7 @@ test('a complete device flow exposes only profile and user-code fields, storing 
   assert.ok(!JSON.stringify(saved).includes(SECRET.minecraft))
   if (process.platform !== 'win32') assert.equal((await stat(f.file)).mode & 0o777, 0o600)
 
-  assert.deepEqual(await f.manager.credentials(), { ...ACCOUNT, accessToken: SECRET.minecraft })
+  assert.deepEqual(await f.manager.credentials(), { ...ACCOUNT, accessToken: SECRET.minecraft, clientId: CLIENT_ID })
   assert.equal(f.calls.length, 7, 'unexpired access token is reused only in memory')
   assert.equal(f.queue.length, 0)
 })
@@ -169,7 +171,7 @@ test('a restarted manager refreshes with the stored app ID and rotates the encry
   const restarted = new AuthManager(f.root, f.options)
   assert.deepEqual(await restarted.account(), ACCOUNT)
   const [first, concurrent] = await Promise.all([restarted.credentials(), restarted.credentials()])
-  assert.deepEqual(first, { ...ACCOUNT, accessToken: SECRET.minecraft })
+  assert.deepEqual(first, { ...ACCOUNT, accessToken: SECRET.minecraft, clientId: CLIENT_ID })
   assert.deepEqual(concurrent, first)
   const form = new URLSearchParams(String(f.calls[7].init.body))
   assert.equal(form.get('grant_type'), 'refresh_token')
@@ -388,7 +390,7 @@ for (const kind of ['login', 'refresh'] as const) {
     // A replacement login must not interrupt an already committed operation.
     await assert.rejects(manager.begin(CLIENT_ID), isAuthError('BUSY'))
     release.resolve()
-    assert.deepEqual(await pending, kind === 'login' ? ACCOUNT : { ...ACCOUNT, accessToken: SECRET.minecraft })
+    assert.deepEqual(await pending, kind === 'login' ? ACCOUNT : { ...ACCOUNT, accessToken: SECRET.minecraft, clientId: CLIENT_ID })
     assert.deepEqual(await manager.account(), ACCOUNT)
     assert.deepEqual(await new AuthManager(f.root, f.options).account(), ACCOUNT)
     const envelope = JSON.parse(await readFile(f.file, 'utf8'))
@@ -483,4 +485,104 @@ test('redaction removes known tokens, encoded tokens, auth headers, JSON and que
     assert.ok(!safe.includes(secret), `Secret was not redacted: ${secret}`)
   }
   assert.ok(safe.includes('safe=1'))
+})
+
+test('login reports stages in order and publishes completion only after safe persistence', async t => {
+  const f = await fixture(t, [device(), oauth(), ...minecraft()])
+  const persisted: boolean[] = []
+  const observed = deferred()
+  const manager = new AuthManager(f.root, {
+    ...f.options,
+    onStatus: async status => {
+      f.statuses.push(status)
+      if (status.stage === 'complete') {
+        persisted.push(Boolean(await readFile(f.file, 'utf8')))
+        observed.resolve()
+      }
+    },
+  })
+  await manager.begin(CLIENT_ID)
+  assert.deepEqual(f.statuses.map(status => status.stage), [
+    'requesting-code', 'waiting-authorization', 'xbox', 'minecraft', 'checking-ownership', 'saving', 'complete',
+  ])
+  for (const status of f.statuses) assert.deepEqual(Object.keys(status).sort(), ['message', 'stage'])
+  for (const secret of Object.values(SECRET)) assert.ok(!JSON.stringify(f.statuses).includes(secret))
+  await observed.promise
+  assert.deepEqual(persisted, [true])
+})
+
+test('failed ownership and failed storage never report complete', async t => {
+  const chain = minecraft()
+  const f = await fixture(t, [
+    device(), oauth(), ...chain.slice(0, 3),
+    { suffix: '/entitlements/mcstore', body: { items: [] } },
+  ])
+  await assert.rejects(f.manager.begin(CLIENT_ID), isAuthError('NO_MINECRAFT_OWNERSHIP'))
+  assert.equal(f.statuses.at(-1)?.stage, 'checking-ownership')
+  f.queue.push(device(), oauth(), ...minecraft())
+  const manager = new AuthManager(f.root, {
+    ...f.options, seal: () => { throw new Error(SECRET.refresh) },
+  })
+  await assert.rejects(manager.begin(CLIENT_ID), isAuthError('STORAGE_UNAVAILABLE'))
+  assert.equal(f.statuses.at(-1)?.stage, 'saving')
+  assert.ok(!f.statuses.some(status => status.stage === 'complete'))
+})
+
+test('cancelling from a status observer stops before network or storage commits', async t => {
+  const f = await fixture(t, [])
+  const manager = new AuthManager(f.root, {
+    ...f.options, onStatus: status => {
+      f.statuses.push(status)
+      manager.cancel()
+    },
+  })
+  await assert.rejects(manager.begin(CLIENT_ID), isAuthError('CANCELLED'))
+  assert.equal(f.calls.length, 0)
+  assert.deepEqual(f.statuses.map(status => status.stage), ['requesting-code'])
+  await assert.rejects(readFile(f.file), { code: 'ENOENT' })
+})
+
+test('throwing or rejecting status observers cannot invalidate login or expose their errors', async t => {
+  const f = await fixture(t, [device(), oauth(), ...minecraft()])
+  const manager = new AuthManager(f.root, {
+    ...f.options, onStatus: status => {
+      if (status.stage === 'complete') return Promise.reject(new Error(SECRET.refresh))
+      throw new Error(SECRET.microsoft)
+    },
+  })
+  assert.deepEqual(await manager.begin(CLIENT_ID), ACCOUNT)
+  assert.deepEqual(await new AuthManager(f.root, f.options).account(), ACCOUNT)
+})
+
+test('Xbox ID and client ID are supplied only to main-process credentials, never UI or disk', async t => {
+  const chain = minecraft()
+  const xuid = '2533274991020393'
+  chain[1].body = { Token: SECRET.xsts, DisplayClaims: { xui: [{ uhs: 'test-user-hash', xid: xuid }] } }
+  const f = await fixture(t, [device(), oauth(), ...chain])
+  assert.deepEqual(await f.manager.begin(CLIENT_ID.toUpperCase()), ACCOUNT)
+  assert.deepEqual(await f.manager.credentials(), { ...ACCOUNT, accessToken: SECRET.minecraft, clientId: CLIENT_ID, xuid })
+  assert.ok(!JSON.stringify(await f.manager.account()).includes(xuid))
+  assert.ok(!JSON.stringify(f.statuses).includes(xuid))
+  const envelope = JSON.parse(await readFile(f.file, 'utf8'))
+  assert.ok(!(await f.options.unseal(Buffer.from(envelope.encrypted, 'base64'))).includes(xuid))
+})
+
+test('absent or invalid Xbox IDs are omitted instead of replaced by a user hash', async t => {
+  const chain = minecraft()
+  chain[1].body = { Token: SECRET.xsts, DisplayClaims: { xui: [{ uhs: 'test-user-hash', xid: SECRET.xbox }] } }
+  const f = await fixture(t, [device(), oauth(), ...chain])
+  await f.manager.begin(CLIENT_ID)
+  assert.equal((await f.manager.credentials()).xuid, undefined)
+})
+
+test('refresh reports its real stages without implying a new device-code authorization', async t => {
+  const f = await fixture(t, [device(), oauth(), ...minecraft()])
+  await f.manager.begin(CLIENT_ID)
+  f.statuses.length = 0
+  f.advance(3_600_000)
+  f.queue.push(oauth(), ...minecraft())
+  await f.manager.credentials()
+  assert.deepEqual(f.statuses.map(status => status.stage), [
+    'xbox', 'minecraft', 'checking-ownership', 'saving', 'complete',
+  ])
 })

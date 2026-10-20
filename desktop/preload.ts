@@ -6,6 +6,8 @@ const methods = new Set([
   'stop', 'updateSettings', 'detectJava', 'searchMods', 'modVersions', 'installMod',
   'openInstance', 'openExternal', 'account', 'login', 'cancelLogin', 'logout',
   'setOffline', 'logs',
+  'fabricVersions', 'chooseModpack', 'importModpack', 'searchModpacks',
+  'modpackVersions', 'installModpack', 'authConfig', 'saveAuthConfig', 'authState',
 ])
 contextBridge.exposeInMainWorld('launcher', {
   call(method: string, ...args: unknown[]) {

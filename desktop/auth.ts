@@ -29,6 +29,18 @@ export interface DeviceCode {
 /** Sensitive. For constructing a game process in the main process only. */
 export interface MinecraftCredentials extends PublicAccount {
   accessToken: string
+  clientId: string
+  /** Optional Xbox ID supplied by XSTS. Kept in memory and never sent to the UI. */
+  xuid?: string
+}
+
+export type AuthStage =
+  | 'requesting-code' | 'waiting-authorization' | 'xbox' | 'minecraft'
+  | 'checking-ownership' | 'saving' | 'complete'
+
+export interface AuthStatus {
+  stage: AuthStage
+  message: string
 }
 
 export interface AuthOptions {
@@ -37,6 +49,8 @@ export interface AuthOptions {
   /** Pass Electron safeStorage.decryptString; never substitute plaintext storage. */
   unseal: (encrypted: Buffer) => string | Promise<string>
   onDeviceCode: (code: DeviceCode) => void | Promise<void>
+  /** Informational only. Observer errors must never invalidate a saved login. */
+  onStatus?: (status: AuthStatus) => void | Promise<void>
   /** Injectable transports and time make protocol tests independent of real accounts. */
   fetch?: typeof globalThis.fetch
   now?: () => number
@@ -130,6 +144,7 @@ interface StoredSession {
 interface AccessSession {
   accessToken: string
   expiresAt: number
+  xuid?: string
 }
 
 interface Operation {
@@ -142,6 +157,15 @@ const MICROSOFT_BASE = 'https://login.microsoftonline.com/consumers/oauth2/v2.0'
 const SCOPES = 'XboxLive.signin offline_access'
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const REQUEST_TIMEOUT_MS = 30_000
+const statusMessages: Record<AuthStage, string> = {
+  'requesting-code': '正在获取 Microsoft 登录代码…',
+  'waiting-authorization': '请在 Microsoft 官方页面输入代码并完成授权。',
+  xbox: '正在验证 Xbox 账户…',
+  minecraft: '正在连接 Minecraft 登录服务…',
+  'checking-ownership': '正在检查 Java 版许可与游戏档案…',
+  saving: '正在安全保存登录信息…',
+  complete: 'Microsoft 登录已完成。',
+}
 
 function object(value: unknown): JsonObject {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -164,12 +188,12 @@ function seconds(value: unknown): number {
   return value
 }
 
-function validateClientId(value: string): string {
+export function validateClientId(value: unknown): string {
   const id = typeof value === 'string' ? value.trim() : ''
   if (!UUID.test(id) || /^0{8}-0{4}-0{4}-0{4}-0{12}$/.test(id)) {
     throw new AuthError('INVALID_CLIENT_ID')
   }
-  return id
+  return id.toLowerCase()
 }
 
 function publicAccount(value: unknown): PublicAccount {
@@ -271,6 +295,7 @@ export class AuthManager {
     try {
       await this.#load()
       checkCancelled(signal)
+      this.#notify('requesting-code', signal)
       const { status, data } = await this.#postForm(`${MICROSOFT_BASE}/devicecode`, {
         client_id: validClientId, scope: SCOPES,
       }, signal)
@@ -290,6 +315,7 @@ export class AuthManager {
       await this.#options.onDeviceCode({
         userCode: data.user_code, verificationUri: uri.href, expiresAt,
       })
+      this.#notify('waiting-authorization', signal)
 
       let oauth: JsonObject | undefined
       while (this.#now() < expiresAt) {
@@ -316,6 +342,7 @@ export class AuthManager {
       const session = { clientId: validClientId, refreshToken, account: result.account }
       await this.#save(session, result.access, operation)
       checkCancelled(signal)
+      this.#notify('complete', signal)
       return publicAccount(result.account)
     } catch (error) {
       throw sanitizedError(error, signal)
@@ -332,7 +359,7 @@ export class AuthManager {
     const session = this.#session
     if (!session) throw new AuthError('AUTH_REQUIRED')
     if (this.#access && this.#access.expiresAt > this.#now() + 60_000) {
-      return { ...publicAccount(session.account), accessToken: this.#access.accessToken }
+      return this.#credentials(session, this.#access)
     }
     const operation = this.#start('refresh')
     const work = this.#refresh(session, operation)
@@ -393,13 +420,15 @@ export class AuthManager {
       const nextSession = { clientId: session.clientId, refreshToken, account: result.account }
       await this.#save(nextSession, result.access, operation)
       checkCancelled(signal)
-      return { ...publicAccount(result.account), accessToken: result.access.accessToken }
+      this.#notify('complete', signal)
+      return this.#credentials(nextSession, result.access)
     } catch (error) {
       throw sanitizedError(error, signal)
     }
   }
 
   async #minecraft(microsoftToken: string, signal: AbortSignal): Promise<{ account: PublicAccount, access: AccessSession }> {
+    this.#notify('xbox', signal)
     const xbox = await this.#postJson('https://user.auth.xboxlive.com/user/authenticate', {
       Properties: { AuthMethod: 'RPS', SiteName: 'user.auth.xboxlive.com', RpsTicket: `d=${microsoftToken}` },
       RelyingParty: 'http://auth.xboxlive.com',
@@ -412,12 +441,19 @@ export class AuthManager {
     }, 'xsts', signal)
     const claims = object(xsts.DisplayClaims)
     if (!Array.isArray(claims.xui) || claims.xui.length === 0) throw new AuthError('INVALID_RESPONSE')
-    const hash = token(object(claims.xui[0]).uhs)
+    const identity = object(claims.xui[0])
+    const hash = token(identity.uhs)
+    // Relying parties do not all return xid. Do not substitute the unrelated
+    // user hash, invent an ID, or decode an access token as proof of identity.
+    const xuid = typeof identity.xid === 'string' && /^[1-9][0-9]{0,19}$/.test(identity.xid)
+      ? identity.xid : undefined
+    this.#notify('minecraft', signal)
     const minecraft = await this.#postJson('https://api.minecraftservices.com/authentication/login_with_xbox', {
       identityToken: `XBL3.0 x=${hash};${token(xsts.Token)}`,
     }, 'minecraft', signal)
     const accessToken = token(minecraft.access_token)
     const expiresAt = this.#now() + seconds(minecraft.expires_in) * 1000
+    this.#notify('checking-ownership', signal)
     const entitlements = await this.#getAuthorized(
       'https://api.minecraftservices.com/entitlements/mcstore', accessToken, 'entitlements', signal,
     )
@@ -432,7 +468,26 @@ export class AuthManager {
     )
     const account = publicAccount({ username: profile.name, uuid: profile.id, mode: 'microsoft' })
     checkCancelled(signal)
-    return { account, access: { accessToken, expiresAt } }
+    return { account, access: { accessToken, expiresAt, ...(xuid ? { xuid } : {}) } }
+  }
+
+  #credentials(session: StoredSession, access: AccessSession): MinecraftCredentials {
+    return {
+      ...publicAccount(session.account), accessToken: access.accessToken,
+      clientId: session.clientId, ...(access.xuid ? { xuid: access.xuid } : {}),
+    }
+  }
+
+  #notify(stage: AuthStage, signal: AbortSignal): void {
+    checkCancelled(signal)
+    try {
+      // Events contain only locally authored strings. Delivery is best effort;
+      // a closed renderer must not turn a committed login into a false failure.
+      const result = this.#options.onStatus?.({ stage, message: statusMessages[stage] })
+      if (result) void Promise.resolve(result).catch(() => {})
+    } catch {
+      // An observer is not part of the authentication or storage transaction.
+    }
   }
 
   async #postForm(url: string, values: Record<string, string>, signal: AbortSignal) {
@@ -543,6 +598,8 @@ export class AuthManager {
   async #save(session: StoredSession, access: AccessSession, operation: Operation): Promise<void> {
     const signal = operation.controller.signal
     try {
+      this.#notify('saving', signal)
+      checkCancelled(signal)
       const encrypted = await this.#options.seal(JSON.stringify(session))
       if (!Buffer.isBuffer(encrypted) || encrypted.length === 0) throw new Error('invalid encryption')
       checkCancelled(signal)
