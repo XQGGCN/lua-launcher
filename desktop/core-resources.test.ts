@@ -18,13 +18,6 @@ function deferred<T = void>() {
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no })
   return { promise, resolve, reject }
 }
-async function until(condition: () => boolean) {
-  for (let turn = 0; turn < 100; turn++) {
-    if (condition()) return
-    await new Promise<void>(resolve => setImmediate(resolve))
-  }
-  assert.fail('The fixture did not reach its expected asynchronous boundary')
-}
 function payload() {
   const zip = new AdmZip()
   zip.addFile('pack.mcmeta', Buffer.from('{"pack":{"pack_format":15,"description":"Test fixture"}}'))
@@ -52,12 +45,27 @@ function result(artifact: ResourceArtifact): ResourceInstallResult {
 function installerGate() {
   const calls: Array<{ directory: string; artifact: ResourceArtifact; options: ResourceInstallOptions; release: ReturnType<typeof deferred<ResourceInstallResult>> }> = []
   const entered = deferred()
+  const waiters = new Set<{ count: number; ready: ReturnType<typeof deferred<void>> }>()
+  async function waitForCalls(count: number) {
+    if (calls.length >= count) return
+    const waiter = { count, ready: deferred() }
+    waiters.add(waiter)
+    // Signal the actual injected-worker boundary; filesystem work may need more
+    // event-loop turns under the full suite. This wall-clock limit only diagnoses
+    // a fixture that never reaches the boundary, and is not a product timeout.
+    const timer = setTimeout(() => waiter.ready.reject(new Error(
+      `Installer fixture timed out waiting for ${count} workers; observed ${calls.length}`,
+    )), 10_000)
+    try { await waiter.ready.promise }
+    finally { clearTimeout(timer); waiters.delete(waiter) }
+  }
   const install: NonNullable<Options['resourceInstaller']> = async (directory, artifact, options = {}) => {
     const release = deferred<ResourceInstallResult>()
     calls.push({ directory, artifact, options, release }); entered.resolve()
+    for (const waiter of waiters) if (calls.length >= waiter.count) waiter.ready.resolve()
     return release.promise
   }
-  return { calls, entered, install }
+  return { calls, entered, install, waitForCalls }
 }
 async function fixture(t: TestContext, r = resource(), overrides: Options = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'lua-core-resources-'))
@@ -302,15 +310,16 @@ test('four global resource transactions are allowed, with slots retained through
   const pending = operations.map((operation, i) => f.install(i, operation))
   // The fifth call runs before any async metadata resolves and must already see all four reservations.
   await assert.rejects(f.install(4), /任务较多/)
-  await until(() => gate.calls.length === 4)
+  await gate.waitForCalls(4)
   f.core.cancelResourceInstall(f.instances[0].id, operations[0])
   await assert.rejects(f.install(4), /任务较多/)
   const cancelled = assert.rejects(pending[0], /已取消/)
-  gate.calls.find(call => call.directory.endsWith(f.instances[0].id))!.release.reject(new DOMException('Cancelled', 'AbortError'))
+  const cancelledCall = gate.calls.find(call => call.directory === f.core.instanceDirectory(f.instances[0].id))!
+  cancelledCall.release.reject(new DOMException('Cancelled', 'AbortError'))
   await cancelled
   const fifth = f.install(4)
-  await until(() => gate.calls.length === 5)
-  for (const call of gate.calls.slice(1)) call.release.resolve(result(call.artifact))
+  await gate.waitForCalls(5)
+  for (const call of gate.calls) if (call !== cancelledCall) call.release.resolve(result(call.artifact))
   await Promise.all([...pending.slice(1), fifth])
 })
 
@@ -318,7 +327,7 @@ test('shutdown cancels all resource workers; failure releases locks and preserve
   const gate = installerGate(), f = await fixture(t, resource(), { resourceInstaller: gate.install })
   const tasks = [f.install(0), f.install(1)]
   const outcomes = tasks.map(task => assert.rejects(task, /已取消/))
-  await until(() => gate.calls.length === 2)
+  await gate.waitForCalls(2)
   f.core.cancelPendingOperations()
   for (const call of gate.calls) { assert.equal(call.options.signal!.aborted, true); call.release.reject(new DOMException('Cancelled', 'AbortError')) }
   await Promise.all(outcomes)

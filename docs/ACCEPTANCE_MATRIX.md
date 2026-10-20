@@ -1,6 +1,6 @@
 # 验收矩阵
 
-更新：2026-10-21。发布基线为 0.3.0，0.4/0.5/0.6 本地实现、测试、构建及未签名 macOS ARM64 DMG/ZIP 已完成。0.5 实例设置有浏览器预览证据，0.6 只读清单有真实 Core/隔离文件测试桥交互证据；三版尚未发布，当前提交三平台 CI 与 0.5/0.6 原生验收待完成。0.6.1 资源归位已有 347 项全量测试与真实 Modrinth 两样本证据，最终类型检查/生产构建和测试桥通过，晚修后未签名 macOS ARM64 DMG/ZIP 的版本、架构与 SHA-256 核对通过，尚未发布。L1 静态/类型、L2 确定性测试、L3 真实网络与文件、L4 真实桌面、L5 真实账户/游戏/联机分别记录；低一级结果不能代替高一级。
+更新：2026-10-21。发布基线为 0.3.0，0.4/0.5/0.6 本地实现、测试、构建及未签名 macOS ARM64 DMG/ZIP 已完成。0.5 实例设置有浏览器预览证据，0.6 只读清单有真实 Core/隔离文件测试桥交互证据；三版尚未发布，当前提交三平台 CI 与 0.5/0.6 原生验收待完成。0.6.1 资源归位已有 347 项全量测试与真实 Modrinth 两样本证据，最终类型检查/生产构建和测试桥通过，晚修后未签名 macOS ARM64 DMG/ZIP 的版本、架构与 SHA-256 核对通过，尚未发布。0.6.2 单模组改名已有 399 项全量、52 项独立及测试桥证据，生产构建及未签名 macOS ARM64 包版本、架构和 SHA-256 核对通过，尚未发布。L1 静态/类型、L2 确定性测试、L3 真实网络与文件、L4 真实桌面、L5 真实账户/游戏/联机分别记录；低一级结果不能代替高一级。
 
 W=Windows x64，M=macOS ARM64，L=Linux x64。新架构单独列证据，官方有 Java 包不等于 Lua 安装包或游戏已支持。每次结果关联版本/commit、平台、命令/步骤和证据路径；私有日志与截图留在被忽略目录，不保存令牌。
 
@@ -15,7 +15,7 @@ W=Windows x64，M=macOS ARM64，L=Linux x64。新架构单独列证据，官方�
 | 官网与资源 | L3/L4 | 首页、CSS、SVG、截图 HTTP 200；原图一致，CDN 有图片压缩；页面已验收 | [官网](https://lua-launcher.onrender.com)，本地 website-verification-v030 记录 |
 | 完整 Microsoft 登录与游戏 | L5 | 未通过，API 待审；批准前不继续真实流程 | [已知问题](KNOWN_ISSUES.md) |
 
-上述结果不自动继承到 0.4.0/0.5.0/0.6.0/0.6.1，不复用旧 CI 作为新提交通过证据。
+上述结果不自动继承到 0.4.0/0.5.0/0.6.0/0.6.1/0.6.2，不复用旧 CI 作为新提交通过证据。
 
 ## 0.4.0 本地结果及剩余验收
 
@@ -93,6 +93,24 @@ W=Windows x64，M=macOS ARM64，L=Linux x64。新架构单独列证据，官方�
 | AC-RESOURCE-09 | 完整test/check/build、包版本/架构/hash、当前提交三平台CI/Release与签名状态 | L1/L2；包L3/原生L4待验 | 晚修后全仓347/347与生产构建（含tsc）通过；最终未签名 macOS ARM64 包版本/架构/hash 核对通过；三平台CI、原生、Release与签名/公证未完成 | `package.json`、`.local/build-v061.log`；`.local/local-packages-v061.json` |
 
 当前只写 ZIP 与历史下载登记，不进行自动启用、更新/覆盖、地图/世界数据包安装。Minecraft API 待审和 AC-AUTH-02 / AC-GAME-01 状态不变，官网与公开下载保持 0.3.0。真实匿名资源下载不需要也没有完成账户授权或游戏验收。
+
+## 0.6.2 本地结果及剩余验收
+
+基准 `5138dabd6677e4bdedd97d21e772e38a1a0f2b6f`，分支 `codex/mod-toggle-v0.6.2`。模块 30 + Core 22 共 **52/52** 独立重跑通过，集成者全仓 **399/399** 与生产构建（含 TypeScript）通过。UI 证据来自集成者的生产 Core/隔离文件 HTTP 测试桥，不是独立记录作者或原生 Electron 实测。
+
+| ID | 场景与通过条件 | 等级 / 平台 | 当前状态 | 证据或计划位置 |
+| --- | --- | --- | --- | --- |
+| AC-MODFILE-01 | 仅 ready / 闲置的 Fabric/Forge/NeoForge 固定 mods 普通 .jar/.jar.disabled；检查→确认→单文件往返 | L2，macOS 临时文件；浏览器测试桥 | 生产默认模块/Core 往返与检查无写入通过，不解析/执行 JAR | `desktop/mod-toggle.test.ts`、`desktop/core-mod-toggle.test.ts`；开发日志 |
+| AC-MODFILE-02 | 主进程文件身份、120秒/32个一次性令牌；过期/重放/跨实例/未知字段/外部替换拒绝 | L2 | Core 定向通过，旧文件名不授权替换后的文件；无任意路径 IPC | Core 22 项；main/preload 源码复核 |
+| AC-MODFILE-03 | 同实例安装/启动/设置互斥；取凭据前锁、generation、旧scan、退出等worker | L2；UI源码/测试桥 | 同步锁与取消测试通过；等待凭据的 main 锁源码通过；A提交时首页启动 disabled | Core 测试及 `.local/mod-ui-v062-cross-instance.png` |
+| AC-MODFILE-04 | 无覆盖硬链接、提交前回滚/提交后完成优先；保护同inode/替换/intent外部编辑 | L2 故障注入 | 模块30项通过；Busy与journal两项P2独立复核 | REVIEW-062-01/02；模块测试 |
+| AC-MODFILE-05 | installMod 候选/旧登记名/必需依赖的禁用伙伴、手工/legacy/BBS/双文件 | L2，注入网络 | CDN请求0，文件/registry/state与目录mtime不变，未建后删staging | Core保护回归；旧模组安装回归随399项全量 |
+| AC-MODFILE-06 | 回滚失败且state保存失败仍阻断；重启明确单名只清journal，双名/损坏保留 | L2 真实临时文件与故障注入；浏览器测试桥 | 真实双硬链接/journal、stateRename失败及重启分类通过；两恢复入口错误state事件独立于落盘；新增坏marker后界面立即error且禁用操作，证据保留 | REVIEW-062-03；Core/模块测试；`.local/mod-ui-v062-recovery.png` |
+| AC-MODFILE-07 | 确认/错误/选择刷新、过滤不匹配清查询、分页定位、跨实例晚到状态 | 浏览器HTTP测试桥；原生L4待验 | 往返、来源、冲突/外部编辑保留、A完成不重置B通过；112条第二页Page104改名仍选newId且留第二页，恢复通过 | `.local/mod-ui-v062.png`、`.local/mod-ui-v062-cross-instance.png`；集成者报告 |
+| AC-MODFILE-08 | 无bridge不可执行本地动作；未知/不合格条目不可操作，原生键盘/缩放/系统行为另验 | L1组件SSR/源码；完整浏览器/原生待验 | 本轮SSR和源码边界检查通过；未宣称重新执行完整无桥浏览器交互或原生辅助功能矩阵 | UI独立复核；后续原生验收 |
+| AC-MODFILE-09 | 完整test/build、包版本架构/hash、当前提交三平台CI和Release | L1/L2；本地包L3/原生待验 | 399/399、生产构建含tsc通过；未签名macOS ARM64包版本/架构/hash核对通过；CI/签名公证/Release外部阻塞 | `.local/test-v062.log`、`.local/build-v062.log`、`.local/local-packages-v062.json` |
+
+原字节/hash、权限、mtime、inode与历史登记保留，不把硬链接引起的ctime/nlink变化说成无变化。禁用后无来源猜测，恢复原名才重关联；实际加载、依赖兼容与所有权认证未验。本轮没有网络、Java、认证或游戏，公开继续为0.3.0。
 
 ## 未来功能与发布门槛
 

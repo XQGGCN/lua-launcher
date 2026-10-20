@@ -1,7 +1,8 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react'
 import { AlertTriangle, ArrowLeft, File, FileArchive, Folder, FolderOpen, Layers3, Map, Monitor, Package, RefreshCw, Search, Settings2 } from 'lucide-react'
 import type { InventoryItem, InventoryKind, ResourceInventory } from '../../desktop/resource-inventory'
-import { call, errorText, isDesktop, loaderNames, type Instance } from '../api'
+import { call, errorText, isDesktop, loaderNames, type Instance, type ModTogglePreview, type ModToggleSelection, type ModToggleResult } from '../api'
+import ModToggleActions from './ModToggleActions'
 import { EmptyState, ErrorBox, Spinner } from './ui'
 import './InstanceContent.css'
 
@@ -14,6 +15,9 @@ export interface InstanceContentProps {
   onBack: () => void
   initialKind?: InventoryKind
   refreshRevision?: number
+  fileBusy?: boolean
+  onPrepareMod?: (instanceId: string, selection: ModToggleSelection, enabled: boolean) => Promise<ModTogglePreview>
+  onCommitMod?: (instanceId: string, token: string) => Promise<ModToggleResult>
 }
 export type InstanceInventory = ResourceInventory & { instanceId: string }
 type SortOrder = 'name-asc' | 'name-desc' | 'modified-desc' | 'modified-asc'
@@ -72,7 +76,7 @@ export function InventoryDetails({ item, kind, id }: { item?: InventoryItem; kin
   </section>
 }
 
-export default function InstanceContent({ instances, selectedId, onSelect, onOpenSettings, onOpenFolder, onBack, initialKind = 'mods', refreshRevision = 0 }: InstanceContentProps) {
+export default function InstanceContent({ instances, selectedId, onSelect, onOpenSettings, onOpenFolder, onBack, initialKind = 'mods', refreshRevision = 0, fileBusy = false, onPrepareMod, onCommitMod }: InstanceContentProps) {
   const [kind, setKind] = useState<InventoryKind>(initialKind)
   const [query, setQuery] = useState('')
   const [order, setOrder] = useState<SortOrder>('name-asc')
@@ -84,6 +88,10 @@ export default function InstanceContent({ instances, selectedId, onSelect, onOpe
   const [retry, setRetry] = useState(0)
   const [folderBusy, setFolderBusy] = useState(false)
   const [folderError, setFolderError] = useState('')
+  const [fileResult, setFileResult] = useState<{ instanceId: string; result: ModToggleResult }>()
+  const afterRename = useRef<{ instanceId: string; itemId: string; name: string } | undefined>(undefined)
+  const filters = useRef({ query, order })
+  filters.current = { query, order }
   const request = useRef(0)
   const folderRequest = useRef(0)
   const tabButtons = useRef<(HTMLButtonElement | null)[]>([])
@@ -106,13 +114,22 @@ export default function InstanceContent({ instances, selectedId, onSelect, onOpe
 
   useEffect(() => {
     const ticket = ++request.current
-    setResult(undefined); setError(undefined); setSelectedItemId(''); setPage(0)
+    setResult(undefined); setError(undefined)
+    const follow = afterRename.current?.instanceId === instance?.id && kind === 'mods' ? afterRename.current : undefined
+    setSelectedItemId(follow?.itemId || ''); setPage(0)
     if (!isDesktop || !instance || installing) { setLoading(false); return }
     setLoading(true)
     void call<InstanceInventory>('inventory', instance.id, kind).then(value => {
       if (ticket !== request.current || currentKey.current !== key) return
       if (value.instanceId !== instance.id || value.kind !== kind) throw new Error('清单与当前实例不一致，请刷新后重试。')
       setResult({ key, value })
+      const pending = afterRename.current
+      if (pending?.instanceId === instance.id && kind === 'mods') {
+        const index = filterInventory(value.items, filters.current.query, filters.current.order).findIndex(item => item.id === pending.itemId)
+        setSelectedItemId(pending.itemId)
+        if (index >= 0) setPage(Math.floor(index / pageSize))
+        afterRename.current = undefined
+      }
     }).catch(error => {
       if (ticket === request.current && currentKey.current === key) setError({ key, message: errorText(error) })
     }).finally(() => { if (ticket === request.current && currentKey.current === key) setLoading(false) })
@@ -120,12 +137,21 @@ export default function InstanceContent({ instances, selectedId, onSelect, onOpe
   }, [selectedId, instance?.id, kind, installing, retry, refreshRevision])
   useEffect(() => {
     ++folderRequest.current; setFolderBusy(false); setFolderError(''); setQuery('')
+    afterRename.current = undefined; setFileResult(undefined)
     return () => { ++folderRequest.current }
   }, [selectedId])
 
   function selectTab(next: InventoryKind) {
     if (next === kind) return
-    ++request.current; setKind(next); setQuery(''); setPage(0); setSelectedItemId('')
+    ++request.current; setKind(next); setQuery(''); setPage(0); setSelectedItemId(''); afterRename.current = undefined
+  }
+  function renamed(result: ModToggleResult) {
+    if (!instance || kind !== 'mods' || currentInstanceId.current !== instance.id) return
+    afterRename.current = { instanceId: instance.id, itemId: result.newItemId, name: result.toName }
+    if (!result.toName.toLocaleLowerCase('zh-CN').includes(query.trim().toLocaleLowerCase('zh-CN'))) setQuery('')
+    setFileResult({ instanceId: instance.id, result })
+    setSelectedItemId(result.newItemId)
+    setRetry(value => value + 1)
   }
   function tabKey(event: KeyboardEvent<HTMLButtonElement>, index: number) {
     const next = event.key === 'ArrowRight' ? (index + 1) % tabs.length : event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length : event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : undefined
@@ -147,12 +173,14 @@ export default function InstanceContent({ instances, selectedId, onSelect, onOpe
   }
 
   return <div className="instance-content">
-    <header className="inventory-heading"><div><h2>实例内容</h2><p>查看当前实例目录内的文件与文件夹，不修改游戏内容。</p></div><button type="button" className="button secondary" onClick={onBack}><ArrowLeft size={15} />返回版本列表</button></header>
+    <header className="inventory-heading"><div><h2>实例内容</h2><p>查看实例文件与文件夹，或在模组页修改单个模组的启用后缀。</p></div><button type="button" className="button secondary" onClick={onBack}><ArrowLeft size={15} />返回版本列表</button></header>
     <div className="inventory-instance-bar"><label htmlFor={`${id}-instance`}>游戏实例</label><select id={`${id}-instance`} value={instance?.id || ''} onChange={event => { ++request.current; setSelectedItemId(''); onSelect(event.target.value) }}><option value="" disabled>{instances.length ? '选择实例' : '尚无游戏实例'}</option>{instances.map(item => <option key={item.id} value={item.id}>{item.name} · {item.version} · {loaderNames[item.loader]}</option>)}</select><button type="button" className="button secondary" disabled={!instance} onClick={() => instance && onOpenSettings(instance)}><Settings2 size={15} />实例设置</button><button type="button" className="button secondary" disabled={!instance || !isDesktop || folderBusy} onClick={() => void openFolder()}>{folderBusy ? <Spinner size={15} /> : <FolderOpen size={15} />}打开实例文件夹</button></div>
     {folderError && <ErrorBox message={folderError} retry={() => void openFolder()} />}
     {!isDesktop && <div className="inline-notice inventory-notice"><Monitor size={17} /><span>浏览器预览无法访问本机磁盘，不会生成示例文件清单。你可以选择已有预览实例，或返回版本列表创建预览实例；真实清单需要桌面版。</span></div>}
     {installing && <div className="inline-notice inventory-notice"><Spinner size={17} /><span>此实例正在安装，暂时不能扫描内容。安装完成或取消后会重新读取目录。</span></div>}
     {instance?.status === 'running' && <div className="inline-notice inventory-notice"><AlertTriangle size={17} /><span>游戏正在运行，可以只读查看；文件可能随游戏变化，清单仅代表本次读取时的状态。</span></div>}
+    {instance?.error && <ErrorBox message={instance.error} />}
+    {fileResult && fileResult.instanceId === instance?.id && <div className="inline-notice inventory-notice" role="status"><span>已将 {fileResult.result.fromName} 改为 {fileResult.result.toName}。下次启动时才可能生效，尚未检查加载、依赖或兼容性。{fileResult.result.warnings.map((warning, index) => <small key={index}>{warning}</small>)}</span></div>}
     <div className="inventory-tabs" role="tablist" aria-label="实例内容类型">{tabs.map((item, index) => <button type="button" key={item.kind} ref={node => { tabButtons.current[index] = node }} id={`${id}-tab-${item.kind}`} role="tab" aria-selected={kind === item.kind} aria-controls={`${id}-panel`} tabIndex={kind === item.kind ? 0 : -1} onKeyDown={event => tabKey(event, index)} onClick={() => selectTab(item.kind)}><item.icon size={16} />{item.label}</button>)}</div>
     <section id={`${id}-panel`} role="tabpanel" aria-labelledby={`${id}-tab-${kind}`} tabIndex={0}>
       <div className="inventory-toolbar"><label className="inventory-search"><Search size={15} /><input aria-label={`在已读取${tab.label}中按文件名搜索`} placeholder="按文件名搜索已读取条目" value={query} disabled={!inventory || installing} onChange={event => { setQuery(event.target.value); setPage(0); setSelectedItemId('') }} /></label><label className="inventory-sort"><span className="sr-only">清单排序</span><select value={order} onChange={event => { setOrder(event.target.value as SortOrder); setPage(0); setSelectedItemId('') }}><option value="name-asc">文件名：升序</option><option value="name-desc">文件名：降序</option><option value="modified-desc">修改时间：从新到旧</option><option value="modified-asc">修改时间：从旧到新</option></select></label><button type="button" className="button secondary" disabled={!instance || !isDesktop || installing || loading} onClick={refresh}>{loading ? <Spinner size={15} /> : <RefreshCw size={15} />}刷新</button></div>
@@ -164,8 +192,9 @@ export default function InstanceContent({ instances, selectedId, onSelect, onOpe
         <div className="inventory-table-wrap"><table className="inventory-table"><thead><tr><th scope="col">文件名</th><th scope="col">类型 / 后缀</th><th scope="col">大小</th><th scope="col">修改时间</th><th scope="col">曾登记来源</th></tr></thead><tbody>{visibleItems.map(item => <tr key={item.id} className={selectedItemId === item.id ? 'selected' : undefined}><td><button type="button" className="inventory-file-button" aria-pressed={selectedItemId === item.id} aria-controls={`${id}-details`} onClick={() => setSelectedItemId(item.id)}>{item.entryType === 'directory' ? <Folder size={17} /> : <File size={17} />}<span>{item.name}</span></button></td><td>{typeLabel(item)}{item.activation === 'disabled-suffix' && <small>禁用后缀</small>}</td><td className="inventory-size">{inventorySize(item)}</td><td><time dateTime={item.modifiedAt}>{timeLabel(item.modifiedAt)}</time></td><td>{item.recordedSource ? sourceNames[item.recordedSource.source] : '无关联登记'}</td></tr>)}</tbody></table></div>
         {pageCount > 1 && <div className="inventory-pagination"><button type="button" className="button secondary" disabled={currentPage === 0} onClick={() => { setPage(currentPage - 1); setSelectedItemId('') }}>上一页</button><span>已读取清单第 {currentPage + 1} / {pageCount} 页 · 每页最多 {pageSize} 条</span><button type="button" className="button secondary" disabled={currentPage + 1 >= pageCount} onClick={() => { setPage(currentPage + 1); setSelectedItemId('') }}>下一页</button></div>}
         <InventoryDetails item={selectedItem} kind={kind} id={`${id}-details`} />
+        {kind === 'mods' && instance && selectedItem && onPrepareMod && onCommitMod && <ModToggleActions instance={instance} item={selectedItem} busy={fileBusy || loading || installing} prepare={(selection, enabled) => onPrepareMod(instance.id, selection, enabled)} commit={token => onCommitMod(instance.id, token)} completed={renamed} />}
       </>}
-      <p className="inventory-footer-note">仅展示文件信息，不解压资源或推断兼容、启用和实际加载状态。{kind === 'worlds' ? '世界版本、种子和其他 NBT 详情尚未解析。' : '“曾登记来源”不代表当前内容已通过哈希验证。'}</p>
+      <p className="inventory-footer-note">{kind === 'mods' ? '模组操作仅改变一个文件的名称，不自动联动依赖。禁用后下载来源登记不迁移，恢复原名后可重新显示历史来源。' : '不解压资源或推断兼容、启用和实际加载状态。'}{kind === 'worlds' ? '世界版本、种子和其他 NBT 详情尚未解析。' : '“曾登记来源”不代表当前内容已通过哈希验证。'}</p>
     </section>
   </div>
 }

@@ -3,6 +3,8 @@ import { resolveInstanceOptions, validateInstanceOptions, type InstanceOptions }
 export type { InstanceOptions, ResolvedInstanceOptions } from '../desktop/instance-options'
 export type { InventoryKind, InventoryItem, ResourceInventory } from '../desktop/resource-inventory'
 export type { InstanceInventory } from '../desktop/core'
+export type { ModTogglePreview } from '../desktop/core'
+export type { ModToggleSelection, ModToggleResult } from '../desktop/mod-toggle'
 export type { ResourceKind, ResourceVersion, ResourceInstallInput, ResourceDependency, ResourceSearchResult } from '../desktop/resource-catalog'
 export type { ResourceInstallResult as ResourceInstallReceipt } from '../desktop/resource-install'
 import { resourceSearchParameters, normalizeResourceSearch } from '../desktop/resource-catalog'

@@ -167,13 +167,28 @@ if (hasLock) app.whenReady().then(async () => {
       }
       case 'instanceOptions': return core.instanceOptions(text(args[0], 80))
       case 'inventory': return core.inventory(text(args[0], 80), text(args[1], 20) as InventoryKind)
+      case 'prepareModToggle': {
+        const id = text(args[0], 80)
+        if (launches.has(id)) throw new Error('请先完成或取消此实例的启动准备')
+        if (typeof args[2] !== 'boolean') throw new Error('模组文件目标状态无效')
+        return core.prepareModToggle(id, object(args[1]), args[2])
+      }
+      case 'setModEnabled': {
+        const id = text(args[0], 80)
+        if (launches.has(id)) throw new Error('请先完成或取消此实例的启动准备')
+        return core.setModEnabled(id, text(args[1], 80))
+      }
       case 'updateInstanceSettings': {
         const id = text(args[0], 80)
         if (launches.has(id)) throw new Error('请等待启动准备结束，再修改实例设置')
         const input = object(args[1])
         return core.updateInstanceSettings(id, { name: text(input.name, 80), options: object(input.options) })
       }
-      case 'install': return core.install(text(args[0], 80))
+      case 'install': {
+        const id = text(args[0], 80)
+        if (launches.has(id)) throw new Error('请先完成或取消此实例的启动准备')
+        return core.install(id)
+      }
       case 'cancelInstall': return core.cancelInstall(text(args[0], 80))
       case 'cancelLaunch': {
         const id = text(args[0], 80)
@@ -182,7 +197,10 @@ if (hasLock) app.whenReady().then(async () => {
       }
       case 'launch': {
         const id = text(args[0], 80)
+        core.assertLaunchAvailable(id)
         return launches.run(id, async signal => {
+          await core.assertInstanceUsable(id, signal)
+          signal.throwIfAborted()
           const generation = accounts.generation
           const credentials = await accounts.credentials()
           signal.throwIfAborted()
@@ -244,7 +262,11 @@ if (hasLock) app.whenReady().then(async () => {
         })
       }
       case 'modVersions': return core.modVersions(text(args[0], 80), text(args[1], 80), resourceSource(args[2]))
-      case 'installMod': return core.installMod(text(args[0], 80), text(args[1], 80), resourceSource(args[2]))
+      case 'installMod': {
+        const id = text(args[0], 80)
+        if (launches.has(id)) throw new Error('请先完成或取消此实例的启动准备')
+        return core.installMod(id, text(args[1], 80), resourceSource(args[2]))
+      }
       case 'chooseModpack': {
         if (choosingPack) throw new Error('请先完成当前文件选择')
         choosingPack = true

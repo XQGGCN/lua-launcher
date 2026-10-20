@@ -16,11 +16,17 @@ import { validateInstanceOptions, resolveInstanceOptions, type InstanceOptions, 
 import { applyGameWindowSettings } from './game-window'
 import { scanResourceInventory, type InventoryKind, type ResourceInventory } from './resource-inventory'
 import { installResourceZip, ResourceInstallRecoveryError, type ResourceInstallResult } from './resource-install'
+import { prepareModToggle, commitModToggle, inspectModToggleRecovery, assertNoDisabledModPartners,
+  ModToggleRecoveryError, ModToggleBusyError, type ModTogglePrepared, type ModToggleSelection, type ModToggleResult } from './mod-toggle'
 import { assertResourceSelection, catalogSource, normalizeResourceSearch, parseResourceProject, prepareResourceVersion,
   resourceKind, resourceSearchParameters, resourceVersionsParameters, validateResourceSelection,
   type ResourceKind, type ResourceVersion, type ResourceSearchResult } from './resource-catalog'
 export type { PackPreview } from './modpack'
 export interface InstanceInventory extends ResourceInventory { instanceId: string }
+export interface ModTogglePreview {
+  token: string; instanceId: string; itemId: string; fromName: string; toName: string; enabled: boolean
+  sizeBytes: number; modifiedAt: string; expiresAt: number
+}
 
 const execFileAsync = promisify(execFile)
 const MANIFEST_URL = 'https://piston-meta.mojang.com/mc/game/version_manifest_v2.json'
@@ -211,6 +217,10 @@ interface CoreOptions {
   javaRuntimeProbe?: JavaRuntimeProbe
   inventoryScanner?: typeof scanResourceInventory
   resourceInstaller?: typeof installResourceZip
+  modTogglePreparer?: typeof prepareModToggle
+  modToggleCommitter?: typeof commitModToggle
+  modToggleRecovery?: typeof inspectModToggleRecovery
+  modToggleNow?: () => number
 }
 interface DownloadJob { file: string; download: Download; allowedHosts?: ReadonlySet<string> }
 
@@ -312,6 +322,14 @@ export class LauncherCore {
   private readonly javaRuntimeManager: Pick<JavaRuntimeManager, 'ensure' | 'discover'>
   private readonly inventoryScanner: typeof scanResourceInventory
   private readonly resourceInstaller: typeof installResourceZip
+  private readonly modTogglePreparer: typeof prepareModToggle
+  private readonly modToggleCommitter: typeof commitModToggle
+  private readonly modToggleRecovery: typeof inspectModToggleRecovery
+  private readonly modToggleNow: () => number
+  private modToggleTokens = new Map<string, { instanceId: string; generation: number; expiresAt: number; prepared: ModTogglePrepared }>()
+  private mutationGeneration = new Map<string, number>()
+  private modRecoveryBlocked = new Set<string>()
+  private modPreparationEpoch = 0
   private resourceDownloads = new Map<string, { operationId: string; controller: AbortController }>()
   private inventoryScans = new Map<string, { instanceId: string; controller: AbortController; promise: Promise<InstanceInventory> }>()
   private javaTasks = new Map<string, JavaRuntimeTask>()
@@ -338,6 +356,10 @@ export class LauncherCore {
     this.javaRuntimeManager = options.javaRuntimeManager ?? new JavaRuntimeManager(this.rootDir, { fetch: this.fetcher, probe: options.javaRuntimeProbe })
     this.inventoryScanner = options.inventoryScanner ?? scanResourceInventory
     this.resourceInstaller = options.resourceInstaller ?? installResourceZip
+    this.modTogglePreparer = options.modTogglePreparer ?? prepareModToggle
+    this.modToggleCommitter = options.modToggleCommitter ?? commitModToggle
+    this.modToggleRecovery = options.modToggleRecovery ?? inspectModToggleRecovery
+    this.modToggleNow = options.modToggleNow ?? Date.now
   }
 
   async init(): Promise<LauncherSnapshot> {
@@ -356,6 +378,10 @@ export class LauncherCore {
       this.settings = this.validateSettings({ ...this.settings, ...state.settings })
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+    for (const instance of this.instances) {
+      try { await this.assertInstanceUsable(instance.id) }
+      catch { /* Preserve the instance and its recovery evidence; expose its error below. */ }
     }
     await this.save()
     return this.snapshot()
@@ -424,8 +450,119 @@ export class LauncherCore {
   }
 
   private invalidateInventory(id: string): void {
+    this.invalidateModTokens(id)
     for (const scan of this.inventoryScans.values()) if (scan.instanceId === id) {
       scan.controller.abort(new DOMException('实例开始安装，原资源扫描已取消；请在安装完成后刷新', 'AbortError'))
+    }
+  }
+
+  private invalidateModTokens(id: string): void {
+    this.mutationGeneration.set(id, (this.mutationGeneration.get(id) || 0) + 1)
+    for (const [token, value] of this.modToggleTokens) if (value.instanceId === id) this.modToggleTokens.delete(token)
+  }
+
+  /** Recovery evidence is checked independently of launcher.json's retryable status. */
+  async assertInstanceUsable(id: string, signal?: AbortSignal): Promise<void> {
+    const instance = this.instance(id)
+    if (this.modRecoveryBlocked.has(id)) throw new Error(instance.error || '模组文件修改需要人工检查，请先保留恢复资料')
+    let blocked = false
+    try {
+      const recovery = await this.modToggleRecovery(this.instanceDirectory(id), { signal })
+      for (const warning of recovery.warnings) this.log(id, 'warn', warning)
+      blocked = recovery.blocked
+    } catch (error) {
+      if (signal?.aborted || error instanceof ModToggleBusyError) throw error
+      blocked = true
+      this.log(id, 'error', errorMessage(error))
+    }
+    if (blocked) {
+      this.modRecoveryBlocked.add(id)
+      this.invalidateModTokens(id)
+      instance.status = 'error'
+      instance.error = '无法安全确认模组文件操作状态，请检查实例目录与 .mod-toggle-* 恢复资料；不会自动删除或覆盖文件'
+      // This safety state must reach the UI even when no configuration write
+      // was requested, or a subsequent launcher.json save is unavailable.
+      this.emit({ type: 'state', snapshot: this.snapshot() })
+      throw new Error(instance.error)
+    }
+  }
+
+  private assertModToggleIdle(id: string): Instance {
+    const instance = this.instance(id)
+    if (instance.status !== 'ready' || instance.loader === 'vanilla') throw new Error('请先安装模组加载器并关闭游戏，再修改模组文件')
+    if (this.installs.has(id) || this.launching.has(id) || this.processes.has(id) || this.instanceSettingsSaving.has(id)) {
+      throw new Error('此实例正在安装、启动、运行或保存设置，请稍后再修改模组文件')
+    }
+    if (this.modRecoveryBlocked.has(id)) throw new Error(instance.error || '请先检查模组文件修改的恢复资料')
+    return instance
+  }
+
+  assertLaunchAvailable(id: string): void {
+    const instance = this.instance(id)
+    if (this.installs.has(id) || this.launching.has(id) || this.processes.has(id) || this.instanceSettingsSaving.has(id)) {
+      throw new Error('请等待此实例的文件操作、启动或设置保存结束')
+    }
+    if (this.modRecoveryBlocked.has(id)) throw new Error(instance.error || '请先检查模组文件修改的恢复资料')
+    if (instance.status !== 'ready') throw new Error('请先安装或修复该实例')
+  }
+
+  async prepareModToggle(id: string, selection: unknown, enabled: boolean): Promise<ModTogglePreview> {
+    this.assertModToggleIdle(id)
+    if (typeof enabled !== 'boolean') throw new Error('模组文件目标状态无效')
+    if (!selection || typeof selection !== 'object' || Array.isArray(selection) ||
+        ![Object.prototype, null].includes(Object.getPrototypeOf(selection)) ||
+        Reflect.ownKeys(selection).length !== 4 || Reflect.ownKeys(selection).some(key =>
+          typeof key !== 'string' || !['itemId', 'name', 'sizeBytes', 'modifiedAt'].includes(key) ||
+          !('value' in Object.getOwnPropertyDescriptor(selection, key)!))) throw new Error('模组文件选择格式无效')
+    const raw = selection as ModToggleSelection
+    if (typeof raw.itemId !== 'string' || typeof raw.name !== 'string' || typeof raw.modifiedAt !== 'string' ||
+        !Number.isSafeInteger(raw.sizeBytes) || raw.sizeBytes < 0) throw new Error('模组文件选择字段无效')
+    const input = { itemId: raw.itemId, name: raw.name, sizeBytes: raw.sizeBytes, modifiedAt: raw.modifiedAt }
+    const generation = this.mutationGeneration.get(id) || 0
+    const epoch = this.modPreparationEpoch
+    await this.assertInstanceUsable(id)
+    const prepared = await this.modTogglePreparer(this.instanceDirectory(id), input, enabled)
+    this.assertModToggleIdle(id)
+    if (epoch !== this.modPreparationEpoch || generation !== (this.mutationGeneration.get(id) || 0)) throw new Error('检查期间实例已变化或操作已取消，请刷新清单后重试')
+    const now = this.modToggleNow()
+    for (const [token, value] of this.modToggleTokens) if (value.expiresAt <= now) this.modToggleTokens.delete(token)
+    if (this.modToggleTokens.size >= 32) throw new Error('模组文件确认请求较多，请稍后重新检查')
+    const token = randomUUID(), expiresAt = now + 120_000
+    this.modToggleTokens.set(token, { instanceId: id, generation, expiresAt, prepared })
+    return { token, instanceId: id, itemId: input.itemId, fromName: input.name,
+      toName: enabled ? input.name.slice(0, -'.disabled'.length) : input.name + '.disabled', enabled,
+      sizeBytes: input.sizeBytes, modifiedAt: input.modifiedAt, expiresAt }
+  }
+
+  async setModEnabled(id: string, token: string): Promise<ModToggleResult> {
+    this.instance(id)
+    const pending = this.modToggleTokens.get(token)
+    // Consume before the first await: an old confirmation can never invert a later request.
+    if (pending?.instanceId === id) this.modToggleTokens.delete(token)
+    if (!pending || pending.instanceId !== id || pending.expiresAt <= this.modToggleNow() ||
+        pending.generation !== (this.mutationGeneration.get(id) || 0)) throw new Error('模组文件确认已过期，请刷新并重新检查')
+    this.assertModToggleIdle(id)
+    const controller = new AbortController()
+    this.installs.set(id, controller)
+    this.invalidateInventory(id)
+    try {
+      await this.assertInstanceUsable(id, controller.signal)
+      const result = await this.modToggleCommitter(this.instanceDirectory(id), pending.prepared, { signal: controller.signal })
+      this.log(id, 'info', `模组文件名已修改：${result.fromName} → ${result.toName}；未检查加载、依赖或兼容性`)
+      for (const warning of result.warnings) this.log(id, 'warn', warning)
+      return result
+    } catch (error) {
+      if (error instanceof ModToggleRecoveryError) {
+        this.modRecoveryBlocked.add(id)
+        const instance = this.instance(id)
+        instance.status = 'error'; instance.error = error.message
+        this.emit({ type: 'state', snapshot: this.snapshot() })
+        try { await this.save() } catch (saveError) { this.log(id, 'error', `恢复状态保存失败；文件恢复资料仍保留：${errorMessage(saveError)}`) }
+      }
+      throw error
+    } finally {
+      this.invalidateInventory(id)
+      this.installs.delete(id)
     }
   }
 
@@ -448,7 +585,9 @@ export class LauncherCore {
     const options = validateInstanceOptions(input.options)
     const name = input.name.trim()
     this.instanceSettingsSaving.add(id)
+    this.invalidateModTokens(id)
     try {
+      await this.assertInstanceUsable(id)
       await this.save(() => {
         if (this.installs.has(id) || this.launching.has(id) || this.processes.has(id)) throw new Error('此实例正在安装或运行，设置未保存')
         return {
@@ -457,7 +596,7 @@ export class LauncherCore {
         }
       })
       return this.snapshot()
-    } finally { this.instanceSettingsSaving.delete(id) }
+    } finally { this.invalidateModTokens(id); this.instanceSettingsSaving.delete(id) }
   }
 
   async createInstance(input: { name: string; version: string; loader: Loader; loaderVersion?: string }): Promise<Instance> {
@@ -713,6 +852,7 @@ export class LauncherCore {
       }
     }
     try {
+      await this.assertInstanceUsable(id, signal)
       await this.save()
       signal.throwIfAborted()
       progress('正在获取官方版本信息', true)
@@ -1025,6 +1165,8 @@ export class LauncherCore {
   }
 
   cancelPendingOperations(): void {
+    this.modPreparationEpoch++
+    this.modToggleTokens.clear()
     for (const controller of [...this.installs.values(), ...this.javaDownloads.values(), ...this.launchControllers.values(),
       ...[...this.inventoryScans.values()].map(scan => scan.controller)]) {
       controller.abort(new DOMException('启动器正在退出', 'AbortError'))
@@ -1087,11 +1229,14 @@ export class LauncherCore {
     if (this.launching.has(id)) throw new Error('该实例正在启动')
     // Acquire synchronously: installed-manifest reads and Java detection both yield before spawn.
     this.launching.add(id)
+    this.invalidateModTokens(id)
     const controller = new AbortController()
     this.launchControllers.set(id, controller)
     try {
+      await this.assertInstanceUsable(id, controller.signal)
       return await this.launchInstance(id, account, () => { controller.signal.throwIfAborted(); beforeSpawn?.() }, controller.signal)
     } finally {
+      this.invalidateModTokens(id)
       this.launching.delete(id)
       this.launchControllers.delete(id)
     }
@@ -1339,6 +1484,7 @@ export class LauncherCore {
     this.resourceDownloads.set(instanceId, { operationId, controller })
     this.invalidateInventory(instanceId)
     try {
+      await this.assertInstanceUsable(instanceId, signal)
       this.emit({ type: 'progress', instanceId, phase: '正在核对所选资源版本', completed: 0, total: 0, bytesDownloaded: 0, unit: 'bytes' })
       const provider = resourceProvider(input.source)
       const context = { ...input, gameVersion: instance.version }
@@ -1679,6 +1825,7 @@ export class LauncherCore {
     const staging = safeJoin(this.instanceDirectory(instanceId), `.mod-staging-${randomUUID()}`)
     let keepRecoveryFiles = false
     try {
+      await this.assertInstanceUsable(instanceId, controller.signal)
       const visit = async (id: string): Promise<void> => {
         if (visited.has(id)) return
         if (visited.size >= 100) throw new Error('模组依赖数量超出限制')
@@ -1727,9 +1874,11 @@ export class LauncherCore {
       }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
       const filenames = new Set<string>()
+      const partnerNames: string[] = []
       const affectedFiles = new Set<string>([registryPath])
       for (const item of plan) {
         const filename = path.basename(item.job.file)
+        partnerNames.push(filename)
         const canonicalFilename = filename.normalize('NFC').toLowerCase()
         const registryKey = `${source}:${item.version.project_id}`
         if (filenames.has(canonicalFilename)) throw new Error('不同模组使用了相同文件名，无法安全安装')
@@ -1746,6 +1895,7 @@ export class LauncherCore {
             throw new Error('已安装模组记录包含无效的文件名')
           }
           affectedFiles.add(safeJoin(this.instanceDirectory(instanceId), `game/mods/${previous.filename}`))
+          partnerNames.push(previous.filename)
         }
         const existing = await fs.stat(item.job.file).catch(error => {
           if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
@@ -1756,6 +1906,7 @@ export class LauncherCore {
           throw new Error(`文件 ${filename} 已存在且不是启动器管理的此模组，请先手动移走该文件`)
         }
       }
+      await assertNoDisabledModPartners(this.instanceDirectory(instanceId), partnerNames, { signal: controller.signal })
       // Download every required artifact outside game/mods. Failures and cancellation here cannot
       // replace any installed jar or expose a new mod without its dependencies to the next launch.
       await fs.mkdir(safeJoin(staging, 'files'), { recursive: true })

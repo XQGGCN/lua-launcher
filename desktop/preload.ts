@@ -12,6 +12,7 @@ const methods = new Set([
   'instanceOptions', 'updateInstanceSettings',
   'inventory',
   'searchResources', 'resourceVersions', 'installResource', 'cancelResourceInstall',
+  'prepareModToggle', 'setModEnabled',
 ])
 contextBridge.exposeInMainWorld('launcher', {
   call(method: string, ...args: unknown[]) {
