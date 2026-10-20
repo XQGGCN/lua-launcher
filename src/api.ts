@@ -1,9 +1,13 @@
+import { categoryFacet } from './mod-categories'
+
 export type ResourceSource = 'modrinth' | 'bbsmc'
+export type Loader = 'vanilla' | 'fabric' | 'forge' | 'neoforge'
+export const loaderNames: Record<Loader, string> = { vanilla: '原版', fabric: 'Fabric', forge: 'Forge', neoforge: 'NeoForge' }
 export interface Instance {
   id: string
   name: string
   version: string
-  loader: 'vanilla' | 'fabric'
+  loader: Loader
   loaderVersion?: string
   status: 'not-installed' | 'installing' | 'ready' | 'running' | 'error'
   createdAt: string
@@ -22,7 +26,18 @@ export interface Instance {
     applied: boolean
   }
 }
-export interface Settings { memoryMb: number; javaPath: string; concurrentDownloads: number }
+export interface Settings { memoryMode: 'auto' | 'manual'; memoryMb: number; javaPath: string; concurrentDownloads: number }
+export interface MemoryInfo {
+  totalMb: number
+  availableMb: number
+  reservedMb: number
+  safeMaxMb: number
+  recommendedMb: number
+  minimumMb: number
+  canLaunch: boolean
+  availableBasis: 'free-memory-conservative' | 'os-available'
+  reason: string
+}
 export interface Snapshot { instances: Instance[]; settings: Settings; rootDir: string }
 export interface Version { id: string; type: string; releaseTime: string }
 export interface JavaRuntime { path: string; version: string; major: number; arch: string }
@@ -35,7 +50,7 @@ export interface PackPreview {
   versionId: string
   summary?: string
   minecraftVersion: string
-  loader: 'vanilla' | 'fabric'
+  loader: Loader
   loaderVersion?: string
   fileCount: number
   totalBytes: number
@@ -43,7 +58,8 @@ export interface PackPreview {
   unsupportedReason?: string
 }
 export interface ChosenModpack { token: string; preview: PackPreview }
-export interface FabricVersion { version: string; stable: boolean }
+export interface LoaderVersion { version: string; stable: boolean; recommended?: boolean }
+export type FabricVersion = LoaderVersion
 export interface Mod {
   project_id: string; slug: string; title: string; description: string
   icon_url: string | null; author: string; downloads: number
@@ -78,13 +94,13 @@ declare global {
 export const isDesktop = Boolean(window.launcher)
 const defaultSnapshot: Snapshot = {
   instances: [],
-  settings: { memoryMb: 4096, javaPath: '', concurrentDownloads: 6 },
+  settings: { memoryMode: 'auto', memoryMb: 4096, javaPath: '', concurrentDownloads: 6 },
   rootDir: '浏览器预览 · 数据保存在此浏览器',
 }
 function readPreview(): Snapshot {
   try {
     const raw = JSON.parse(localStorage.getItem('lua-preview') || 'null') as Snapshot | null
-    if (raw && Array.isArray(raw.instances) && raw.settings) return raw
+    if (raw && Array.isArray(raw.instances) && raw.settings) return { ...raw, settings: { ...raw.settings, memoryMode: raw.settings.memoryMode === 'manual' ? 'manual' : 'auto' } }
   } catch { /* Storage can be unavailable in private browsing. */ }
   return structuredClone(defaultSnapshot)
 }
@@ -126,8 +142,14 @@ export async function call<T>(method: string, ...args: unknown[]): Promise<T> {
       result = list.map(item => item.loader)
       break
     }
+    case 'loaderVersions': {
+      if (args[1] !== 'fabric') throw new Error('Forge / NeoForge 的兼容版本需在桌面版读取。当前为浏览器界面预览。')
+      const list = await json(`https://meta.fabricmc.net/v2/versions/loader/${encodeURIComponent(String(args[0]))}`) as { loader: LoaderVersion }[]
+      result = list.map(item => item.loader)
+      break
+    }
     case 'createInstance': {
-      const options = args[0] as Pick<Instance, 'name' | 'version' | 'loader'>
+      const options = args[0] as Pick<Instance, 'name' | 'version' | 'loader' | 'loaderVersion'>
       if (!isSupportedVersion(options.version)) throw new Error('首版支持 Minecraft 1.20.1 及之后的正式版本。')
       const instance: Instance = { ...options, id: crypto.randomUUID(), createdAt: new Date().toISOString(), playtimeMs: 0, status: 'not-installed' }
       preview.instances.push(instance)
@@ -142,10 +164,11 @@ export async function call<T>(method: string, ...args: unknown[]): Promise<T> {
       break
     case 'searchMods':
     case 'searchModpacks': {
-      const options = (args[1] || {}) as { loader?: string; gameVersion?: string; offset?: number; source?: ResourceSource }
+      const options = (args[1] || {}) as { loader?: string; gameVersion?: string; offset?: number; source?: ResourceSource; category?: string }
       const facets = [[`project_type:${method === 'searchModpacks' ? 'modpack' : 'mod'}`]]
       if (options.loader) facets.push([`categories:${options.loader}`])
       if (options.gameVersion) facets.push([`versions:${options.gameVersion}`])
+      if (options.category) facets.push([`categories:${categoryFacet(options.category, options.source)}`])
       const query = new URLSearchParams({ query: String(args[0] || ''), facets: JSON.stringify(facets), limit: '12', offset: String(options.offset || 0), index: 'relevance' })
       result = await json(`${resourceAPI(options.source)}/search?${query}`)
       break
