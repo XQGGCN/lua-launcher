@@ -1,3 +1,4 @@
+export type ResourceSource = 'modrinth' | 'bbsmc'
 export interface Instance {
   id: string
   name: string
@@ -12,9 +13,10 @@ export interface Instance {
   modpack?: {
     name: string
     versionId: string
-    source: 'local' | 'modrinth'
+    source: 'local' | ResourceSource
     projectId?: string
     modrinthVersionId?: string
+    remoteVersionId?: string
     archiveSha1: string
     archiveSha512: string
     applied: boolean
@@ -48,7 +50,14 @@ export interface Mod {
   categories: string[]; project_type: string
 }
 export interface SearchResult { hits: Mod[]; total_hits: number; offset: number; limit: number }
-export interface ModVersion { id: string; name: string; game_versions: string[]; loaders: string[]; files: { size: number; primary: boolean; filename: string }[] }
+export interface ModVersion {
+  id: string; name: string; game_versions: string[]; loaders: string[]
+  files: { size: number; primary: boolean; filename: string }[]
+  source?: ResourceSource
+  externalOnly?: boolean
+  externalReason?: string
+  projectUrl?: string
+}
 export interface Progress { type: 'progress'; instanceId: string; phase: string; completed: number; total: number; bytesDownloaded: number }
 export interface DeviceCode { type: 'deviceCode'; userCode: string; verificationUri: string; expiresAt: number }
 export interface LogEvent { type: 'log'; instanceId: string; level: string; message: string }
@@ -87,6 +96,11 @@ async function json(url: string): Promise<unknown> {
   const response = await fetch(url)
   if (!response.ok) throw new Error(`服务暂时不可用（HTTP ${response.status}），请稍后重试。`)
   return response.json()
+}
+function resourceAPI(source: unknown) {
+  if (source === undefined || source === 'modrinth') return 'https://api.modrinth.com/v2'
+  if (source === 'bbsmc') return 'https://api.bbsmc.net/v2'
+  throw new Error('不支持的资源来源')
 }
 // Keep the browser preview aligned with desktop/core.ts's supported releases.
 function isSupportedVersion(version: string): boolean {
@@ -128,16 +142,16 @@ export async function call<T>(method: string, ...args: unknown[]): Promise<T> {
       break
     case 'searchMods':
     case 'searchModpacks': {
-      const options = (args[1] || {}) as { loader?: string; gameVersion?: string; offset?: number }
+      const options = (args[1] || {}) as { loader?: string; gameVersion?: string; offset?: number; source?: ResourceSource }
       const facets = [[`project_type:${method === 'searchModpacks' ? 'modpack' : 'mod'}`]]
       if (options.loader) facets.push([`categories:${options.loader}`])
       if (options.gameVersion) facets.push([`versions:${options.gameVersion}`])
       const query = new URLSearchParams({ query: String(args[0] || ''), facets: JSON.stringify(facets), limit: '12', offset: String(options.offset || 0), index: 'relevance' })
-      result = await json(`https://api.modrinth.com/v2/search?${query}`)
+      result = await json(`${resourceAPI(options.source)}/search?${query}`)
       break
     }
     case 'modpackVersions':
-      result = await json(`https://api.modrinth.com/v2/project/${encodeURIComponent(String(args[0]))}/version`)
+      result = await json(`${resourceAPI(args[1])}/project/${encodeURIComponent(String(args[0]))}/version`)
       break
     case 'openExternal':
       window.open(String(args[0]), '_blank', 'noopener,noreferrer')
