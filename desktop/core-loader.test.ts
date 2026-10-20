@@ -13,7 +13,10 @@ import { installerArtifact, loaderMetadataUrl, type ForgeLoader } from './loader
 
 const sha1 = (value: string | Buffer) => createHash('sha1').update(value).digest('hex')
 const MANIFEST = 'https://piston-meta.mojang.com/mc/game/version_manifest_v2.json'
-const runtime = { path: '/fake/java', version: '17.0.12', major: 17, arch: 'x64' }
+const runtime = {
+  path: path.join(os.tmpdir(), 'lua-loader-fake-runtime', process.platform === 'win32' ? 'java.exe' : 'java'),
+  version: '17.0.12', major: 17, arch: process.arch,
+}
 // These credentials can only reach the injected fake process; no real game runs.
 const account: LaunchAccount = { mode: 'microsoft', username: 'LoaderTest', uuid: 'a'.repeat(32), accessToken: 'fictitious-loader-test-token' }
 const coordinates = {
@@ -39,7 +42,15 @@ function networkFixture() {
         url: 'https://libraries.minecraft.net/test/shared/library/1.0/library-1.0.jar',
         path: 'test/shared/library/1.0/library-1.0.jar', sha1: sha1(library), size: library.length,
       } } }],
-      arguments: { jvm: ['-cp', '${classpath}'], game: ['--username', '${auth_player_name}', '--accessToken', '${auth_access_token}'] },
+      arguments: {
+        jvm: [
+          '-cp', '${classpath}', '-Dtest.classpathSeparator=${classpath_separator}',
+          ...['windows', 'linux', 'osx'].map(name => ({
+            rules: [{ action: 'allow', os: { name } }], value: `-Dtest.platform=${name}`,
+          })),
+        ],
+        game: ['--username', '${auth_player_name}', '--accessToken', '${auth_access_token}'],
+      },
     })
     responses.set(url, version)
     responses.set(`https://piston-data.mojang.com/loader-test/${game}.jar`, client)
@@ -99,7 +110,7 @@ function fakeProcesses() {
   const calls: Array<{ command: string; args: string[] }> = []
   const children: ChildProcess[] = []
   const spawnFake = ((command: string, args: string[]) => {
-    assert.equal(command, '/fake/java')
+    assert.equal(command, runtime.path)
     calls.push({ command, args: [...args] })
     const stdout = new PassThrough(), stderr = new PassThrough()
     const child = Object.assign(new EventEmitter(), {
@@ -116,8 +127,8 @@ async function fixture(t: TestContext) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'lua-core-loader-'))
   const network = networkFixture(), processes = fakeProcesses()
   const core = new LauncherCore(root, undefined, {
-    fetch: network.fetcher, spawn: processes.spawn, platform: 'linux', arch: 'x64',
-    memorySystem: { totalmem: () => 16 * 1024 ** 3, freemem: () => 12 * 1024 ** 3, platform: () => 'linux' },
+    fetch: network.fetcher, spawn: processes.spawn, platform: process.platform, arch: process.arch,
+    memorySystem: { totalmem: () => 16 * 1024 ** 3, freemem: () => 12 * 1024 ** 3, platform: () => process.platform },
   })
   await core.init()
   core.detectJava = async () => [runtime]
@@ -169,6 +180,8 @@ for (const loader of ['forge', 'neoforge'] as const) {
     const installed = JSON.parse(await fs.readFile(path.join(f.core.instanceDirectory(instance.id), 'installed.json'), 'utf8'))
     const libraryDirectory = path.join(f.core.instanceDirectory(instance.id), 'loader/libraries')
     assert.equal(installed.mainClass, expected.main)
+    assert.equal(installed.platform, process.platform)
+    assert.equal(installed.arch, process.arch)
     assert.equal(path.join(f.root, installed.loaderLibraryDirectory), libraryDirectory)
     assert.equal(installed.classpath.length, 2, 'new loader library replaces the inherited artifact rather than duplicating its old version')
     assert.equal(installed.classpath.some((entry: string) => entry.includes('library-1.0.jar')), false)
@@ -179,9 +192,15 @@ for (const loader of ['forge', 'neoforge'] as const) {
     assert.ok(args.includes(`-DlibraryDirectory=${libraryDirectory}`))
     assert.equal(args[args.indexOf('--launchTarget') + 1], `${loader}client`)
     assert.equal(args[args.indexOf('--loaderVersion') + 1], expected.build)
-    const classpath = args[args.indexOf('-cp') + 1].split(':')
-    assert.ok(classpath.includes(path.join(libraryDirectory, 'test/shared/library/2.0/library-2.0.jar')))
-    assert.ok(classpath.includes(path.join(f.root, `versions/${expected.game}/${expected.game}.jar`)))
+    const hostPlatform = process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'osx' : 'linux'
+    assert.deepEqual(args.filter(arg => arg.startsWith('-Dtest.platform=')), [`-Dtest.platform=${hostPlatform}`])
+    assert.ok(args.includes(`-Dtest.classpathSeparator=${path.delimiter}`))
+    // Use the host filesystem and its separator together, preserving Windows drive letters.
+    const classpath = args[args.indexOf('-cp') + 1].split(path.delimiter)
+    assert.deepEqual(classpath, [
+      path.join(libraryDirectory, 'test/shared/library/2.0/library-2.0.jar'),
+      path.join(f.root, `versions/${expected.game}/${expected.game}.jar`),
+    ])
   })
 
   test(`${loader} Modrinth queries pin the game and loader, and cross-loader mods cannot be installed`, async t => {
