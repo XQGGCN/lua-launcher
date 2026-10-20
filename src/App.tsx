@@ -5,16 +5,18 @@ import {
   Play, Plus, RefreshCw, Search, Settings2,
   Square, Terminal, UserRound, X, Package, Cpu, HardDrive,
 } from 'lucide-react'
-import { call, errorText, isDesktop, loaderNames, onEvent, type Account, type AuthState, type Instance, type JavaRuntime, type Mod, type ModVersion, type Progress, type ResourceSource, type SearchResult, type Settings, type Snapshot, type Version } from './api'
+import { call, errorText, isDesktop, loaderNames, onEvent, type Account, type AuthState, type Instance, type JavaRuntime, type JavaRequirement, type JavaRuntimeTask, type Mod, type ModVersion, type Progress, type ResourceSource, type SearchResult, type Settings, type Snapshot, type Version } from './api'
 
 import AccountView from './components/AccountView'
 import DownloadsView, { type DownloadInput, type PackTask } from './components/DownloadsView'
 import ModpacksView from './components/ModpacksView'
 import MemorySettings from './components/MemorySettings'
+import JavaSettings from './components/JavaSettings'
 import { Dialog, EmptyState, ErrorBox, PageHeading, Spinner } from './components/ui'
 import ResourceSourcePicker, { resourceProjectUrl, resourceSources } from './components/ResourceSourcePicker'
 import ModCategoryPicker from './components/ModCategoryPicker'
 import { categoryLabel, type ModCategory } from './mod-categories'
+import { APP_VERSION } from './version'
 
 type View = 'library' | 'discover' | 'downloads' | 'modpacks' | 'settings' | 'account' | 'logs'
 const navigation = [
@@ -32,6 +34,7 @@ function Logo({ small = false }: { small?: boolean }) {
 }
 export default function App() {
   const [view, setView] = useState<View>('library')
+  const [settingsOpened, setSettingsOpened] = useState(false)
   const [resourceSource, setResourceSource] = useState<ResourceSource>('modrinth')
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
   const [account, setAccount] = useState<Account | null>(null)
@@ -41,6 +44,7 @@ export default function App() {
   const [downloadTab, setDownloadTab] = useState<'game' | 'tasks'>('game')
   const [taskErrors, setTaskErrors] = useState<Record<string, string>>({})
   const [packTasks, setPackTasks] = useState<PackTask[]>([])
+  const [javaTasks, setJavaTasks] = useState<JavaRuntimeTask[]>([])
   const packOperationActive = useRef(false)
   const [busy, setBusy] = useState<Record<string, boolean>>({})
   const [progress, setProgress] = useState<Record<string, Progress>>({})
@@ -70,12 +74,20 @@ export default function App() {
   }, [applySnapshot])
   useEffect(() => {
     void refresh()
+    if (isDesktop) void call<JavaRuntimeTask[]>('runtimeTasks').then(tasks => {
+      // Snapshot rows missing from the renderer are restored, while events that
+      // arrived during this request remain authoritative for their own task ID.
+      setJavaTasks(current => [...new Map([...tasks, ...current].map(task => [task.id, task])).values()].slice(-30))
+    }).catch(error => setError(errorText(error)))
     const revision = authStateRevision.current
     void call<AuthState>('authState').then(state => {
       if (revision === authStateRevision.current) setAuthState(state)
     }).catch(error => { if (revision === authStateRevision.current) setAuthError(errorText(error)) })
     return onEvent(event => {
       if (event.type === 'state') applySnapshot(event.snapshot)
+      if (event.type === 'javaTask') {
+        setJavaTasks(current => [...current.filter(task => task.id !== event.task.id), event.task].slice(-30))
+      }
       if (event.type === 'account') {
         ++accountRequest.current
         setAccount(event.account?.mode === 'microsoft' ? event.account : null)
@@ -98,6 +110,7 @@ export default function App() {
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(''), 6500); return () => clearTimeout(timer) }, [toast])
   const run = async (key: string, method: string, ...args: unknown[]) => {
     setBusy(current => ({ ...current, [key]: true }))
+    if (method === 'launch') setProgress(current => ({ ...current, [key]: { type: 'progress', instanceId: key, phase: '正在验证账户并准备启动', completed: 0, total: 0, bytesDownloaded: 0 } }))
     try { await call(method, ...args); await refresh() } catch (error) { setToast(errorText(error)) }
     finally { setBusy(current => ({ ...current, [key]: false })) }
   }
@@ -105,15 +118,16 @@ export default function App() {
   const selectedInstance = instances.find(instance => instance.id === selectedId) || instances[0]
   const downloads = instances.filter(instance => instance.status === 'installing' || busy[instance.id])
   const downloadCount = downloads.length + packTasks.filter(task => task.status === 'active' && !task.instanceId).length
+    + javaTasks.filter(task => ['queued', 'active', 'cancelling'].includes(task.status)).length
   const filtered = instances.filter(instance => instance.name.toLowerCase().includes(gameQuery.toLowerCase()) && (gameFilter === 'all' || instance.loader === gameFilter))
   const openUrl = (url: string) => { void call('openExternal', url).catch(error => setToast(errorText(error))) }
-  const changeView = (next: View) => { setView(next); document.querySelector('main')?.scrollTo(0, 0) }
+  const changeView = (next: View) => { if (next === 'settings') setSettingsOpened(true); setView(next); document.querySelector('main')?.scrollTo(0, 0) }
   const showDownloadForm = () => { setDownloadTab('game'); changeView('downloads') }
   const showTasks = () => { setDownloadTab('tasks'); changeView('downloads') }
   async function installInstance(id: string) {
     setTaskErrors(errors => { const next = { ...errors }; delete next[id]; return next })
     setBusy(current => ({ ...current, [id]: true }))
-    try { applySnapshot(await call<Snapshot>('install', id)); setToast('游戏安装完成，可以启动。') }
+    try { applySnapshot(await call<Snapshot>('install', id)); setToast('游戏安装完成。登录验证后可启动。') }
     catch (error) {
       const message = errorText(error)
       if (message !== '安装已取消') setTaskErrors(current => ({ ...current, [id]: message }))
@@ -129,7 +143,11 @@ export default function App() {
   }
   async function cancelDownload(id: string) {
     setBusy(current => ({ ...current, [`cancel-${id}`]: true }))
-    try { await call('cancelInstall', id); await refresh() }
+    try {
+      const instance = instances.find(item => item.id === id)
+      await call(instance && instance.status !== 'installing' && busy[id] ? 'cancelLaunch' : 'cancelInstall', id)
+      await refresh()
+    }
     finally { setBusy(current => ({ ...current, [`cancel-${id}`]: false })) }
   }
   async function installPack(method: 'installModpack' | 'importModpack', sourceId: string, name: string, resourceSource: ResourceSource = 'modrinth') {
@@ -179,14 +197,14 @@ export default function App() {
       <div className="sidebar-section-label">游戏</div>
       <nav aria-label="主导航">{navigation.map(item => <button key={item.id} className={`nav-item ${view === item.id ? 'active' : ''}`} onClick={() => changeView(item.id)} aria-current={view === item.id ? 'page' : undefined}><item.icon size={19} /><span>{item.label}</span>{item.id === 'downloads' && downloadCount > 0 && <span className="nav-count">{downloadCount}</span>}</button>)}</nav>
       <div className="sidebar-bottom">
-        <div className="sidebar-note"><span className="online-dot" /><span>{isDesktop ? 'Lua Launcher 0.3.0' : '浏览器预览'}</span></div>
+        <div className="sidebar-note"><span className="online-dot" /><span>{isDesktop ? `Lua Launcher ${APP_VERSION}` : '浏览器预览'}</span></div>
         <button className={`nav-item ${view === 'logs' ? 'active' : ''}`} onClick={() => changeView('logs')}><Terminal size={18} /><span>运行日志</span></button>
         <button className={`nav-item ${view === 'settings' ? 'active' : ''}`} onClick={() => changeView('settings')}><Settings2 size={18} /><span>启动器设置</span></button>
         <button className={`profile-button ${view === 'account' ? 'selected' : ''}`} onClick={() => changeView('account')}><span className="avatar"><UserRound size={20} /></span><span><strong>{account?.username || '添加 Microsoft 账户'}</strong><small>{account ? 'Microsoft 账户' : '尚未登录'}</small></span><ChevronDown size={15} /></button>
       </div>
     </aside>
     <main className={`main-panel view-${view}`}>
-      <div className="topbar"><div className="breadcrumb">Lua 未央 <span>/</span> <strong>{({ library: '启动游戏', discover: '模组下载', downloads: '游戏下载', modpacks: '整合包', settings: '启动器设置', account: '游戏账户', logs: '运行日志' })[view]}</strong></div><div className="topbar-right"><span className="version-tag">ALPHA 0.3.0</span><button className="icon-button mobile-logs-button" aria-label="查看运行日志" onClick={() => changeView('logs')}><Terminal size={18} /></button><button className="icon-button" aria-label="管理游戏账户" onClick={() => changeView('account')}><UserRound size={18} /></button><button className="icon-button" aria-label="了解项目与开源许可" onClick={() => setToast('Lua 未央 · 独立开源 Minecraft Java 启动器。当前为 Alpha，支持原版、Fabric、Forge 与 NeoForge。Minecraft 是 Mojang 的商标，本项目与 Mojang、Microsoft 无关联。')}><CircleHelp size={18} /></button></div></div>
+      <div className="topbar"><div className="breadcrumb">Lua 未央 <span>/</span> <strong>{({ library: '启动游戏', discover: '模组下载', downloads: '游戏下载', modpacks: '整合包', settings: '启动器设置', account: '游戏账户', logs: '运行日志' })[view]}</strong></div><div className="topbar-right"><span className="version-tag">ALPHA {APP_VERSION}</span><button className="icon-button mobile-logs-button" aria-label="查看运行日志" onClick={() => changeView('logs')}><Terminal size={18} /></button><button className="icon-button" aria-label="管理游戏账户" onClick={() => changeView('account')}><UserRound size={18} /></button><button className="icon-button" aria-label="了解项目与开源许可" onClick={() => setToast('Lua 未央 · 独立开源 Minecraft Java 启动器。当前为 Alpha，支持原版、Fabric、Forge 与 NeoForge。Minecraft 是 Mojang 的商标，本项目与 Mojang、Microsoft 无关联。')}><CircleHelp size={18} /></button></div></div>
       <div className="page-content">
         {!isDesktop && <div className="preview-notice"><Monitor size={15} /><span>当前为浏览器预览。可探索模组、创建预览实例；安装和启动需使用桌面版。</span><span className="preview-label">PREVIEW</span></div>}
         {error && <ErrorBox message={error} retry={() => void refresh()} />}
@@ -215,9 +233,9 @@ export default function App() {
           <div className="launch-bar"><div className="launch-selection"><Gamepad2 size={25} /><div><strong>{selectedInstance?.name || '未选择游戏版本'}</strong><span>{selectedInstance ? `Minecraft ${selectedInstance.version} · ${loaderNames[selectedInstance.loader]}` : '请先添加游戏版本'}</span></div></div><div className="launch-controls">{selectedInstance && <button className="button secondary" onClick={() => changeView('logs')}><Terminal size={16} />日志</button>}<button className="button primary launch-button" disabled={Boolean(selectedInstance && (busy[selectedInstance.id] || selectedInstance.status === 'installing' || !isDesktop))} onClick={() => { if (!selectedInstance) showDownloadForm(); else if (selectedInstance.status === 'running' || selectedInstance.status === 'ready') void run(selectedInstance.id, selectedInstance.status === 'running' ? 'stop' : 'launch', selectedInstance.id); else { showTasks(); void installInstance(selectedInstance.id).catch(() => {}) } }}>{selectedInstance && (busy[selectedInstance.id] || selectedInstance.status === 'installing') ? <Spinner size={20} /> : selectedInstance?.status === 'running' ? <Square size={19} /> : selectedInstance?.status === 'ready' ? <Play size={20} /> : <Download size={20} />}{!selectedInstance ? '下载游戏' : !isDesktop ? '桌面版可启动' : selectedInstance.status === 'running' ? '结束游戏' : selectedInstance.status === 'ready' ? '启动游戏' : selectedInstance.status === 'installing' ? '安装中…' : selectedInstance.status === 'error' ? '重新安装' : '安装游戏'}</button></div></div>
         </>}
         {view === 'discover' && <Discover source={resourceSource} setSource={setResourceSource} openUrl={openUrl} instances={instances} installed={async name => { await refresh(); setToast(`${name} 已安装，必需依赖已一并处理。`) }} />}
-        {view === 'downloads' && <DownloadsView tab={downloadTab} setTab={setDownloadTab} instances={instances} progress={progress} busy={busy} taskErrors={taskErrors} packTasks={packTasks} download={downloadGame} install={installInstance} cancel={cancelDownload} showGame={id => { setSelectedId(id); changeView('library') }} showLogs={id => { setSelectedId(id); changeView('logs') }} showPacks={source => { if (source && source !== 'local') setResourceSource(source); changeView('modpacks') }} />}
+        {view === 'downloads' && <DownloadsView tab={downloadTab} setTab={setDownloadTab} instances={instances} progress={progress} busy={busy} taskErrors={taskErrors} packTasks={packTasks} javaTasks={javaTasks} cancelJava={async id => { await call('cancelJavaInstall', id) }} retryJava={async major => { await call('installJava', major) }} download={downloadGame} install={installInstance} cancel={cancelDownload} showGame={id => { setSelectedId(id); changeView('library') }} showLogs={id => { setSelectedId(id); changeView('logs') }} showPacks={source => { if (source && source !== 'local') setResourceSource(source); changeView('modpacks') }} />}
         {view === 'modpacks' && <ModpacksView source={resourceSource} setSource={setResourceSource} tasks={packTasks} progress={progress} installOnline={(versionId, name, source) => installPack('installModpack', versionId, name, source)} importLocal={(token, name) => installPack('importModpack', token, name)} cancel={cancelDownload} showTasks={showTasks} openUrl={openUrl} />}
-        {view === 'settings' && snapshot && <SettingsView instance={selectedInstance} settings={snapshot.settings} rootDir={snapshot.rootDir} save={async settings => { await call('updateSettings', settings); await refresh(); setToast(isDesktop ? '设置已保存。' : '预览设置已保存在此浏览器。') }} />}
+        {settingsOpened && snapshot && <div hidden={view !== 'settings'}><SettingsView instance={selectedInstance} settings={snapshot.settings} rootDir={snapshot.rootDir} javaTasks={javaTasks} save={async settings => { await call('updateSettings', settings); await refresh(); setToast(isDesktop ? '设置已保存。' : '预览设置已保存在此浏览器。') }} /></div>}
         {view === 'account' && <AccountView account={account} refresh={refresh} auth={authState} authError={authError} login={beginLogin} cancelLogin={cancelLogin} openUrl={openUrl} />}
         {view === 'logs' && <LogsView instances={instances} initialId={selectedInstance?.id} />}
       </div>
@@ -327,22 +345,62 @@ function InstallModDialog({ source, mod, instances, close, installed, openUrl }:
   </Dialog>
 }
 
-function SettingsView({ settings, rootDir, save, instance }: { settings: Settings; rootDir: string; save: (settings: Settings) => Promise<void>; instance?: Instance }) {
-  const [draft, setDraft] = useState({ ...settings, memoryMode: settings.memoryMode || 'auto' })
+function SettingsView({ settings, rootDir, save, instance, javaTasks }: { settings: Settings; rootDir: string; save: (settings: Settings) => Promise<void>; instance?: Instance; javaTasks: JavaRuntimeTask[] }) {
+  const initialDraft = () => ({ ...settings, memoryMode: settings.memoryMode || 'auto', manualJavaPath: settings.manualJavaPath || settings.javaPath || '' })
+  const [draft, setDraft] = useState(initialDraft)
   const [runtimes, setRuntimes] = useState<JavaRuntime[]>([])
   const [detecting, setDetecting] = useState(false)
-  const [detected, setDetected] = useState(false)
+  const [detectError, setDetectError] = useState('')
+  const detectRevision = useRef(0)
+  const [requirement, setRequirement] = useState<JavaRequirement>()
+  const [requirementLoading, setRequirementLoading] = useState(false)
+  const [requirementError, setRequirementError] = useState('')
+  const [requirementRetry, setRequirementRetry] = useState(0)
+  const [resetKey, setResetKey] = useState(0)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [savedDraft, setSavedDraft] = useState(() => JSON.stringify(initialDraft()))
+  const dirty = JSON.stringify(draft) !== savedDraft
+  const terminalTasks = javaTasks.filter(task => task.status === 'complete').map(task => task.id).join(',')
   async function detect() {
-    setDetecting(true); setError('')
-    try { setRuntimes(await call<JavaRuntime[]>('detectJava')); setDetected(true) } catch (error) { setError(errorText(error)) } finally { setDetecting(false) }
+    const revision = ++detectRevision.current
+    setDetecting(true); setDetectError('')
+    try {
+      const next = await call<JavaRuntime[]>('detectJava')
+      if (revision === detectRevision.current) setRuntimes(next)
+    } catch (error) {
+      if (revision !== detectRevision.current) return
+      setDetectError(errorText(error))
+      throw error
+    } finally { if (revision === detectRevision.current) setDetecting(false) }
   }
-  return <><PageHeading title="启动器设置" subtitle="配置 Java、游戏内存和下载选项。" /><form className="settings-form" onSubmit={event => { event.preventDefault(); setSaving(true); setError(''); save(draft).catch(error => setError(errorText(error))).finally(() => setSaving(false)) }}>
-    <section className="settings-card"><div className="settings-card-heading"><Cpu size={20} /><div><h2>游戏运行</h2><p>更改后将在下一次启动游戏时生效。</p></div></div><MemorySettings settings={draft} change={setDraft} instanceId={instance?.id} instanceName={instance?.name} /><label className="field"><span>Java 可执行文件路径</span><div className="input-with-button"><input value={draft.javaPath} onChange={event => setDraft({ ...draft, javaPath: event.target.value })} placeholder="自动选择系统已安装的 Java" /><button className="button secondary" type="button" disabled={detecting || !isDesktop} onClick={() => void detect()}>{detecting ? <Spinner size={16} /> : <Search size={16} />}自动检测</button></div><small>留空时自动检测系统 Java。Minecraft 1.20.5 及之后版本通常需要 Java 21。</small></label>{detected && <div className="runtime-list">{runtimes.length === 0 ? <p className="form-hint">没有检测到 Java。请安装适合游戏版本的 Java，并填写可执行文件路径。</p> : runtimes.map(runtime => <button type="button" key={runtime.path} onClick={() => setDraft({ ...draft, javaPath: runtime.path })} className={`runtime-item ${draft.javaPath === runtime.path ? 'selected' : ''}`}><Cpu size={18} /><span><strong>Java {runtime.major} · {runtime.arch}</strong><small>{runtime.path}</small></span>{draft.javaPath === runtime.path && <Check size={16} />}</button>)}</div>}</section>
+  useEffect(() => {
+    if (isDesktop) void detect().catch(() => {})
+    return () => { ++detectRevision.current }
+  }, [terminalTasks])
+  useEffect(() => {
+    let current = true
+    setRequirement(undefined); setRequirementError('')
+    if (!isDesktop || !instance) { setRequirementLoading(false); return }
+    setRequirementLoading(true)
+    void call<JavaRequirement>('runtimeRequirement', instance.id)
+      .then(next => { if (current) setRequirement(next) })
+      .catch(error => { if (current) setRequirementError(errorText(error)) })
+      .finally(() => { if (current) setRequirementLoading(false) })
+    return () => { current = false }
+  }, [instance?.id, requirementRetry])
+  return <><PageHeading title="启动器设置" subtitle="配置 Java、游戏内存和下载选项。" /><form className="settings-form" onSubmit={event => {
+    event.preventDefault()
+    if (saving) return
+    const pending = { ...draft }
+    setSaving(true); setError('')
+    save(pending).then(() => setSavedDraft(JSON.stringify(pending)))
+      .catch(error => setError(errorText(error))).finally(() => setSaving(false))
+  }}>
+    <section className="settings-card"><div className="settings-card-heading"><Cpu size={20} /><div><h2>游戏运行</h2><p>更改后将在下一次安装或启动游戏时生效。</p></div></div><MemorySettings settings={draft} change={next => setDraft({ ...next, manualJavaPath: next.manualJavaPath || '' })} instanceId={instance?.id} instanceName={instance?.name} /><JavaSettings javaPath={draft.javaPath} manualJavaPath={draft.manualJavaPath} onChangeJavaPath={(javaPath, manualJavaPath) => setDraft(current => ({ ...current, javaPath, manualJavaPath }))} desktop={isDesktop} resetKey={resetKey} requirement={requirement} requirementLoading={requirementLoading} requirementError={requirementError} onRetryRequirement={() => setRequirementRetry(value => value + 1)} runtimes={runtimes} detecting={detecting} detectError={detectError} onDetect={detect} tasks={javaTasks} onInstall={async major => { await call('installJava', major) }} onCancelTask={async id => { await call('cancelJavaInstall', id) }} onPickJava={() => call<string | null>('chooseJava')} onRefresh={detect} /></section>
     <section className="settings-card"><div className="settings-card-heading"><Download size={20} /><div><h2>下载与存储</h2><p>游戏与依赖文件统一保存在启动器数据目录。</p></div></div><div className="setting-row"><div><h3>并行下载数</h3><p>网络不稳定时，可以减少同时下载的文件数。</p></div><select aria-label="并行下载数" value={draft.concurrentDownloads} onChange={event => setDraft({ ...draft, concurrentDownloads: Number(event.target.value) })}>{[2, 4, 6, 8, 12].map(value => <option key={value} value={value}>{value} 个文件</option>)}</select></div><div className="data-directory"><HardDrive size={18} /><div><strong>数据目录</strong><code>{rootDir}</code></div></div></section>
-    <section className="settings-card about-card"><Logo /><div><h3>Lua 未央 <span className="version-tag">0.3.0 ALPHA</span></h3><p>独立开源的 Minecraft Java 启动器。</p><small>Minecraft 是 Mojang 的商标。本项目与 Mojang、Microsoft 无关联。</small></div></section>
-    {error && <ErrorBox message={error} />}<div className="settings-save"><button type="button" className="button secondary" onClick={() => setDraft(settings)}>撤销更改</button><button className="button primary" disabled={saving}>{saving ? <Spinner size={16} /> : <Check size={16} />}保存设置</button></div>
+    <section className="settings-card about-card"><Logo /><div><h3>Lua 未央 <span className="version-tag">{APP_VERSION} ALPHA</span></h3><p>独立开源的 Minecraft Java 启动器。</p><small>Minecraft 是 Mojang 的商标。本项目与 Mojang、Microsoft 无关联。</small></div></section>
+    {error && <ErrorBox message={error} />}<div className="settings-save"><span className="form-hint" role="status">{dirty ? '有尚未保存的设置' : '设置已保存'}</span><button type="button" className="button secondary" disabled={saving} onClick={() => { const next = initialDraft(); setDraft(next); setSavedDraft(JSON.stringify(next)); setResetKey(value => value + 1); setError('') }}>撤销更改</button><button className="button primary" disabled={saving || !dirty}>{saving ? <Spinner size={16} /> : <Check size={16} />}保存设置</button></div>
   </form></>
 }
 

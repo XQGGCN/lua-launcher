@@ -26,7 +26,7 @@ export interface Instance {
     applied: boolean
   }
 }
-export interface Settings { memoryMode: 'auto' | 'manual'; memoryMb: number; javaPath: string; concurrentDownloads: number }
+export interface Settings { memoryMode: 'auto' | 'manual'; memoryMb: number; javaPath: string; manualJavaPath?: string; concurrentDownloads: number }
 export interface MemoryInfo {
   totalMb: number
   availableMb: number
@@ -41,6 +41,7 @@ export interface MemoryInfo {
 export interface Snapshot { instances: Instance[]; settings: Settings; rootDir: string }
 export interface Version { id: string; type: string; releaseTime: string }
 export interface JavaRuntime { path: string; version: string; major: number; arch: string }
+export type { JavaRequirement, JavaRuntimeTask } from '../desktop/core'
 export interface Account { mode: 'microsoft'; username: string; uuid: string }
 export interface AuthConfig { configured: boolean; clientId: string; source: 'built-in' | 'custom' | 'none' }
 export interface AuthStatus { stage: string; message: string }
@@ -74,7 +75,7 @@ export interface ModVersion {
   externalReason?: string
   projectUrl?: string
 }
-export interface Progress { type: 'progress'; instanceId: string; phase: string; completed: number; total: number; bytesDownloaded: number }
+export interface Progress { type: 'progress'; instanceId: string; phase: string; completed: number; total: number; bytesDownloaded: number; unit?: 'bytes' }
 export interface DeviceCode { type: 'deviceCode'; userCode: string; verificationUri: string; expiresAt: number }
 export interface LogEvent { type: 'log'; instanceId: string; level: string; message: string }
 export type LauncherEvent = Progress | DeviceCode | LogEvent
@@ -82,6 +83,7 @@ export type LauncherEvent = Progress | DeviceCode | LogEvent
   | { type: 'account'; account: Account | null }
   | ({ type: 'authStatus' } & AuthStatus)
   | { type: 'authState'; state: AuthState }
+  | { type: 'javaTask'; task: import('../desktop/core').JavaRuntimeTask }
 
 declare global {
   interface Window {
@@ -94,7 +96,7 @@ declare global {
 export const isDesktop = Boolean(window.launcher)
 const defaultSnapshot: Snapshot = {
   instances: [],
-  settings: { memoryMode: 'auto', memoryMb: 4096, javaPath: '', concurrentDownloads: 6 },
+  settings: { memoryMode: 'auto', memoryMb: 4096, javaPath: '', manualJavaPath: '', concurrentDownloads: 6 },
   rootDir: '浏览器预览 · 数据保存在此浏览器',
 }
 function readPreview(): Snapshot {
