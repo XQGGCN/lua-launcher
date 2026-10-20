@@ -2,11 +2,26 @@
 
 适用于 Lua · 未央维护者。核对日期：2026-10-21。
 
-目前项目尚未配置自己的 Microsoft Application (client) ID，也未完成真实账户的端到端登录验证。自动化测试使用虚构 ID 和本地模拟响应，不代表应用已获得 Minecraft 服务访问资格。**没有 Client ID 时，应显示“未配置”，不能显示为可用的 Microsoft 登录服务。**
+项目已为 `Lua Launcher` 注册仅面向个人 Microsoft 账户的公共客户端，并启用设备授权流。公开的 Application (client) ID 为 `8e83a566-71f8-4164-9040-5cf61bb12740`，构建默认提供该标识。
+
+**真实验证结果：**已成功取得设备代码，由账号本人完成 Microsoft 授权，Xbox / XSTS 验证通过；Minecraft `authentication/login_with_xbox` 返回 `403`，显示 `CLIENT_CONFIGURATION`。因此当前阻塞在 Minecraft 服务接入，不能把 Microsoft 网页授权完成称为 Minecraft 登录成功。未到达游戏许可、档案或会话保存步骤。自动化测试使用虚构 ID 和本地模拟响应，不能替代真实验收。**没有 Client ID 的自定义构建仍应显示“未配置”。**
 
 发行版应由维护者注册并维护一个属于 Lua 的应用，把公开的 Client ID 随构建提供。普通玩家使用发行版时只需用自己的 Microsoft 账户授权，不需要逐人注册应用。高级设置中的自定义 ID 供开发者或自行构建的分发者使用。
 
 ## 1. 注册属于自己的应用
+
+### 如果一开始就报没有目录、无权限或 AADSTS50020
+
+先看错误中的租户名称。`AADSTS50020` 表示当前账户不属于目标租户，不等于密码错误。如果直接进入 Entra 时指向 `Microsoft Services`，不要把“请添加为外部用户”理解为需要申请加入微软内部租户。
+
+- 已有 Azure / Microsoft 365 开发目录：在右上角切换到自己有权管理的目录，例如 `Default Directory`，再进入应用注册。仍无权限时，由该目录管理员授予合适的应用注册权限。
+- 尚无可用目录：从 [Azure 免费账号入口](https://azure.microsoft.com/free/) 选择免费注册，用自己的 Microsoft 账户完成开通，再使用账号对应的默认目录。注册资格、身份验证和地区可用性由微软决定；手机、银行卡及协议确认应由账号本人在微软页面处理。
+- 不要先尝试额外创建租户。微软当前说明：免费或试用客户不能从 Entra 管理中心创建额外 Workforce 租户；没有目录的用户可以走免费账号开通入口。注册 Lua 应用不需要部署虚拟机或购买 P1/P2。
+- 免费入口要求的验证无法完成时，本仓库没有已验证的免验证替代途径。可以使用自己已有的合格目录或向微软支持确认；不要购买来历不明的租户、借用其他启动器的应用 ID。
+
+依据：[AADSTS50020 排查](https://learn.microsoft.com/en-us/troubleshoot/entra/entra-id/app-integration/error-code-AADSTS50020-user-account-identity-provider-does-not-exist)、[新建目录的当前限制](https://learn.microsoft.com/en-us/entra/fundamentals/create-new-tenant)、[Azure 免费账号说明](https://azure.microsoft.com/free/)。账户免费试用和目录使用规则可能变化，以实际门户提示为准。
+
+### 应用配置
 
 1. 打开 [Microsoft Entra 管理中心](https://entra.microsoft.com/)，选择自己有权管理的目录。当前官方快速入门列出的前提包括有效 Azure 订阅、租户和至少 Application Developer 权限；如果门户不允许注册，先由目录管理员解决权限或租户条件。
 2. 进入 **Entra ID → App registrations → New registration**，使用能清楚识别发行方的应用名，例如 `Lua Launcher`。
@@ -26,7 +41,17 @@ Microsoft 应用注册、用户 OAuth 授权和 Minecraft 服务允许此应用�
 
 请由维护者打开 Minecraft 官方的 [Java Edition Game Service API Review or Application Process](https://help.minecraft.net/hc/en-us/articles/16254801392141)，按该页面当时提供的流程申请或核实自己的应用资格，并保留官方回复。应用资料应如实指向 [Lua 源码仓库](https://github.com/XQGGCN/lua-launcher) 和实际的登录行为；审核要求、处理时间和通过结果由官方决定。
 
-**当前核验限制：**官方 [Java Edition Support 栏目](https://help.minecraft.net/hc/en-us/sections/44460521913485) 的搜索索引仍列有该申请文档，但本次读取申请页仅获得导航，未取得正文。因此本仓库不复制未经确认的申请表地址、不把第三方回答中的 ID@Xbox 路径当作已核验步骤，也不承诺申请一定通过。维护者需要在自己的浏览器确认当前页面与申请要求；若入口不可用，向 Minecraft 官方支持确认。
+**当前官方入口已核验：**在浏览器打开上述官方文档可以读到正文，文档说明新应用需要人工审核并加入允许列表，提供的申请入口是 [Minecraft API application review](https://aka.ms/mce-reviewappid)。这与 Azure 应用注册是独立环节；提交申请、处理时间和批准均不能由 Lua 保证。请以表单当时的字段和提示为准，不能把第三方文章里的其他开发者计划当作替代审批流程。
+
+2026-10-21 实际表单 `AppID Review` 要求：
+
+- 申请人确认已阅读并理解 EULA 和 Usage Guidelines。
+- 提供可与 Azure 门户信息核对的联系邮箱、应用显示名称、Application ID、Tenant ID、项目网址及用途说明。
+- 应用应在允许游玩前认证用户并验证游戏所有权；绕过或停用认证、所有权、许可检查或其他安全措施的应用不予批准，服务器配置不改变该要求。
+- 应用名不能包含表单列出的官方品牌或其他保留名称；`Lua Launcher` 不使用这些名称。
+- 表单说明按周审核；重复提交不会加快处理。
+
+申请前必须核对代码的真实行为，不能把仅验证了 Microsoft 授权的实现描述为已经完成所有权验证。现有未验证的离线名字启动方式与上述表单要求存在冲突，解决之前不要宣称已满足准入要求或提交不实说明。
 
 如果 Minecraft 登录接口返回 `403`，Lua 会显示 `CLIENT_CONFIGURATION`，提示检查应用注册与服务接入资格。不要借用官方启动器、PCL、HMCL 或其他应用的 Client ID 来规避失败。
 
@@ -49,7 +74,7 @@ pnpm build
 
 开发运行可使用同名环境变量；修改后重新启动开发进程。编译进发行版的 ID 应来自维护者自己的注册，并在发布前完成第 4 节的实测。
 
-仓库的 GitHub Actions 已接入同名 **Repository variable**：在仓库 **Settings → Secrets and variables → Actions → Variables** 中新增 `LUA_MICROSOFT_CLIENT_ID`，值填自己的公开 Client ID，再运行构建。该标识无需作为秘密保存；留空则构建明确显示未配置。
+仓库的 GitHub Actions 已接入同名 **Repository variable**：在仓库 **Settings → Secrets and variables → Actions → Variables** 中新增 `LUA_MICROSOFT_CLIENT_ID`，值填自己的公开 Client ID，再运行构建。该标识无需作为秘密保存；留空则使用 `scripts/build-desktop.mjs` 中 Lua 自己的公开默认 ID。独立分发的 fork 应注册自己的应用并替换该默认值或提供构建覆盖。
 
 高级设置可以一次保存自定义 ID，重启后继续使用。配置顺序为：**已保存的 custom → 构建/开发时提供的 built-in → none**。保存空值会清除自定义覆盖并回退到内置值；如果没有内置值，恢复未配置状态。保存有效格式只表示配置存在，不能表示已审核或已登录。
 
@@ -98,4 +123,4 @@ pnpm build
 node --import tsx --test desktop/auth.test.ts desktop/auth-config.test.ts
 ```
 
-本轮该命令通过 45 项测试（37 项登录测试、8 项配置测试）。真实 Microsoft 登录及应用审核仍待维护者完成，不能标记为已验证。
+本轮该命令通过 45 项测试（37 项登录测试、8 项配置测试）。设备授权和 Xbox / XSTS 已实测；Minecraft 登录仍被 `403` 阻塞，完整登录及应用审核不能标记为已验证。
