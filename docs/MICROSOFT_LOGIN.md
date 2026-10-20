@@ -51,9 +51,23 @@ Microsoft 应用注册、用户 OAuth 授权和 Minecraft 服务允许此应用�
 - 应用名不能包含表单列出的官方品牌或其他保留名称；`Lua Launcher` 不使用这些名称。
 - 表单说明按周审核；重复提交不会加快处理。
 
-申请前必须核对代码的真实行为，不能把仅验证了 Microsoft 授权的实现描述为已经完成所有权验证。现有未验证的离线名字启动方式与上述表单要求存在冲突，解决之前不要宣称已满足准入要求或提交不实说明。
+申请前必须核对代码的真实行为，不能把仅验证了 Microsoft 授权的实现描述为已经完成所有权验证。0.2.2 已改为纯在线账户版：移除离线名字入口、IPC 和启动内核分支，忽略旧离线账户文件，只有完成完整认证、所有权和档案验证的会话才能提供启动凭据。认证失败不会自动切换身份。旧版本的历史行为应保留说明，不能将旧版离线运行实测当作当前在线启动验收。
+
+申请人已于 2026-10-21 提交，浏览器已显示 Mojang Studios 的成功回执；当前等待审核、尚未获批。纯在线实现也不保证审核通过；如后续实际功能发生变化，应同步更新项目说明并向官方确认适用要求。
 
 如果 Minecraft 登录接口返回 `403`，Lua 会显示 `CLIENT_CONFIGURATION`，提示检查应用注册与服务接入资格。不要借用官方启动器、PCL、HMCL 或其他应用的 Client ID 来规避失败。
+
+### 申请用途说明参考
+
+以下文字描述 0.2.2 的实现，已用于准备申请表。最终联系邮箱、协议声明和提交由申请人本人完成；该说明不代表审批结果。
+
+> Lua Launcher is an independent, open-source desktop launcher for Minecraft Java Edition on Windows, macOS, and Linux. It manages isolated game instances, downloads official game files, and installs supported Fabric mods and Modrinth-format modpacks.
+>
+> Version 0.2.2 requires Microsoft authentication through our own registered public client, followed by Xbox/XSTS authentication, Minecraft authentication, Java entitlement verification, and a valid Minecraft profile before providing launch credentials. It has no offline-account launch option or authentication-failure fallback. Earlier alpha versions offered offline identities; that functionality has been removed from the current code and build.
+>
+> Minecraft access tokens are held only in the main process and may be reused while valid. Refresh sessions are encrypted with the operating system's secure storage. Restarting the launcher or refreshing an expired access token requires online authentication and renewed entitlement/profile checks. Logout or an explicit authentication, ownership, or profile revocation clears the stored session.
+>
+> We request access to complete real-account integration testing and enable this authenticated launch flow. Microsoft device authorization and Xbox/XSTS authentication have succeeded, but Minecraft's login endpoint currently returns HTTP 403. We have not yet completed end-to-end Minecraft account validation or received API approval. Source code: https://github.com/XQGGCN/lua-launcher
 
 ## 3. 配置开发版与发行版
 
@@ -87,10 +101,10 @@ pnpm build
 1. 从未配置状态启动，确认不会伪装为登录就绪。提供有效 Client ID，重启，确认配置来源和值恢复。
 2. 主动点击登录。出现当前会话的用户代码、Microsoft 官方验证页面和到期提示；只在该页面输入账户密码或验证码，Lua 不接收这些内容。
 3. 在 Microsoft 页面确认应用名称确实属于自己的 Lua 注册，再完成授权。Lua 应依次显示获取代码、等待授权、Xbox 验证、Minecraft 验证、许可与档案检查、安全保存、完成。
-4. 只有流程全部成功后才出现 Java 用户名和账户状态。接着实际启动一个游戏实例，核验进入游戏与需要身份认证的正常使用场景。
+4. 只有流程全部成功后才出现 Java 用户名和账户状态。接着实际启动一个游戏实例，核验进入游戏与需要身份认证的正常使用场景。未登录时不能启动；旧版本的离线账户文件不应恢复成可用身份。
 5. 关闭并重开 Lua，确认账户能恢复。再次启动游戏验证 refresh token 换取新凭据，而非只显示缓存的用户名。
 6. 验证拒绝授权、取消、代码到期、断网与服务失败不会显示“登录完成”。若有可用的无许可测试账户，应看到许可错误，不能自动降为离线身份。
-7. 退出账户并重启，确认已保存会话删除、后续启动要求重新登录。
+7. 退出账户并重启，确认已保存会话删除、后续启动要求重新登录。若启动准备期间退出账户，Java 游戏进程不应继续启动。
 
 当前实现按微软响应的 `interval` 轮询，处理等待与减速响应，遵守 `expires_in`，仅在用户主动请求后获取设备代码；协议依据是 [Microsoft device authorization grant](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-device-code)。真实使用还取决于账户资格、Xbox 档案/家庭设置、服务权限及网络。代码通过模拟测试不能代替这一轮实测。
 
@@ -116,6 +130,8 @@ pnpm build
 - `begin()`、`account()` 只返回 `{ username, uuid, mode: 'microsoft' }`。设备代码回调只包含用户代码、验证 URL、到期时间。完整凭据、服务响应、refresh token 和私有 device code 不得通过 IPC 暴露。
 - `credentials()` 仅供主进程启动 Java，增加 `clientId`，以及 XSTS 实际返回且格式有效时的 `xuid`。XUID 只留内存；缺失时不以 user hash 冒充。Xbox 官方说明不同 relying party 未必返回全部 display claims，参见 [Xbox title service authentication](https://learn.microsoft.com/en-us/gaming/gdk/docs/services/fundamentals/s2s-auth-calls/s2s-calls/live-title-service-calls-xbox-live)。
 - `microsoft-session.json` 保存由系统安全存储加密的刷新会话，访问令牌仅在内存。提交之前允许取消；开始原子替换后普通取消不把已保存会话报告成失败。退出登录仍会删除已经开始提交的会话。
+- `AccountCoordinator` 仅协调 Microsoft 账户，不再接收离线身份或读取旧离线设置。启动取得凭据和创建 Java 游戏进程前均检查账户代次，避免退出或换号后继续使用旧凭据。
+- 有效期内的 Minecraft 访问令牌可在同一进程内复用；重启或到期后需在线刷新，并重新检查游戏许可和档案。刷新明确返回授权失效、无许可或档案缺失时撤销已保存会话；临时网络错误只阻止本次启动，不伪造身份，也不把网络中断当作账户被撤销。
 
 自动化验证命令：
 
@@ -123,4 +139,4 @@ pnpm build
 node --import tsx --test desktop/auth.test.ts desktop/auth-config.test.ts
 ```
 
-本轮该命令通过 45 项测试（37 项登录测试、8 项配置测试）。设备授权和 Xbox / XSTS 已实测；Minecraft 登录仍被 `403` 阻塞，完整登录及应用审核不能标记为已验证。
+另运行 `pnpm test` 检查账户并发、启动和安装流程；当前各平台结果见 [GitHub Actions](https://github.com/XQGGCN/lua-launcher/actions)。设备授权和 Xbox / XSTS 已实测；Minecraft 登录仍被 `403` 阻塞，完整登录及应用审核不能标记为已验证。
