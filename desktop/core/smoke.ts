@@ -1,16 +1,18 @@
 /**
  * Opt-in installation test. Downloads and verifies official Minecraft files in .local/smoke.
  * Run: node --import tsx desktop/core/smoke.ts
- * Does not launch Java or read a user's game directories or account.
+ * Forge/NeoForge run official Java installer processors. Never launches the game or reads accounts.
  */
 import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import { LauncherCore } from '../core'
 
 const directory = path.resolve('.local/smoke')
-const loader = process.argv.includes('--fabric') ? 'fabric' : 'vanilla'
-const instanceName = loader === 'fabric' ? 'Lua Fabric Smoke' : 'Lua Smoke'
-const logName = loader === 'fabric' ? 'smoke-fabric.log' : 'smoke.log'
+const loader = process.argv.includes('--forge') ? 'forge' : process.argv.includes('--neoforge') ? 'neoforge' : process.argv.includes('--fabric') ? 'fabric' : 'vanilla'
+const instanceName = `Lua ${loader} Install Smoke`
+const logName = `smoke-${loader}.log`
+const version = loader === 'neoforge' ? '1.20.2' : '1.20.1'
+const loaderVersion = loader === 'forge' ? '47.4.0' : loader === 'neoforge' ? '20.2.93' : undefined
 await fs.mkdir(directory, { recursive: true })
 const lines: string[] = []
 let lastProgress = 0
@@ -27,7 +29,7 @@ const core = new LauncherCore(directory, event => {
 try {
   await core.init()
   const instance = core.snapshot().instances.find(i => i.name === instanceName)
-    ?? await core.createInstance({ name: instanceName, version: '1.20.1', loader })
+    ?? await core.createInstance({ name: instanceName, version, loader, loaderVersion })
   // Re-run installation even when ready so existing cached files are verified.
   await core.install(instance.id)
   if (core.snapshot().instances.find(item => item.id === instance.id)?.status !== 'ready') {
