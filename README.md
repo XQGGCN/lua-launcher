@@ -2,15 +2,15 @@
 
 一个面向 Windows、macOS 和 Linux 的独立 Minecraft Java 启动器。采用参考 PCL / HMCL 的实用、紧凑浅色桌面布局，把账户、版本、Java 与启动操作放在清晰的位置；集成 Modrinth 与 BBSMC 资源搜索，使用原创实现与独立品牌。
 
-**当前状态：0.2.1 Alpha。** 支持现代原版与 Fabric 下载、隔离实例、真实启动及 `.mrpack` 整合包安装；BBSMC 接入为实验性。尚未达到 PCL / HMCL 的完整功能覆盖。
+**当前状态：0.2.2 Alpha，纯在线账户版。** 支持现代原版与 Fabric 下载、隔离实例及 `.mrpack` 整合包安装；启动游戏需要完成 Microsoft 登录、Minecraft Java 所有权和档案验证。Minecraft 服务接入目前仍返回 `403`，因此新用户暂时无法完成登录并启动游戏。BBSMC 接入为实验性，尚未达到 PCL / HMCL 的完整功能覆盖。
 
 ## 验证状态
 
 截至 2026-10-21：
 
-- **99 项确定性测试通过**，覆盖认证与配置、账户切换竞态、启动内核、整合包解析和事务安装、文件选择隔离，以及资源站隔离、外链拒绝和下载校验。测试使用模拟网络，不代表真实 Microsoft 登录已经验证。最新结果可见 [GitHub Actions](https://github.com/XQGGCN/lua-launcher/actions)。
-- **macOS ARM64 实测**：Minecraft 1.20.1 原版，以及 1.20.1 + Fabric Loader 0.19.5，均在显式离线模式下完成游戏初始化。
-- **0.2 整合包实测**：在线安装及桌面本地导入 Fabulously Optimized 5.4.1（Minecraft 1.20.1 / Fabric 0.14.23），校验并安装 48 个模组；从桌面启动后完成游戏初始化、进入主循环。此包仅作为验证样例，不随 Lua 分发。
+- **116 项确定性测试通过**，覆盖认证与配置、账户并发、启动内核、整合包解析和事务安装、文件选择隔离，以及资源站隔离、外链拒绝和下载校验。测试使用模拟网络，不代表真实 Microsoft 登录已经验证。各平台的测试结果可见 [GitHub Actions](https://github.com/XQGGCN/lua-launcher/actions)。
+- **历史 macOS ARM64 实测（0.2.1 及之前）**：Minecraft 1.20.1 原版，以及 1.20.1 + Fabric Loader 0.19.5，曾在当时的离线模式下完成游戏初始化。0.2.2 已移除此路径，这些结果不等于当前纯在线版启动验收通过。
+- **历史 0.2 整合包实测**：在线安装及桌面本地导入 Fabulously Optimized 5.4.1（Minecraft 1.20.1 / Fabric 0.14.23），校验并安装 48 个模组；曾从桌面离线启动后进入主循环。此包仅作为验证样例，不随 Lua 分发；当前版本的正版启动仍待服务接入后验证。
 - **0.2.1 BBSMC 实测**：匿名搜索与 Fabric API 兼容版本查询正常；当前网络的 CDN 下载返回 HTML 安全验证页，安装器正确拒绝，未安装不完整文件。BBSMC 完整下载与游戏运行尚未验证成功；本地模拟测试已覆盖可下载文件的安装事务。
 - **Microsoft 实测**：账号本人授权后，Microsoft 与 Xbox / XSTS 步骤通过，但 Minecraft 登录接口返回 `403`。当前仍需解决 Lua 应用的 Minecraft 服务接入资格；没有保存不完整会话，也没有显示登录成功。
 - **尚未验证**：Microsoft 真实账号完整登录、Windows / Linux 实际游戏运行，以及其他系统架构和游戏版本的完整兼容性。游戏初始化通过不代表长期游玩、存档或联机已全面测试。
@@ -26,7 +26,7 @@
 - Java 自动探测、手动路径、内存与并发设置。
 - 游戏启动、关闭、状态跟踪与实时日志。
 - Microsoft 设备码认证、授权进度和倒计时、取消、许可与档案检查、刷新令牌安全存储；**已注册 Lua 自己的客户端 ID，Microsoft / Xbox 实测通过，Minecraft 服务接入仍被 `403` 阻塞**。
-- 显式离线账户；不将离线身份显示为 Microsoft 登录，不提供正版服务器认证。
+- 仅支持经过完整验证的 Microsoft 账户启动；没有离线入口、离线 IPC 或登录失败后的离线回退。旧版本的离线账户文件不会被加载。
 - Modrinth / BBSMC 实时搜索；核心支持匹配 Fabric 版本、下载模组及同一来源的必需依赖。
 
 ## 本地运行
@@ -43,7 +43,7 @@ Java 需要与游戏要求一致。1.20.1 使用 Java 17；较新版本通常需
 ```sh
 pnpm dev       # 浏览器 UI 预览，不能启动 Java
 pnpm check     # TypeScript
-pnpm test      # 离线确定性测试
+pnpm test      # 使用模拟服务的确定性测试
 pnpm build     # 前端 + Electron
 pnpm package   # 当前系统未打包目录
 pnpm dist      # 当前系统安装包
@@ -56,6 +56,10 @@ pnpm dist      # 当前系统安装包
 当前构建默认内置 Lua 自己注册的公开 Microsoft 应用 ID，已实测完成 Microsoft 授权与 Xbox 验证，但 Minecraft 登录返回 `403`，暂不能完成正版账号登录。普通玩家无需注册应用，服务接入由维护者处理。维护者或独立 fork 请参阅 [完整接入步骤](docs/MICROSOFT_LOGIN.md)，可通过 `LUA_MICROSOFT_CLIENT_ID` 覆盖构建配置。开发者也可在账户页高级设置保存自己的 **Client ID**；不要填写 Client Secret。
 
 登录在 Microsoft 官方页面完成，Lua 不收集 Microsoft 密码。访问令牌仅在 Electron 主进程内存中处理；刷新信息通过系统安全存储加密后写入应用目录。系统密钥环不可用时拒绝持久化，不降级为明文。
+
+启动时由主进程取得有效 Minecraft 凭据；同一进程可复用尚未到期的访问令牌，需要刷新时重新完成认证、许可与档案检查。重启后必须在线刷新，不能仅凭缓存的用户名启动。退出账户或服务明确报告授权、所有权或档案失效时，会清除对应会话并要求重新登录。网络失败不会生成临时身份。
+
+从旧版本升级不会删除游戏实例或存档；旧 `offline-account.json` 不再读取。当前申请已于 2026-10-21 提交，状态为**等待审核、尚未获批**，修改账户规则不能代替 Minecraft 官方审核。
 
 ## 整合包
 
