@@ -32,6 +32,7 @@ export default function App() {
   const [resourceSource, setResourceSource] = useState<ResourceSource>('modrinth')
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
   const [account, setAccount] = useState<Account | null>(null)
+  const accountRequest = useRef(0)
   const [error, setError] = useState('')
   const [toast, setToast] = useState('')
   const [downloadTab, setDownloadTab] = useState<'game' | 'tasks'>('game')
@@ -43,6 +44,7 @@ export default function App() {
   const [authState, setAuthState] = useState<AuthState>({ active: false, status: null, deviceCode: null })
   const [authError, setAuthError] = useState('')
   const authOperation = useRef(0)
+  const authStateRevision = useRef(0)
   const [gameQuery, setGameQuery] = useState('')
   const [gameFilter, setGameFilter] = useState('all')
   const [selectedId, setSelectedId] = useState('')
@@ -54,17 +56,40 @@ export default function App() {
       return created ? { ...task, instanceId: created.id } : task
     }))
   }, [])
-  const refresh = useCallback(async () => { setError(''); try { applySnapshot(await call<Snapshot>('snapshot')); setAccount(await call<Account | null>('account')) } catch (error) { setError(errorText(error)) } }, [applySnapshot])
+  const refresh = useCallback(async () => {
+    const request = ++accountRequest.current
+    setError('')
+    try {
+      applySnapshot(await call<Snapshot>('snapshot'))
+      const nextAccount = await call<Account | null>('account')
+      if (request === accountRequest.current) setAccount(nextAccount?.mode === 'microsoft' ? nextAccount : null)
+    } catch (error) { setError(errorText(error)) }
+  }, [applySnapshot])
   useEffect(() => {
     void refresh()
-    void call<AuthState>('authState').then(setAuthState).catch(error => setAuthError(errorText(error)))
+    const revision = authStateRevision.current
+    void call<AuthState>('authState').then(state => {
+      if (revision === authStateRevision.current) setAuthState(state)
+    }).catch(error => { if (revision === authStateRevision.current) setAuthError(errorText(error)) })
     return onEvent(event => {
       if (event.type === 'state') applySnapshot(event.snapshot)
-      if (event.type === 'account') setAccount(event.account)
+      if (event.type === 'account') {
+        ++accountRequest.current
+        setAccount(event.account?.mode === 'microsoft' ? event.account : null)
+      }
       if (event.type === 'progress') setProgress(current => ({ ...current, [event.instanceId]: event }))
-      if (event.type === 'deviceCode') setAuthState(current => ({ ...current, active: true, deviceCode: event }))
-      if (event.type === 'authStatus') setAuthState(current => ({ ...current, status: { stage: event.stage, message: event.message } }))
-      if (event.type === 'authState') setAuthState(event.state)
+      if (event.type === 'deviceCode') {
+        ++authStateRevision.current
+        setAuthState(current => ({ ...current, active: true, deviceCode: event }))
+      }
+      if (event.type === 'authStatus') {
+        ++authStateRevision.current
+        setAuthState(current => ({ ...current, status: { stage: event.stage, message: event.message } }))
+      }
+      if (event.type === 'authState') {
+        ++authStateRevision.current
+        setAuthState(event.state)
+      }
     })
   }, [refresh, applySnapshot])
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(''), 6500); return () => clearTimeout(timer) }, [toast])
@@ -128,11 +153,17 @@ export default function App() {
   async function beginLogin() {
     if (authState.active) return
     const operation = ++authOperation.current
+    ++authStateRevision.current
     setAuthError('')
     setAuthState({ active: true, status: { stage: 'starting', message: '正在连接 Microsoft…' }, deviceCode: null })
-    try { await call('login'); await refresh() }
+    try { await call('login') }
     catch (error) { if (operation === authOperation.current) setAuthError(errorText(error)) }
-    finally { if (operation === authOperation.current) setAuthState(current => ({ ...current, active: false, deviceCode: null })) }
+    finally {
+      if (operation === authOperation.current) {
+        setAuthState(current => ({ ...current, active: false, deviceCode: null }))
+        await refresh()
+      }
+    }
   }
   async function cancelLogin() {
     await call('cancelLogin')
@@ -145,21 +176,21 @@ export default function App() {
       <div className="sidebar-section-label">游戏</div>
       <nav aria-label="主导航">{navigation.map(item => <button key={item.id} className={`nav-item ${view === item.id ? 'active' : ''}`} onClick={() => changeView(item.id)} aria-current={view === item.id ? 'page' : undefined}><item.icon size={19} /><span>{item.label}</span>{item.id === 'downloads' && downloadCount > 0 && <span className="nav-count">{downloadCount}</span>}</button>)}</nav>
       <div className="sidebar-bottom">
-        <div className="sidebar-note"><span className="online-dot" /><span>{isDesktop ? 'Lua Launcher 0.2.1' : '浏览器预览'}</span></div>
+        <div className="sidebar-note"><span className="online-dot" /><span>{isDesktop ? 'Lua Launcher 0.2.2' : '浏览器预览'}</span></div>
         <button className={`nav-item ${view === 'logs' ? 'active' : ''}`} onClick={() => changeView('logs')}><Terminal size={18} /><span>运行日志</span></button>
         <button className={`nav-item ${view === 'settings' ? 'active' : ''}`} onClick={() => changeView('settings')}><Settings2 size={18} /><span>启动器设置</span></button>
-        <button className={`profile-button ${view === 'account' ? 'selected' : ''}`} onClick={() => changeView('account')}><span className="avatar"><UserRound size={20} /></span><span><strong>{account?.username || '添加游戏账户'}</strong><small>{account ? account.mode === 'microsoft' ? 'Microsoft 账户' : '离线模式' : '尚未登录'}</small></span><ChevronDown size={15} /></button>
+        <button className={`profile-button ${view === 'account' ? 'selected' : ''}`} onClick={() => changeView('account')}><span className="avatar"><UserRound size={20} /></span><span><strong>{account?.username || '添加 Microsoft 账户'}</strong><small>{account ? 'Microsoft 账户' : '尚未登录'}</small></span><ChevronDown size={15} /></button>
       </div>
     </aside>
     <main className={`main-panel view-${view}`}>
-      <div className="topbar"><div className="breadcrumb">Lua 未央 <span>/</span> <strong>{({ library: '启动游戏', discover: '模组下载', downloads: '游戏下载', modpacks: '整合包', settings: '启动器设置', account: '游戏账户', logs: '运行日志' })[view]}</strong></div><div className="topbar-right"><span className="version-tag">ALPHA 0.2.1</span><button className="icon-button mobile-logs-button" aria-label="查看运行日志" onClick={() => changeView('logs')}><Terminal size={18} /></button><button className="icon-button" aria-label="管理游戏账户" onClick={() => changeView('account')}><UserRound size={18} /></button><button className="icon-button" aria-label="了解项目与开源许可" onClick={() => setToast('Lua 未央 · 独立开源 Minecraft Java 启动器。当前为 Alpha，支持原版与 Fabric。Minecraft 是 Mojang 的商标，本项目与 Mojang、Microsoft 无关联。')}><CircleHelp size={18} /></button></div></div>
+      <div className="topbar"><div className="breadcrumb">Lua 未央 <span>/</span> <strong>{({ library: '启动游戏', discover: '模组下载', downloads: '游戏下载', modpacks: '整合包', settings: '启动器设置', account: '游戏账户', logs: '运行日志' })[view]}</strong></div><div className="topbar-right"><span className="version-tag">ALPHA 0.2.2</span><button className="icon-button mobile-logs-button" aria-label="查看运行日志" onClick={() => changeView('logs')}><Terminal size={18} /></button><button className="icon-button" aria-label="管理游戏账户" onClick={() => changeView('account')}><UserRound size={18} /></button><button className="icon-button" aria-label="了解项目与开源许可" onClick={() => setToast('Lua 未央 · 独立开源 Minecraft Java 启动器。当前为 Alpha，支持原版与 Fabric。Minecraft 是 Mojang 的商标，本项目与 Mojang、Microsoft 无关联。')}><CircleHelp size={18} /></button></div></div>
       <div className="page-content">
         {!isDesktop && <div className="preview-notice"><Monitor size={15} /><span>当前为浏览器预览。可探索模组、创建预览实例；安装和启动需使用桌面版。</span><span className="preview-label">PREVIEW</span></div>}
         {error && <ErrorBox message={error} retry={() => void refresh()} />}
         {view === 'library' && <>
           <PageHeading title="启动游戏" subtitle="选择一个游戏版本，或下载新的版本。" />
           <div className="launch-summary">
-            <button className="summary-item" onClick={() => changeView('account')}><UserRound size={22} /><span><small>游戏账户</small><strong>{account?.username || '尚未登录'}</strong><em>{account ? account.mode === 'microsoft' ? 'Microsoft 账户' : '离线模式' : '添加 Microsoft 或离线账户'}</em></span><ChevronDown size={15} /></button>
+            <button className="summary-item" onClick={() => changeView('account')}><UserRound size={22} /><span><small>游戏账户</small><strong>{account?.username || '尚未登录'}</strong><em>{account ? 'Microsoft 账户' : '添加 Microsoft 账户'}</em></span><ChevronDown size={15} /></button>
             <div className="summary-item"><Layers3 size={22} /><span><small>当前版本</small><strong>{selectedInstance?.name || '未选择游戏版本'}</strong><em>{selectedInstance ? `${selectedInstance.version} · ${selectedInstance.loader === 'fabric' ? 'Fabric' : '原版'}` : '在下方列表选择版本'}</em></span></div>
             <button className="summary-item" onClick={() => changeView('settings')}><Cpu size={22} /><span><small>运行环境</small><strong>{snapshot?.settings.javaPath ? '指定 Java 路径' : '自动选择 Java'}</strong><em>{snapshot ? `游戏内存 ${(snapshot.settings.memoryMb / 1024).toFixed(1)} GB` : '正在读取设置…'}</em></span><Settings2 size={15} /></button>
           </div>
@@ -276,7 +307,7 @@ function SettingsView({ settings, rootDir, save }: { settings: Settings; rootDir
   return <><PageHeading title="启动器设置" subtitle="配置 Java、游戏内存和下载选项。" /><form className="settings-form" onSubmit={event => { event.preventDefault(); setSaving(true); setError(''); save(draft).catch(error => setError(errorText(error))).finally(() => setSaving(false)) }}>
     <section className="settings-card"><div className="settings-card-heading"><Cpu size={20} /><div><h2>游戏运行</h2><p>更改后将在下一次启动游戏时生效。</p></div></div><div className="setting-row"><div><h3>分配内存</h3><p>为游戏设置最大堆内存，建议留出系统所需空间。</p></div><div className="memory-value">{(draft.memoryMb / 1024).toFixed(1)}<span>GB</span></div></div><div className="range-control"><input aria-label="分配内存 MB" type="range" min="1024" max="16384" step="512" value={draft.memoryMb} onChange={event => setDraft({ ...draft, memoryMb: Number(event.target.value) })} /><div><span>1 GB</span><span>8 GB</span><span>16 GB</span></div></div><label className="field"><span>Java 可执行文件路径</span><div className="input-with-button"><input value={draft.javaPath} onChange={event => setDraft({ ...draft, javaPath: event.target.value })} placeholder="自动选择系统已安装的 Java" /><button className="button secondary" type="button" disabled={detecting || !isDesktop} onClick={() => void detect()}>{detecting ? <Spinner size={16} /> : <Search size={16} />}自动检测</button></div><small>留空时自动检测系统 Java。Minecraft 1.20.5 及之后版本通常需要 Java 21。</small></label>{detected && <div className="runtime-list">{runtimes.length === 0 ? <p className="form-hint">没有检测到 Java。请安装适合游戏版本的 Java，并填写可执行文件路径。</p> : runtimes.map(runtime => <button type="button" key={runtime.path} onClick={() => setDraft({ ...draft, javaPath: runtime.path })} className={`runtime-item ${draft.javaPath === runtime.path ? 'selected' : ''}`}><Cpu size={18} /><span><strong>Java {runtime.major} · {runtime.arch}</strong><small>{runtime.path}</small></span>{draft.javaPath === runtime.path && <Check size={16} />}</button>)}</div>}</section>
     <section className="settings-card"><div className="settings-card-heading"><Download size={20} /><div><h2>下载与存储</h2><p>游戏与依赖文件统一保存在启动器数据目录。</p></div></div><div className="setting-row"><div><h3>并行下载数</h3><p>网络不稳定时，可以减少同时下载的文件数。</p></div><select aria-label="并行下载数" value={draft.concurrentDownloads} onChange={event => setDraft({ ...draft, concurrentDownloads: Number(event.target.value) })}>{[2, 4, 6, 8, 12].map(value => <option key={value} value={value}>{value} 个文件</option>)}</select></div><div className="data-directory"><HardDrive size={18} /><div><strong>数据目录</strong><code>{rootDir}</code></div></div></section>
-    <section className="settings-card about-card"><Logo /><div><h3>Lua 未央 <span className="version-tag">0.2.1 ALPHA</span></h3><p>独立开源的 Minecraft Java 启动器。</p><small>Minecraft 是 Mojang 的商标。本项目与 Mojang、Microsoft 无关联。</small></div></section>
+    <section className="settings-card about-card"><Logo /><div><h3>Lua 未央 <span className="version-tag">0.2.2 ALPHA</span></h3><p>独立开源的 Minecraft Java 启动器。</p><small>Minecraft 是 Mojang 的商标。本项目与 Mojang、Microsoft 无关联。</small></div></section>
     {error && <ErrorBox message={error} />}<div className="settings-save"><button type="button" className="button secondary" onClick={() => setDraft(settings)}>撤销更改</button><button className="button primary" disabled={saving}>{saving ? <Spinner size={16} /> : <Check size={16} />}保存设置</button></div>
   </form></>
 }

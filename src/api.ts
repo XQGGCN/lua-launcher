@@ -26,7 +26,7 @@ export interface Settings { memoryMb: number; javaPath: string; concurrentDownlo
 export interface Snapshot { instances: Instance[]; settings: Settings; rootDir: string }
 export interface Version { id: string; type: string; releaseTime: string }
 export interface JavaRuntime { path: string; version: string; major: number; arch: string }
-export interface Account { mode: 'microsoft' | 'offline'; username: string; uuid: string }
+export interface Account { mode: 'microsoft'; username: string; uuid: string }
 export interface AuthConfig { configured: boolean; clientId: string; source: 'built-in' | 'custom' | 'none' }
 export interface AuthStatus { stage: string; message: string }
 export interface AuthState { active: boolean; status: AuthStatus | null; deviceCode: DeviceCode | null }
