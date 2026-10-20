@@ -4,6 +4,12 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      publish_release:
+        description: Publish this commit as a public Alpha prerelease after all platform builds pass
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -43,3 +49,108 @@ jobs:
             release/*.AppImage
           if-no-files-found: error
           retention-days: 7
+
+  release:
+    needs: build
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_release }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: lua-public-release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: lua-*
+          path: release-assets
+      - name: Validate packages and publish prerelease
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Invalid package version"
+            exit 1
+          fi
+          release_tag="v${version}"
+          test -s docs/RELEASE_NOTES.md
+
+          # Preserve artifact directories so every required platform is verified.
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import path from 'node:path';
+          const root = 'release-assets';
+          const entries = fs.readdirSync(root, { withFileTypes: true });
+          assert.equal(entries.length, 3, 'Expected exactly three platform artifacts');
+          const expected = new Map([
+            ['Windows', ['.exe']],
+            ['macOS', ['.dmg', '.zip']],
+            ['Linux', ['.AppImage']],
+          ]);
+          const assets = [];
+          const basenames = new Set();
+          for (const directory of entries) {
+            assert.ok(directory.isDirectory(), 'Artifact root must contain only platform directories');
+            const match = /^lua-(Windows|macOS|Linux)-(X64|ARM64)$/.exec(directory.name);
+            assert.ok(match, `Unexpected artifact directory: ${directory.name}`);
+            const extensions = expected.get(match[1]);
+            assert.ok(extensions, `Duplicate platform artifact: ${match[1]}`);
+            const present = new Set();
+            for (const file of fs.readdirSync(path.join(root, directory.name), { withFileTypes: true })) {
+              const extension = path.extname(file.name);
+              assert.ok(file.isFile() && extensions.includes(extension), `Unexpected asset: ${file.name}`);
+              assert.ok(!/[\u0000-\u001f\u007f#]/u.test(file.name), 'Unsafe asset filename');
+              assert.ok(!basenames.has(file.name), `Duplicate release asset: ${file.name}`);
+              const location = path.join(root, directory.name, file.name);
+              assert.ok(fs.statSync(location).size > 0, `Empty release asset: ${file.name}`);
+              present.add(extension);
+              basenames.add(file.name);
+              assets.push(location);
+            }
+            for (const extension of extensions) {
+              assert.ok(present.has(extension), `Missing ${match[1]} ${extension} package`);
+            }
+            expected.delete(match[1]);
+          }
+          assert.equal(expected.size, 0, 'A required platform is missing');
+          fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'lua-release-assets.list'), assets.sort().join('\0') + '\0');
+          NODE
+          assets=()
+          while IFS= read -r -d '' asset; do
+            assets+=("$asset")
+          done < "$RUNNER_TEMP/lua-release-assets.list"
+
+          # API failures stop the job. Never reuse or overwrite an existing tag/release.
+          existing_tags="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$release_tag" \
+            --jq "map(select(.ref == \"refs/tags/$release_tag\")) | length")"
+          if [[ "$existing_tags" != "0" ]]; then
+            echo "::error::Tag $release_tag already exists; use a new package version"
+            exit 1
+          fi
+          existing_releases="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"$release_tag\") | .id")"
+          if [[ -n "$existing_releases" ]]; then
+            echo "::error::Release $release_tag already exists; it will not be overwritten"
+            exit 1
+          fi
+
+          # Keep a failed upload private as a draft; publish only after all uploads succeed.
+          gh release create "$release_tag" "${assets[@]}" \
+            --target "$GITHUB_SHA" \
+            --title "Lua $version Alpha" \
+            --prerelease \
+            --draft \
+            --notes-file docs/RELEASE_NOTES.md
+          gh release edit "$release_tag" --draft=false
