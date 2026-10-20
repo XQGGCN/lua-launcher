@@ -14,6 +14,7 @@ const methods = new Set([
   'searchResources', 'resourceVersions', 'installResource', 'cancelResourceInstall',
   'prepareModToggle', 'setModEnabled',
   'worldDetails', 'worldDetailsWithSeed',
+  'worldBackupTasks', 'worldBackups', 'backupWorld', 'cancelWorldBackup', 'openWorldBackup',
 ])
 contextBridge.exposeInMainWorld('launcher', {
   call(method: string, ...args: unknown[]) {

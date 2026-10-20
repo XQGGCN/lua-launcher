@@ -177,6 +177,20 @@ if (hasLock) app.whenReady().then(async () => {
         if (launches.has(id)) throw new Error('请先完成或取消此实例的启动准备，再查看种子')
         return core.worldDetailsWithSeed(id, text(args[1], 80))
       }
+      case 'worldBackupTasks': return core.worldBackupTasks()
+      case 'worldBackups': return core.worldBackups(text(args[0], 80))
+      case 'backupWorld': {
+        const id = text(args[0], 80)
+        if (launches.has(id)) throw new Error('请先完成或取消此实例的启动准备，再备份世界')
+        return core.backupWorld(id, object(args[1]), object(args[2]))
+      }
+      case 'cancelWorldBackup': return core.cancelWorldBackup(text(args[0], 80), text(args[1], 80))
+      case 'openWorldBackup': {
+        const directory = await core.worldBackupPath(text(args[0], 80), text(args[1], 80))
+        const error = await shell.openPath(directory)
+        if (error) throw new Error('无法打开备份目录，请检查系统文件管理器与访问权限')
+        return
+      }
       case 'prepareModToggle': {
         const id = text(args[0], 80)
         if (launches.has(id)) throw new Error('请先完成或取消此实例的启动准备')

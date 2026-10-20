@@ -17,6 +17,8 @@ import { applyGameWindowSettings } from './game-window'
 import { scanResourceInventory, type InventoryKind, type ResourceInventory } from './resource-inventory'
 import { readWorldDetails, type WorldRead } from './world-details'
 import type { WorldSelection, WorldSource, WorldDetails, WorldSeed, WorldMetadata } from './world-types'
+import { createWorldDirectoryBackup, listWorldDirectoryBackups, worldBackupDirectory, WorldBackupError } from './world-backup'
+import type { WorldBackupTask, WorldBackupResult, WorldBackupList } from './world-backup-types'
 import { installResourceZip, ResourceInstallRecoveryError, type ResourceInstallResult } from './resource-install'
 import { prepareModToggle, commitModToggle, inspectModToggleRecovery, assertNoDisabledModPartners,
   ModToggleRecoveryError, ModToggleBusyError, type ModTogglePrepared, type ModToggleSelection, type ModToggleResult } from './mod-toggle'
@@ -109,6 +111,7 @@ export type CoreEvent =
   | { type: 'progress'; instanceId: string; phase: string; completed: number; total: number; bytesDownloaded: number; unit?: 'bytes' }
   | { type: 'log'; instanceId: string; level: 'info' | 'warn' | 'error'; message: string }
   | { type: 'javaTask'; task: JavaRuntimeTask }
+  | { type: 'worldBackupTask'; task: WorldBackupTask }
 export interface LaunchAccount {
   mode: 'microsoft'
   username: string
@@ -225,6 +228,9 @@ interface CoreOptions {
   modToggleNow?: () => number
   worldDetailsReader?: typeof readWorldDetails
   worldDetailsNow?: () => number
+  worldBackupCreator?: typeof createWorldDirectoryBackup
+  worldBackupLister?: typeof listWorldDirectoryBackups
+  worldBackupResolver?: typeof worldBackupDirectory
 }
 interface DownloadJob { file: string; download: Download; allowedHosts?: ReadonlySet<string> }
 
@@ -341,6 +347,12 @@ export class LauncherCore {
   private worldRevisions = new Map<string, { instanceId: string; selection: WorldSelection; source: WorldSource;
     revisionKey: string; generation: number; expiresAt: number; view: { instanceId: string; source: WorldSource } }>()
   private worldReadEpoch = 0
+  private readonly worldBackupCreator: typeof createWorldDirectoryBackup
+  private readonly worldBackupLister: typeof listWorldDirectoryBackups
+  private readonly worldBackupResolver: typeof worldBackupDirectory
+  private worldBackupOperations = new Map<string, { operationId: string; controller: AbortController }>()
+  private worldBackupHistory = new Map<string, WorldBackupTask>()
+  private worldBackupOperationIds = new Set<string>()
   private resourceDownloads = new Map<string, { operationId: string; controller: AbortController }>()
   private inventoryScans = new Map<string, { instanceId: string; controller: AbortController; promise: Promise<InstanceInventory> }>()
   private javaTasks = new Map<string, JavaRuntimeTask>()
@@ -373,6 +385,9 @@ export class LauncherCore {
     this.modToggleNow = options.modToggleNow ?? Date.now
     this.worldDetailsReader = options.worldDetailsReader ?? readWorldDetails
     this.worldDetailsNow = options.worldDetailsNow ?? Date.now
+    this.worldBackupCreator = options.worldBackupCreator ?? createWorldDirectoryBackup
+    this.worldBackupLister = options.worldBackupLister ?? listWorldDirectoryBackups
+    this.worldBackupResolver = options.worldBackupResolver ?? worldBackupDirectory
   }
 
   async init(): Promise<LauncherSnapshot> {
@@ -501,6 +516,111 @@ export class LauncherCore {
         /[ .]$/.test(value.name) || /^(?:CON|PRN|AUX|NUL|CLOCK\$|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.|$)/i.test(value.name) ||
         value.itemId !== 'worlds:' + createHash('sha256').update(value.name, 'utf8').digest('hex')) throw new Error('世界条目无效，请刷新清单后重新选择')
     return { itemId: value.itemId, name: value.name }
+  }
+
+  private worldBackupRoot(): string { return safeJoin(this.rootDir, 'backups/worlds') }
+
+  worldBackupTasks(): WorldBackupTask[] { return structuredClone([...this.worldBackupHistory.values()]) }
+
+  private publishWorldBackupTask(task: WorldBackupTask): void {
+    // Observers cannot change whether bytes have committed or release the lock.
+    try { this.emit({ type: 'worldBackupTask', task: structuredClone(task) }) } catch { /* Task history remains queryable. */ }
+  }
+
+  async backupWorld(id: string, input: unknown, options: unknown): Promise<WorldBackupResult> {
+    this.assertWorldReadable(id)
+    const selection = this.worldSelection(input)
+    if (!options || typeof options !== 'object' || Array.isArray(options) ||
+        ![Object.prototype, null].includes(Object.getPrototypeOf(options)) || Reflect.ownKeys(options).length !== 2 ||
+        Reflect.ownKeys(options).some(key => typeof key !== 'string' || !['closedExternalWorldConfirmed', 'operationId'].includes(key) ||
+          !('value' in Object.getOwnPropertyDescriptor(options, key)!))) throw new Error('备份选项无效')
+    const value = options as { closedExternalWorldConfirmed: unknown; operationId: unknown }
+    if (value.closedExternalWorldConfirmed !== true) throw new Error('请先关闭所有正在使用此世界的游戏或服务端，并确认后再备份')
+    const operationId = value.operationId
+    if (typeof operationId !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(operationId)) throw new Error('备份任务标识无效')
+    if (this.worldBackupOperationIds.has(operationId)) throw new Error('此备份任务已提交，请查看原任务，不要重复创建')
+    if (this.worldBackupOperations.size) throw new Error('已有世界备份正在进行，请等待完成或取消后再试')
+    if (this.worldBackupOperationIds.size >= 4096) throw new Error('本次会话备份记录较多，请重启启动器后再创建备份')
+    const controller = new AbortController()
+    const task: WorldBackupTask = { id: operationId, instanceId: id, worldItemId: selection.itemId, worldFolderName: selection.name,
+      startedAt: new Date().toISOString(), status: 'active', progress: { phase: 'scan', filesDone: 0, bytesDone: 0 } }
+    // Reuse the established per-instance file lock before the first await. This
+    // also blocks launch credentials in main through assertLaunchAvailable.
+    this.installs.set(id, controller)
+    this.worldBackupOperations.set(id, { operationId, controller })
+    this.worldBackupOperationIds.add(operationId)
+    while (this.worldBackupHistory.size >= 30) {
+      const oldest = [...this.worldBackupHistory].find(([, item]) => !['active', 'cancelling'].includes(item.status))
+      if (!oldest) break
+      this.worldBackupHistory.delete(oldest[0])
+    }
+    this.worldBackupHistory.set(operationId, task)
+    this.invalidateInventory(id)
+    this.publishWorldBackupTask(task)
+    try {
+      // Do not call mod recovery here: a backup must never repair/delete source
+      // files, including an unrelated marker in an error instance.
+      const result = await this.worldBackupCreator(this.instanceDirectory(id), selection, {
+        backupRoot: this.worldBackupRoot(), instanceId: id, operationId, signal: controller.signal,
+        onProgress: progress => {
+          if (this.worldBackupOperations.get(id)?.operationId !== operationId) return
+          task.progress = structuredClone(progress)
+          this.publishWorldBackupTask(task)
+        },
+      })
+      // The completed marker is the module's boundary. A late abort or observer
+      // failure must never turn a committed backup into a cancelled task.
+      task.status = 'complete'; task.result = structuredClone(result)
+      return structuredClone(result)
+    } catch (error) {
+      const code = error instanceof WorldBackupError ? error.code : ''
+      if (controller.signal.aborted && code !== 'RECOVERY_REQUIRED') {
+        task.status = 'cancelled'
+        task.error = '备份已取消；已创建的未完成资料会保留，源世界不变'
+      } else {
+        task.status = 'error'
+        const messages: Record<string, string> = {
+          SOURCE_CHANGED: '世界内容在备份期间发生变化，请关闭所有相关游戏或服务端后重试',
+          UNSAFE_PATH: '世界或备份目录不符合安全条件，请检查路径与链接',
+          NAME_COLLISION: '文件名存在大小写或 Unicode 冲突，无法完整备份',
+          UNSUPPORTED_ENTRY: '世界包含不支持的链接、特殊文件或挂载项，未创建完整备份',
+          LIMIT_EXCEEDED: '世界超过当前备份的大小、数量、路径或时间预算',
+          INSUFFICIENT_SPACE: '备份磁盘可用空间不足，请释放空间后重试',
+          RECOVERY_REQUIRED: '备份资料需要人工检查，已保留未完成目录，源世界不变',
+        }
+        task.error = messages[code] || '备份未完成，源世界不变；已创建的未完成资料会保留，请检查磁盘和权限后重试'
+      }
+      throw new Error(task.error)
+    } finally {
+      task.finishedAt = new Date().toISOString()
+      this.invalidateInventory(id)
+      if (this.worldBackupOperations.get(id)?.operationId === operationId) this.worldBackupOperations.delete(id)
+      if (this.installs.get(id) === controller) this.installs.delete(id)
+      this.publishWorldBackupTask(task)
+    }
+  }
+
+  cancelWorldBackup(id: string, operationId: string): void {
+    this.instance(id)
+    const active = this.worldBackupOperations.get(id)
+    if (!active || active.operationId !== operationId) return
+    const task = this.worldBackupHistory.get(operationId)
+    if (task && task.status === 'active') { task.status = 'cancelling'; this.publishWorldBackupTask(task) }
+    active.controller.abort(new DOMException('世界备份已取消', 'AbortError'))
+  }
+
+  async worldBackups(id: string): Promise<WorldBackupList> {
+    this.instance(id)
+    try { return structuredClone(await this.worldBackupLister(this.worldBackupRoot(), id)) }
+    catch { throw new Error('无法读取此实例的备份记录，请检查备份目录与权限') }
+  }
+
+  /** Main-only path for shell.openPath; never expose this as a renderer path API. */
+  async worldBackupPath(id: string, backupId: string): Promise<string> {
+    this.instance(id)
+    if (typeof backupId !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(backupId)) throw new Error('备份标识无效')
+    try { return await this.worldBackupResolver(this.worldBackupRoot(), id, backupId) }
+    catch { throw new Error('该备份尚未完成、记录已变化或目录无法安全打开，请刷新备份列表') }
   }
 
   private async readSelectedWorld(id: string, selection: WorldSelection, source: WorldSource, includeSeed: boolean): Promise<WorldRead> {
@@ -1189,6 +1309,7 @@ export class LauncherCore {
   }
 
   cancelInstall(id: string): void {
+    if (this.worldBackupOperations.has(id)) throw new Error('这是世界备份任务，请使用该备份任务的取消按钮')
     const controller = this.installs.get(id)
     if (!controller) { this.instance(id); return }
     controller.abort(new DOMException('安装已取消', 'AbortError'))
@@ -1366,6 +1487,7 @@ export class LauncherCore {
   }
 
   async launch(id: string, account: LaunchAccount, beforeSpawn?: () => void): Promise<{ pid: number | undefined }> {
+    if (this.installs.has(id)) throw new Error('请等待此实例的安装或文件操作完成')
     if (this.instanceSettingsSaving.has(id)) throw new Error('请等待此实例的设置保存完成')
     if (this.launching.has(id)) throw new Error('该实例正在启动')
     // Acquire synchronously: installed-manifest reads and Java detection both yield before spawn.

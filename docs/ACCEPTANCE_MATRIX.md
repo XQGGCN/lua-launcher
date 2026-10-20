@@ -1,6 +1,6 @@
 # 验收矩阵
 
-更新：2026-10-21。公开基线仍为 0.3.0；0.4–0.6.2 的本地实现与验证保留在各版本记录，均未发布。当前 0.7.0 世界只读详情已实现，全仓 464/464、独立定向 65/65、类型检查与生产构建通过；只有原创世界夹具，真实游戏生成样本、原生桌面、当前提交三平台 CI 和公开发布仍待。最终生产 Core/原创夹具测试桥、24 项只读基准及未签名 macOS ARM64 包版本/架构/hash/内容核对通过，见 0.7.0 开发记录；不继承旧包或 CI 作为本版证据。 L1 静态/类型、L2 确定性测试、L3 真实网络与文件、L4 真实桌面、L5 真实账户/游戏/联机分别记录；低一级结果不能代替高一级。
+更新：2026-10-21。公开下载仍为 0.3.0；0.4–0.7.0 的本地验证保留在各版本记录，不继承旧 CI 或安装包作为新提交证据。0.7.1 手动完整目录备份已在本地完成：新增清单 7、文件事务 27、Core 19 项，独立合跑 53/53；集成者全仓 517/517 与生产构建通过。生产 Core/原创树测试桥完成复制、重建、取消、跨实例交互和 50 项源基准；最终未签名 macOS ARM64 包的版本、架构、hash 与构建内容核对通过。当前提交原生、三平台 CI 与公开发布仍待。GitHub 浏览器登录已恢复，正在处理 0.4 源码上传；其 CI/发布尚未完成，不能据此称 0.7.1 已公开。 L1 静态/类型、L2 确定性测试、L3 真实网络与文件、L4 真实桌面、L5 真实账户/游戏/联机分别记录；测试桥不代替原生。
 
 W=Windows x64，M=macOS ARM64，L=Linux x64。新架构单独列证据，官方有 Java 包不等于 Lua 安装包或游戏已支持。每次结果关联版本/commit、平台、命令/步骤和证据路径；私有日志与截图留在被忽略目录，不保存令牌。
 
@@ -56,7 +56,7 @@ W=Windows x64，M=macOS ARM64，L=Linux x64。新架构单独列证据，官方�
 | AC-INSTANCE-04 | argv 保留空格/引号/Unicode/路径边界；拒绝堆、classpath、身份、入口等受管覆盖 | L2；浏览器预览 | 相关 fixture、API smoke、浏览器非法堆参数拒绝通过；真实游戏未执行 | 参数策略测试；`.local/instance-ui-v050.png` |
 | AC-INSTANCE-05 | 6144 MB、1600×720、false 全屏与含空格属性保存后有效；首页摘要正确；全局 reset 清除旧覆盖 | L2；浏览器预览 | 浏览器保存/刷新摘要通过；全局 GC/含空格属性、1920 宽及全屏保存→恢复默认→保存/刷新实测通过，实例内存覆盖保持；实际游戏窗口待验 | `game-window.test.ts`；本轮浏览器记录 |
 | AC-INSTANCE-06 | 首次安装状态保存失败释放锁；Windows 混合大小写 Java 注入变量从四入口清理 | L2，模拟故障/平台 | 首次 save 故障独立复核通过；游戏启动及处理器/probe 的环境变量定向回归独立通过，不作为 Windows 实机证据 | REVIEW-050-02/03；Core/loader/runtime 回归 |
-| AC-INSTANCE-07 | 最终测试/build、当前提交三平台 CI、0.5 原生设置操作及安装包 | L1/L2；L3/L4 待验 | 最终 245/245、build 和未签名 macOS ARM64 DMG/ZIP 通过，包版本/架构/hash 已核对；0.5 原生因 Mac 锁屏未验，远端授权阻塞 CI/Release | `.local/tests-v050.log`、`.local/build-v050.log`、`.local/local-packages-v050.json`；当前提交新 CI 待恢复 |
+| AC-INSTANCE-07 | 最终测试/build、当前提交三平台 CI、0.5 原生设置操作及安装包 | L1/L2；L3/L4 待验 | 最终 245/245、build 和未签名 macOS ARM64 DMG/ZIP 通过，包版本/架构/hash 已核对；0.5 当时原生因 Mac 锁屏未验，远端授权阻塞 CI/Release；当前授权恢复不追溯补验 | `.local/tests-v050.log`、`.local/build-v050.log`、`.local/local-packages-v050.json`；当前提交新 CI 待恢复 |
 
 0.5 没有新增真实账户或游戏验收，不改变 AC-AUTH-02 / AC-GAME-01 的外部阻塞状态。复制、导出、归档、删除、完整资源库存与旧版未实现，不能因基础设置页存在而标记全部实例管理完成。公开下载与官网仍指向已发布 0.3.0。
 
@@ -135,3 +135,21 @@ W=Windows x64，M=macOS ARM64，L=Linux x64。新架构单独列证据，官方�
 新包格式至少一个允许使用的真实样本和故障 fixture；导入、备份、恢复验证目标与字节清单；NBT/图片/归档有资源限制；主题与导入配置不能执行任意代码；新联网能力明确来源、授权、隐私边界。
 
 真实用户数据保护在副本上测试，不用唯一重要存档。独立审查覆盖代码、首次使用者、高级用户与相关安全边界；P0/P1 阻止发布，残余风险写清影响与临时方案。CI 不能替代缺失的实机、签名、公证或官方批准。
+
+## 0.7.1 本地结果及剩余验收
+
+基准 `d3952737148e3e2ac5b7d1ce03287fc50c1beafc`，分支 `codex/world-backup-v0.7.1`。清单 7 + 文件事务 27 + Core 19 独立合跑 **53/53**，tsc 与 diff 检查通过；集成者全仓 **517/517**、生产构建、测试桥 UI 和最终未签名 macOS ARM64 包核对通过。集成者 API 报告由本记录作者读取，浏览器/原生执行者不混淆。
+
+| ID | 场景与通过条件 | 等级 / 平台 | 当前结果与边界 | 证据 |
+| --- | --- | --- | --- | --- |
+| AC-WORLDBACKUP-01 | 原字节复制全部普通文件/空目录，逐文件 manifest、目的读回与源二次校验；不解析/执行内容 | L2/L3，macOS 原创树 | 默认 Core 复制通过；集成者 10 文件/10 目录共 33554674 B 按 manifest 独立重建/hash 通过，不代表产品恢复 | `core-world-backup.test.ts`；`.local/world-backup-api-smoke-v071.json` |
+| AC-WORLDBACKUP-02 | 固定根/ID、祖先/FD、链接/硬链接/挂载/名称冲突和预算检查；不跳过后称完整 | L2 | 模块源码独立终审与 34 项回归通过，真实跨卷/Windows/Linux 待验 | `world-backup{,-manifest}.test.ts`；独立审查 |
+| AC-WORLDBACKUP-03 | 空间预检/短 I/O/故障；提交前取消无 COMPLETE，提交不明保留全部资料，不自动删除或续传 | L2/L3 原创树 | Core 实际复制中取消保留一个容器及空间警告通过；模块故障矩阵 27 项通过 | Core 19 项、真实 API 报告 |
+| AC-WORLDBACKUP-04 | 首 await 锁、全局一个、双向 install/resource/mod/settings/launch；精确操作取消与退出 signal，worker 结算再释放 | L2；main 源码 | Core 确定性边界通过；取凭据前 guard 源码复核；原生退出未验证且没有结算握手 | `core-world-backup.test.ts`、main/preload |
+| AC-WORLDBACKUP-05 | 无覆盖完成凭据；成功胜过迟到取消/observer；提交不明优先 recovery | L2 故障注入 | Core 契约通过；模块作者两项旧红灯已修，独立重跑 53/53 通过 | REVIEW-071-01/02；模块与 Core 测试 |
+| AC-WORLDBACKUP-06 | error/未安装实例也可备份，不清 mod marker、不保存/更改源/状态、不泄原始路径/值 | L2/L3 原创树 | Core 默认临时目录通过；集成者 init 后 50 项 bytes/mode/mtime/ctime/inode 基准不变，不保证 atime | Core 与 API 报告 |
+| AC-WORLDBACKUP-07 | 历史列表/未完成数量/打开固定备份目录、克隆 DTO、跨实例隔离；不将历史当当前重 hash | L2/L3 | Core 通过；真实 API A/B 列表与路径隔离通过，系统 shell 打开未验 | Core 19 项、API 报告 |
+| AC-WORLDBACKUP-08 | 明确外部关闭声明、会话任务、跨页/实例迟到、取消/失败可见、无桥不编造备份 | UI 源码；测试桥交互 | 独立源码无新增 P1/P2；集成者测试桥确认/后台任务/取消/跨实例和截图通过；无桥本轮仅作者 SSR 自检，原生未验 | App/InstanceContent/DownloadsView/WorldBackupActions |
+| AC-WORLDBACKUP-09 | 本版全量/check/build、最终包内容/hash与当前提交三平台CI/Release | L1/L2/本地包；L4/L5另验 | 全仓517/517、build及最终包版本/架构/hash/内容核对通过；当前提交CI、原生、签名/公证、真实世界、不同卷和游戏未验 | `.local/test-v071.log`、`build-v071.log`、`local-packages-v071.json` |
+
+只交付手动目录备份。ZIP、恢复、自动备份、删除、保留策略和世界写入未实现；退出信号、文件/目录 sync 不是任意断电耐久保证。公开仍为 0.3.0，Minecraft API 待审不变；本轮没有执行认证、Java 或游戏。

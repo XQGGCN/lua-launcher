@@ -15,7 +15,7 @@ import JavaSettings from './components/JavaSettings'
 import InstanceSettings, { createInstanceSettingsDraft, parseInstanceJvmArgs, type InstanceSettingsDraft } from './components/InstanceSettings'
 import InstanceContent from './components/InstanceContent'
 import ResourcesView, { type ResourceInstallTask } from './components/ResourcesView'
-import type { InventoryKind, ResourceInstallInput, ResourceInstallReceipt, ResourceKind, ModTogglePreview, ModToggleResult, ModToggleSelection } from './api'
+import type { InventoryKind, ResourceInstallInput, ResourceInstallReceipt, ResourceKind, ModTogglePreview, ModToggleResult, ModToggleSelection, WorldSelection, WorldBackupTask, WorldBackupResult } from './api'
 import type { InstanceOptions, ResolvedInstanceOptions } from './api'
 import './App.css'
 import { Dialog, EmptyState, ErrorBox, PageHeading, Spinner } from './components/ui'
@@ -39,6 +39,11 @@ const selectedInstancePreference = `lua-selected-instance-${isDesktop ? 'desktop
 function readSelectedInstance() {
   try { return localStorage.getItem(selectedInstancePreference) || '' } catch { return '' }
 }
+function retainBackupTasks(tasks: WorldBackupTask[]): WorldBackupTask[] {
+  const active = tasks.filter(task => ['active', 'cancelling'].includes(task.status))
+  const room = Math.max(0, 30 - active.length)
+  return [...active, ...(room ? tasks.filter(task => !['active', 'cancelling'].includes(task.status)).slice(-room) : [])]
+}
 
 function Logo({ small = false }: { small?: boolean }) {
   return <span className={`logo-mark ${small ? 'small' : ''}`} aria-hidden="true"><Moon size={small ? 16 : 29} strokeWidth={1.7} /></span>
@@ -49,6 +54,8 @@ export default function App() {
   const [resourcesOpened, setResourcesOpened] = useState(false)
   const [resourceTasks, setResourceTasks] = useState<ResourceInstallTask[]>([])
   const resourceLocks = useRef(new Set<string>())
+  const backupLocks = useRef(new Set<string>())
+  const [backupTasks, setBackupTasks] = useState<WorldBackupTask[]>([])
   const modFileLocks = useRef(new Set<string>())
   const [modFileBusy, setModFileBusy] = useState<Record<string, boolean>>({})
   const [contentKind, setContentKind] = useState<InventoryKind>('mods')
@@ -91,6 +98,14 @@ export default function App() {
       return created ? { ...task, instanceId: created.id } : task
     }))
   }, [])
+  const mergeBackupTask = useCallback((task: WorldBackupTask) => {
+    setBackupTasks(current => {
+      const previous = current.find(item => item.id === task.id)
+      if (previous && !['active', 'cancelling'].includes(previous.status) && ['active', 'cancelling'].includes(task.status)) return current
+      const next = previous?.status === 'cancelling' && task.status === 'active' ? { ...task, status: 'cancelling' as const } : task
+      return retainBackupTasks([...current.filter(item => item.id !== task.id), next])
+    })
+  }, [])
   const refresh = useCallback(async () => {
     const request = ++accountRequest.current
     setError('')
@@ -107,6 +122,9 @@ export default function App() {
       // arrived during this request remain authoritative for their own task ID.
       setJavaTasks(current => [...new Map([...tasks, ...current].map(task => [task.id, task])).values()].slice(-30))
     }).catch(error => setError(errorText(error)))
+    if (isDesktop) void call<WorldBackupTask[]>('worldBackupTasks').then(tasks => {
+      setBackupTasks(current => retainBackupTasks([...new Map([...tasks, ...current].map(task => [task.id, task])).values()]))
+    }).catch(error => setError(errorText(error)))
     const revision = authStateRevision.current
     void call<AuthState>('authState').then(state => {
       if (revision === authStateRevision.current) setAuthState(state)
@@ -116,6 +134,7 @@ export default function App() {
       if (event.type === 'javaTask') {
         setJavaTasks(current => [...current.filter(task => task.id !== event.task.id), event.task].slice(-30))
       }
+      if (event.type === 'worldBackupTask') mergeBackupTask(event.task)
       if (event.type === 'account') {
         ++accountRequest.current
         setAccount(event.account?.mode === 'microsoft' ? event.account : null)
@@ -134,12 +153,13 @@ export default function App() {
         setAuthState(event.state)
       }
     })
-  }, [refresh, applySnapshot])
+  }, [refresh, applySnapshot, mergeBackupTask])
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(''), 6500); return () => clearTimeout(timer) }, [toast])
   const run = async (key: string, method: string, ...args: unknown[]) => {
     if (method === 'launch' && instanceSaveLocks.current.has(key)) { setToast('实例设置正在保存，请稍候再启动。'); return }
     if (method === 'launch' && resourceLocks.current.has(key)) { setToast('资源正在下载，请等待完成或取消后再启动。'); return }
     if (method === 'launch' && modFileLocks.current.has(key)) { setToast('模组文件正在修改，请稍候再启动。'); return }
+    if (method === 'launch' && (backupLocks.current.has(key) || backupTasks.some(task => task.instanceId === key && ['active', 'cancelling'].includes(task.status)))) { setToast('世界正在备份，请等待完成或取消后再启动。'); return }
     setBusy(current => ({ ...current, [key]: true }))
     if (method === 'launch') setProgress(current => ({ ...current, [key]: { type: 'progress', instanceId: key, phase: '正在验证账户并准备启动', completed: 0, total: 0, bytesDownloaded: 0 } }))
     try { await call(method, ...args); await refresh() } catch (error) { setToast(errorText(error)) }
@@ -176,7 +196,9 @@ export default function App() {
   const downloadCount = downloads.length + packTasks.filter(task => task.status === 'active' && !task.instanceId).length
     + javaTasks.filter(task => ['queued', 'active', 'cancelling'].includes(task.status)).length
     + resourceTasks.filter(task => task.status === 'active').length
+    + backupTasks.filter(task => ['active', 'cancelling'].includes(task.status)).length
   const resourceActive = new Set(resourceTasks.filter(task => task.status === 'active').map(task => task.instanceId))
+  const backupActive = new Set(backupTasks.filter(task => ['active', 'cancelling'].includes(task.status)).map(task => task.instanceId))
   const filtered = instances.filter(instance => instance.name.toLowerCase().includes(gameQuery.toLowerCase()) && (gameFilter === 'all' || instance.loader === gameFilter))
   const openUrl = (url: string) => { void call('openExternal', url).catch(error => setToast(errorText(error))) }
   const changeView = (next: View) => { if (next === 'settings') setSettingsOpened(true); if (next === 'resources') setResourcesOpened(true); setView(next); document.querySelector('main')?.scrollTo(0, 0) }
@@ -187,6 +209,7 @@ export default function App() {
   async function installResource(instanceId: string, input: ResourceInstallInput) {
     if (resourceLocks.current.has(instanceId)) throw new Error('此实例已有资源下载任务')
     if (modFileLocks.current.has(instanceId)) throw new Error('此实例正在修改模组文件，请稍候')
+    if (backupLocks.current.has(instanceId) || backupActive.has(instanceId)) throw new Error('此实例正在备份世界，请稍候')
     const instance = instances.find(item => item.id === instanceId)
     if (!instance || instance.status !== 'ready') throw new Error('请明确选择已安装且已关闭游戏的实例')
     resourceLocks.current.add(instanceId)
@@ -213,14 +236,45 @@ export default function App() {
   async function cancelResource(task: ResourceInstallTask) {
     await call('cancelResourceInstall', task.instanceId, task.id)
   }
+  async function createWorldBackup(instanceId: string, selection: WorldSelection): Promise<WorldBackupResult> {
+    if (backupLocks.current.size || backupTasks.some(task => ['active', 'cancelling'].includes(task.status))) throw new Error('已有世界备份正在进行，请稍后再试')
+    if (resourceLocks.current.has(instanceId) || modFileLocks.current.has(instanceId) || instanceSaveLocks.current.has(instanceId) || busy[instanceId]) throw new Error('此实例正在操作，请稍后再备份世界')
+    const instance = instances.find(item => item.id === instanceId)
+    if (!instance || ['running', 'installing'].includes(instance.status)) throw new Error('请先关闭此实例的游戏并完成文件操作')
+    const operationId = crypto.randomUUID()
+    const task: WorldBackupTask = { id: operationId, instanceId, worldItemId: selection.itemId, worldFolderName: selection.name,
+      startedAt: new Date().toISOString(), status: 'active', progress: { phase: 'scan', filesDone: 0, bytesDone: 0 } }
+    backupLocks.current.add(instanceId)
+    mergeBackupTask(task)
+    try {
+      const result = await call<WorldBackupResult>('backupWorld', instanceId, selection, { closedExternalWorldConfirmed: true, operationId })
+      mergeBackupTask({ ...task, status: 'complete', finishedAt: result.completedAt, result,
+        progress: { phase: 'commit', filesDone: result.fileCount, filesTotal: result.fileCount, bytesDone: result.totalBytes, bytesTotal: result.totalBytes } })
+      return result
+    } catch (error) {
+      // Query the authoritative terminal state if a response or event was lost.
+      // This never starts another backup or creates a new operation ID.
+      const tasks = await call<WorldBackupTask[]>('worldBackupTasks').catch(() => [])
+      const terminal = tasks.find(item => item.id === operationId)
+      if (terminal) mergeBackupTask(terminal)
+      if (terminal?.status === 'complete' && terminal.result) return terminal.result
+      if (!terminal) mergeBackupTask({ ...task, status: 'error', error: errorText(error), finishedAt: new Date().toISOString() })
+      throw error
+    } finally { backupLocks.current.delete(instanceId) }
+  }
+  async function cancelWorldBackup(task: WorldBackupTask) { await call('cancelWorldBackup', task.instanceId, task.id) }
+  async function openWorldBackup(task: WorldBackupTask) {
+    if (!task.result) throw new Error('此任务没有已完成的备份')
+    await call('openWorldBackup', task.instanceId, task.result.backupId)
+  }
   async function prepareModFile(instanceId: string, selection: ModToggleSelection, enabled: boolean) {
-    if (modFileLocks.current.has(instanceId) || resourceLocks.current.has(instanceId) || instanceSaveLocks.current.has(instanceId) || busy[instanceId]) {
+    if (backupLocks.current.has(instanceId) || backupActive.has(instanceId) || modFileLocks.current.has(instanceId) || resourceLocks.current.has(instanceId) || instanceSaveLocks.current.has(instanceId) || busy[instanceId]) {
       throw new Error('此实例正在操作，请稍后重新检查模组文件')
     }
     return call<ModTogglePreview>('prepareModToggle', instanceId, selection, enabled)
   }
   async function commitModFile(instanceId: string, token: string): Promise<ModToggleResult> {
-    if (modFileLocks.current.has(instanceId) || resourceLocks.current.has(instanceId) || instanceSaveLocks.current.has(instanceId) || busy[instanceId]) {
+    if (backupLocks.current.has(instanceId) || backupActive.has(instanceId) || modFileLocks.current.has(instanceId) || resourceLocks.current.has(instanceId) || instanceSaveLocks.current.has(instanceId) || busy[instanceId]) {
       throw new Error('此实例正在操作，请稍后重新检查模组文件')
     }
     modFileLocks.current.add(instanceId)
@@ -254,7 +308,7 @@ export default function App() {
   }
   async function saveInstanceSettings(id: string, name: string, options: InstanceOptions) {
     if (instanceSaveLocks.current.has(id)) throw new Error('此实例设置正在保存，请稍候。')
-    if (modFileLocks.current.has(id) || resourceLocks.current.has(id)) throw new Error('此实例正在修改文件，请稍后保存设置。')
+    if (backupLocks.current.has(id) || backupActive.has(id) || modFileLocks.current.has(id) || resourceLocks.current.has(id)) throw new Error('此实例正在修改文件或备份世界，请稍后保存设置。')
     instanceSaveLocks.current.add(id)
     setInstanceSaving(current => ({ ...current, [id]: true }))
     setInstanceSaveErrors(current => ({ ...current, [id]: '' }))
@@ -280,7 +334,7 @@ export default function App() {
   const showTasks = () => { setDownloadTab('tasks'); changeView('downloads') }
   async function installInstance(id: string) {
     if (instanceSaveLocks.current.has(id)) throw new Error('实例设置正在保存，请稍候再安装。')
-    if (modFileLocks.current.has(id) || resourceLocks.current.has(id)) throw new Error('此实例正在修改文件，请稍后再安装。')
+    if (backupLocks.current.has(id) || backupActive.has(id) || modFileLocks.current.has(id) || resourceLocks.current.has(id)) throw new Error('此实例正在修改文件或备份世界，请稍后再安装。')
     setTaskErrors(errors => { const next = { ...errors }; delete next[id]; return next })
     setBusy(current => ({ ...current, [id]: true }))
     try { applySnapshot(await call<Snapshot>('install', id)); setToast('游戏安装完成。登录验证后可启动。') }
@@ -386,21 +440,21 @@ export default function App() {
             </div>
             <p className="library-note">每个实例使用独立的游戏目录，存档与模组相互隔离。当前选择仅保存在{isDesktop ? '本机' : '此浏览器'}，不跨设备同步。</p>
           </section>
-          <div className="launch-bar"><div className="launch-selection"><Gamepad2 size={25} /><div><strong>{selectedInstance?.name || '未选择游戏版本'}</strong><span>{selectedInstance ? `Minecraft ${selectedInstance.version} · ${loaderNames[selectedInstance.loader]}` : '请先添加游戏版本'}</span></div></div><div className="launch-controls">{selectedInstance && <><button type="button" className="button secondary" onClick={() => showInstanceContent(selectedInstance.id)}><Package size={16} />内容</button><button className="button secondary" onClick={() => changeView('logs')}><Terminal size={16} />日志</button></>}<button className="button primary launch-button" disabled={Boolean(selectedInstance && (busy[selectedInstance.id] || instanceSaving[selectedInstance.id] || modFileBusy[selectedInstance.id] || resourceActive.has(selectedInstance.id) || selectedInstance.status === 'installing' || !isDesktop))} onClick={() => { if (!selectedInstance) showDownloadForm(); else if (selectedInstance.status === 'running' || selectedInstance.status === 'ready') void run(selectedInstance.id, selectedInstance.status === 'running' ? 'stop' : 'launch', selectedInstance.id); else { showTasks(); void installInstance(selectedInstance.id).catch(() => {}) } }}>{selectedInstance && (busy[selectedInstance.id] || selectedInstance.status === 'installing') ? <Spinner size={20} /> : selectedInstance?.status === 'running' ? <Square size={19} /> : selectedInstance?.status === 'ready' ? <Play size={20} /> : <Download size={20} />}{!selectedInstance ? '下载游戏' : !isDesktop ? '桌面版可启动' : modFileBusy[selectedInstance.id] ? '正在修改模组…' : resourceActive.has(selectedInstance.id) ? '资源下载中…' : selectedInstance.status === 'running' ? '结束游戏' : selectedInstance.status === 'ready' ? '启动游戏' : selectedInstance.status === 'installing' ? '安装中…' : selectedInstance.status === 'error' ? '重新安装' : '安装游戏'}</button></div></div>
+          <div className="launch-bar"><div className="launch-selection"><Gamepad2 size={25} /><div><strong>{selectedInstance?.name || '未选择游戏版本'}</strong><span>{selectedInstance ? `Minecraft ${selectedInstance.version} · ${loaderNames[selectedInstance.loader]}` : '请先添加游戏版本'}</span></div></div><div className="launch-controls">{selectedInstance && <><button type="button" className="button secondary" onClick={() => showInstanceContent(selectedInstance.id)}><Package size={16} />内容</button><button className="button secondary" onClick={() => changeView('logs')}><Terminal size={16} />日志</button></>}<button className="button primary launch-button" disabled={Boolean(selectedInstance && (busy[selectedInstance.id] || instanceSaving[selectedInstance.id] || modFileBusy[selectedInstance.id] || backupActive.has(selectedInstance.id) || resourceActive.has(selectedInstance.id) || selectedInstance.status === 'installing' || !isDesktop))} onClick={() => { if (!selectedInstance) showDownloadForm(); else if (selectedInstance.status === 'running' || selectedInstance.status === 'ready') void run(selectedInstance.id, selectedInstance.status === 'running' ? 'stop' : 'launch', selectedInstance.id); else { showTasks(); void installInstance(selectedInstance.id).catch(() => {}) } }}>{selectedInstance && (busy[selectedInstance.id] || selectedInstance.status === 'installing') ? <Spinner size={20} /> : selectedInstance?.status === 'running' ? <Square size={19} /> : selectedInstance?.status === 'ready' ? <Play size={20} /> : <Download size={20} />}{!selectedInstance ? '下载游戏' : !isDesktop ? '桌面版可启动' : backupActive.has(selectedInstance.id) ? '世界备份中…' : modFileBusy[selectedInstance.id] ? '正在修改模组…' : resourceActive.has(selectedInstance.id) ? '资源下载中…' : selectedInstance.status === 'running' ? '结束游戏' : selectedInstance.status === 'ready' ? '启动游戏' : selectedInstance.status === 'installing' ? '安装中…' : selectedInstance.status === 'error' ? '重新安装' : '安装游戏'}</button></div></div>
         </>}
         {view === 'instance-settings' && snapshot && (editingInstance && instanceDrafts[editingInstance.id] ? <>
           <div className="instance-switcher"><label htmlFor="instance-settings-target">游戏实例</label><select id="instance-settings-target" value={editingInstance.id} onChange={event => { const next = instances.find(item => item.id === event.target.value); if (next) openInstanceSettings(next) }}>{instances.map(item => <option key={item.id} value={item.id}>{item.name} · {item.version}</option>)}</select></div>
           {effectiveError && <ErrorBox message={`生效配置读取失败：${effectiveError}`} retry={() => setEffectiveRetry(value => value + 1)} />}
-          <InstanceSettings key={editingInstance.id} instance={editingInstance} globalSettings={snapshot.settings} draft={instanceDrafts[editingInstance.id]} runtimes={instanceRuntimes} resolved={resolved} disabled={busy[editingInstance.id] || modFileBusy[editingInstance.id] || resourceActive.has(editingInstance.id)} saving={instanceSaving[editingInstance.id]} saveError={instanceSaveErrors[editingInstance.id]} onDraftChange={draft => {
+          <InstanceSettings key={editingInstance.id} instance={editingInstance} globalSettings={snapshot.settings} draft={instanceDrafts[editingInstance.id]} runtimes={instanceRuntimes} resolved={resolved} disabled={busy[editingInstance.id] || modFileBusy[editingInstance.id] || backupActive.has(editingInstance.id) || resourceActive.has(editingInstance.id)} saving={instanceSaving[editingInstance.id]} saveError={instanceSaveErrors[editingInstance.id]} onDraftChange={draft => {
             if (instanceSaveLocks.current.has(draft.instanceId)) return
             setInstanceDrafts(current => ({ ...current, [draft.instanceId]: draft }))
             setInstanceSaveErrors(current => ({ ...current, [draft.instanceId]: '' }))
           }} onSave={(name, options) => saveInstanceSettings(editingInstance.id, name, options)} onCancel={() => changeView('library')} onPickJava={isDesktop ? () => call<string | null>('chooseJava') : undefined} onRefreshRuntimes={isDesktop ? detectInstanceJava : undefined} />
         </> : <EmptyState icon={<Settings2 size={26} />} title="没有可设置的实例" action={<button type="button" className="button secondary" onClick={() => changeView('library')}>返回版本列表</button>}>请先添加一个游戏版本。</EmptyState>)}
-        {view === 'instance-content' && <InstanceContent key={contentRevision} initialKind={contentKind} refreshRevision={contentRefresh[selectedInstance?.id || ''] || 0} fileBusy={Boolean(selectedInstance && (modFileBusy[selectedInstance.id] || busy[selectedInstance.id] || instanceSaving[selectedInstance.id] || resourceActive.has(selectedInstance.id)))} onPrepareMod={prepareModFile} onCommitMod={commitModFile} instances={instances} selectedId={selectedInstance?.id || ''} onSelect={setSelectedId} onOpenSettings={openInstanceSettings} onOpenFolder={id => call<void>('openInstance', id)} onBack={() => changeView('library')} />}
+        {view === 'instance-content' && <InstanceContent key={contentRevision} initialKind={contentKind} refreshRevision={contentRefresh[selectedInstance?.id || ''] || 0} fileBusy={Boolean(selectedInstance && (modFileBusy[selectedInstance.id] || busy[selectedInstance.id] || instanceSaving[selectedInstance.id] || backupActive.has(selectedInstance.id) || resourceActive.has(selectedInstance.id)))} onPrepareMod={prepareModFile} onCommitMod={commitModFile} backupTasks={backupTasks} onBackupWorld={createWorldBackup} onCancelWorldBackup={cancelWorldBackup} instances={instances} selectedId={selectedInstance?.id || ''} onSelect={setSelectedId} onOpenSettings={openInstanceSettings} onOpenFolder={id => call<void>('openInstance', id)} onBack={() => changeView('library')} />}
         {resourcesOpened && <div hidden={view !== 'resources'}><ResourcesView source={resourceSource} setSource={setResourceSource} instances={instances} tasks={resourceTasks} progress={progress} install={installResource} cancel={cancelResource} showContent={showInstanceContent} openUrl={openUrl} /></div>}
         {view === 'discover' && <Discover source={resourceSource} setSource={setResourceSource} openUrl={openUrl} instances={instances} installed={async name => { await refresh(); setToast(`${name} 已安装，必需依赖已一并处理。`) }} />}
-        {view === 'downloads' && <DownloadsView tab={downloadTab} setTab={setDownloadTab} instances={instances} progress={progress} busy={busy} taskErrors={taskErrors} packTasks={packTasks} javaTasks={javaTasks} resourceTasks={resourceTasks} cancelResource={cancelResource} showContent={showInstanceContent} cancelJava={async id => { await call('cancelJavaInstall', id) }} retryJava={async major => { await call('installJava', major) }} download={downloadGame} install={installInstance} cancel={cancelDownload} showGame={id => { setSelectedId(id); changeView('library') }} showLogs={id => { setSelectedId(id); changeView('logs') }} showPacks={source => { if (source && source !== 'local') setResourceSource(source); changeView('modpacks') }} />}
+        {view === 'downloads' && <DownloadsView tab={downloadTab} setTab={setDownloadTab} instances={instances} progress={progress} busy={busy} taskErrors={taskErrors} packTasks={packTasks} javaTasks={javaTasks} resourceTasks={resourceTasks} cancelResource={cancelResource} backupTasks={backupTasks} cancelBackup={cancelWorldBackup} openBackup={openWorldBackup} showContent={showInstanceContent} cancelJava={async id => { await call('cancelJavaInstall', id) }} retryJava={async major => { await call('installJava', major) }} download={downloadGame} install={installInstance} cancel={cancelDownload} showGame={id => { setSelectedId(id); changeView('library') }} showLogs={id => { setSelectedId(id); changeView('logs') }} showPacks={source => { if (source && source !== 'local') setResourceSource(source); changeView('modpacks') }} />}
         {view === 'modpacks' && <ModpacksView source={resourceSource} setSource={setResourceSource} tasks={packTasks} progress={progress} installOnline={(versionId, name, source) => installPack('installModpack', versionId, name, source)} importLocal={(token, name) => installPack('importModpack', token, name)} cancel={cancelDownload} showTasks={showTasks} openUrl={openUrl} />}
         {settingsOpened && snapshot && <div hidden={view !== 'settings'}><SettingsView instance={selectedInstance} settings={snapshot.settings} rootDir={snapshot.rootDir} javaTasks={javaTasks} save={async settings => {
           const next = await call<Snapshot>('updateSettings', settings)

@@ -1,9 +1,10 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react'
 import { AlertTriangle, ArrowLeft, File, FileArchive, Folder, FolderOpen, Layers3, Map, Monitor, Package, RefreshCw, Search, Settings2 } from 'lucide-react'
 import type { InventoryItem, InventoryKind, ResourceInventory } from '../../desktop/resource-inventory'
-import { call, errorText, isDesktop, loaderNames, type Instance, type ModTogglePreview, type ModToggleSelection, type ModToggleResult, type WorldDetails as WorldDetailsData, type WorldSeed } from '../api'
+import { call, errorText, isDesktop, loaderNames, type Instance, type ModTogglePreview, type ModToggleSelection, type ModToggleResult, type WorldDetails as WorldDetailsData, type WorldSeed, type WorldSelection, type WorldBackupTask, type WorldBackupList, type WorldBackupResult } from '../api'
 import ModToggleActions from './ModToggleActions'
 import WorldDetails, { escapeWorldText } from './WorldDetails'
+import WorldBackupActions from './WorldBackupActions'
 import { EmptyState, ErrorBox, Spinner } from './ui'
 import './InstanceContent.css'
 
@@ -19,6 +20,9 @@ export interface InstanceContentProps {
   fileBusy?: boolean
   onPrepareMod?: (instanceId: string, selection: ModToggleSelection, enabled: boolean) => Promise<ModTogglePreview>
   onCommitMod?: (instanceId: string, token: string) => Promise<ModToggleResult>
+  backupTasks?: WorldBackupTask[]
+  onBackupWorld?: (instanceId: string, selection: WorldSelection) => Promise<WorldBackupResult>
+  onCancelWorldBackup?: (task: WorldBackupTask) => Promise<void>
 }
 export type InstanceInventory = ResourceInventory & { instanceId: string }
 type SortOrder = 'name-asc' | 'name-desc' | 'modified-desc' | 'modified-asc'
@@ -77,7 +81,7 @@ export function InventoryDetails({ item, kind, id }: { item?: InventoryItem; kin
   </section>
 }
 
-export default function InstanceContent({ instances, selectedId, onSelect, onOpenSettings, onOpenFolder, onBack, initialKind = 'mods', refreshRevision = 0, fileBusy = false, onPrepareMod, onCommitMod }: InstanceContentProps) {
+export default function InstanceContent({ instances, selectedId, onSelect, onOpenSettings, onOpenFolder, onBack, initialKind = 'mods', refreshRevision = 0, fileBusy = false, onPrepareMod, onCommitMod, backupTasks = [], onBackupWorld, onCancelWorldBackup }: InstanceContentProps) {
   const [kind, setKind] = useState<InventoryKind>(initialKind)
   const [query, setQuery] = useState('')
   const [order, setOrder] = useState<SortOrder>('name-asc')
@@ -196,6 +200,11 @@ export default function InstanceContent({ instances, selectedId, onSelect, onOpe
         {kind === 'worlds' && instance && selectedItem?.entryType === 'directory' && <WorldDetails instance={instance} item={selectedItem} busy={fileBusy || loading || installing} refreshRevision={refreshRevision}
           read={(selection, source) => call<WorldDetailsData>('worldDetails', instance.id, selection, { source })}
           reveal={revision => call<WorldSeed>('worldDetailsWithSeed', instance.id, revision)} />}
+        {kind === 'worlds' && instance && selectedItem?.entryType === 'directory' && onBackupWorld && onCancelWorldBackup && <WorldBackupActions instance={instance} item={selectedItem} busy={fileBusy || loading || installing} tasks={backupTasks}
+          list={() => call<WorldBackupList>('worldBackups', instance.id)}
+          create={() => onBackupWorld(instance.id, { itemId: selectedItem.id, name: selectedItem.name })}
+          cancel={onCancelWorldBackup}
+          open={backupId => call<void>('openWorldBackup', instance.id, backupId)} />}
         {kind === 'mods' && instance && selectedItem && onPrepareMod && onCommitMod && <ModToggleActions instance={instance} item={selectedItem} busy={fileBusy || loading || installing} prepare={(selection, enabled) => onPrepareMod(instance.id, selection, enabled)} commit={token => onCommitMod(instance.id, token)} completed={renamed} />}
       </>}
       <p className="inventory-footer-note">{kind === 'worlds' ? '世界详情只读所选目录的 level.dat 或明确选择的旧副本；不检查区块完整性，不修改或升级世界。' : <>{kind === 'mods' ? '模组操作仅改变一个文件的名称，不自动联动依赖。禁用后下载来源登记不迁移，恢复原名后可重新显示历史来源。' : '不解压资源或推断兼容、启用和实际加载状态。'}“曾登记来源”不代表当前内容已通过哈希验证。</>}</p>
