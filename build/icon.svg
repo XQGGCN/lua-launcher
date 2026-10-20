@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>Lua Launcher</title>
+  <defs>
+    <mask id="crescent" x="0" y="0" width="1024" height="1024" maskUnits="userSpaceOnUse">
+      <circle cx="496" cy="520" r="272" fill="#fff"/>
+      <circle cx="614" cy="410" r="246" fill="#000"/>
+    </mask>
+  </defs>
+  <rect x="32" y="32" width="960" height="960" rx="216" fill="#f1f5f8"/>
+  <rect x="32" y="32" width="960" height="960" rx="216" fill="none" stroke="#d3dfe8" stroke-width="12"/>
+  <rect width="1024" height="1024" fill="#437cae" mask="url(#crescent)"/>
+</svg>
