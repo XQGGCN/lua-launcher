@@ -12,6 +12,8 @@ export interface InstanceContentProps {
   onOpenSettings: (instance: Instance) => void
   onOpenFolder: (id: string) => Promise<void>
   onBack: () => void
+  initialKind?: InventoryKind
+  refreshRevision?: number
 }
 export type InstanceInventory = ResourceInventory & { instanceId: string }
 type SortOrder = 'name-asc' | 'name-desc' | 'modified-desc' | 'modified-asc'
@@ -63,14 +65,15 @@ export function InventoryDetails({ item, kind, id }: { item?: InventoryItem; kin
         <dt>大小</dt><dd>{inventorySize(item)}{item.entryType === 'directory' && <small>只列出这一层，不统计目录内文件大小</small>}</dd>
         <dt>加载状态</dt><dd>{item.activation === 'disabled-suffix' ? '禁用后缀（.disabled）' : '未检查'}<small>仅记录文件名，不判断游戏是否加载或是否兼容</small></dd>
         <dt>曾登记来源</dt><dd>{item.recordedSource ? <>{sourceNames[item.recordedSource.source]}<small>项目 ID：{item.recordedSource.projectId}<br />版本 ID：{item.recordedSource.versionId}</small></> : '无关联登记'}<small>历史下载登记不证明当前文件内容、完整性或兼容性</small></dd>
+        {item.recordedDownload && <><dt>下载登记</dt><dd><time dateTime={item.recordedDownload.installedAt}>{timeLabel(item.recordedDownload.installedAt)}</time><small>登记时大小：{item.recordedDownload.size} 字节</small></dd><dt>登记 SHA-512</dt><dd><code>{item.recordedDownload.sha512}</code><small>这是下载时的校验值；本次清单未重新计算当前文件哈希</small></dd></>}
       </dl>
       {kind === 'worlds' && <p className="inventory-detail-hint">这里只展示 saves 目录中的条目。尚未读取 level.dat / NBT，因此没有解析世界名称、游戏版本、种子、游戏模式或最后游玩时间；文件修改时间不等于最后游玩时间。</p>}
     </>}
   </section>
 }
 
-export default function InstanceContent({ instances, selectedId, onSelect, onOpenSettings, onOpenFolder, onBack }: InstanceContentProps) {
-  const [kind, setKind] = useState<InventoryKind>('mods')
+export default function InstanceContent({ instances, selectedId, onSelect, onOpenSettings, onOpenFolder, onBack, initialKind = 'mods', refreshRevision = 0 }: InstanceContentProps) {
+  const [kind, setKind] = useState<InventoryKind>(initialKind)
   const [query, setQuery] = useState('')
   const [order, setOrder] = useState<SortOrder>('name-asc')
   const [page, setPage] = useState(0)
@@ -114,7 +117,7 @@ export default function InstanceContent({ instances, selectedId, onSelect, onOpe
       if (ticket === request.current && currentKey.current === key) setError({ key, message: errorText(error) })
     }).finally(() => { if (ticket === request.current && currentKey.current === key) setLoading(false) })
     return () => { if (ticket === request.current) ++request.current }
-  }, [selectedId, instance?.id, kind, installing, retry])
+  }, [selectedId, instance?.id, kind, installing, retry, refreshRevision])
   useEffect(() => {
     ++folderRequest.current; setFolderBusy(false); setFolderError(''); setQuery('')
     return () => { ++folderRequest.current }

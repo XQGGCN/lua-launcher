@@ -9,6 +9,7 @@ import { AccountCoordinator } from './accounts'
 import { getMemoryInfo } from './memory'
 import { LaunchPreparations } from './launch-preparation'
 import type { InventoryKind } from './resource-inventory'
+import { resourceKind } from './resource-catalog'
 
 declare const __LUA_MICROSOFT_CLIENT_ID__: string
 
@@ -271,6 +272,19 @@ if (hasLock) app.whenReady().then(async () => {
           source: resourceSource(options.source),
         })
       }
+      case 'searchResources': {
+        const options = object(args[1])
+        return core.searchResources(text(args[0], 200), { kind: resourceKind(options.kind), source: resourceSource(options.source),
+          gameVersion: options.gameVersion === undefined ? undefined : text(options.gameVersion, 80),
+          offset: options.offset === undefined ? undefined : options.offset as number })
+      }
+      case 'resourceVersions': return core.resourceVersions(text(args[0], 128), text(args[1], 80), resourceKind(args[2]), resourceSource(args[3]))
+      case 'installResource': {
+        const id = text(args[0], 80)
+        if (launches.has(id)) throw new Error('请先完成或取消此实例的启动准备')
+        return core.installResource(id, object(args[1]), text(args[2], 80))
+      }
+      case 'cancelResourceInstall': return core.cancelResourceInstall(text(args[0], 80), text(args[1], 80))
       case 'modpackVersions': return core.modpackVersions(text(args[0], 80), resourceSource(args[1]))
       case 'installModpack': {
         const options = args[1] === undefined ? {} : object(args[1])

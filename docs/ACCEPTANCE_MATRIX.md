@@ -1,6 +1,6 @@
 # 验收矩阵
 
-更新：2026-10-21。发布基线为 0.3.0，0.4/0.5/0.6 本地实现、测试、构建及未签名 macOS ARM64 DMG/ZIP 已完成。0.5 实例设置有浏览器预览证据，0.6 只读清单有真实 Core/隔离文件测试桥交互证据；三版尚未发布，当前提交三平台 CI 与 0.5/0.6 原生验收待完成。L1 静态/类型、L2 确定性测试、L3 真实网络与文件、L4 真实桌面、L5 真实账户/游戏/联机分别记录；低一级结果不能代替高一级。
+更新：2026-10-21。发布基线为 0.3.0，0.4/0.5/0.6 本地实现、测试、构建及未签名 macOS ARM64 DMG/ZIP 已完成。0.5 实例设置有浏览器预览证据，0.6 只读清单有真实 Core/隔离文件测试桥交互证据；三版尚未发布，当前提交三平台 CI 与 0.5/0.6 原生验收待完成。0.6.1 资源归位已有 347 项全量测试与真实 Modrinth 两样本证据，最终类型检查/生产构建和测试桥通过，晚修后未签名 macOS ARM64 DMG/ZIP 的版本、架构与 SHA-256 核对通过，尚未发布。L1 静态/类型、L2 确定性测试、L3 真实网络与文件、L4 真实桌面、L5 真实账户/游戏/联机分别记录；低一级结果不能代替高一级。
 
 W=Windows x64，M=macOS ARM64，L=Linux x64。新架构单独列证据，官方有 Java 包不等于 Lua 安装包或游戏已支持。每次结果关联版本/commit、平台、命令/步骤和证据路径；私有日志与截图留在被忽略目录，不保存令牌。
 
@@ -15,7 +15,7 @@ W=Windows x64，M=macOS ARM64，L=Linux x64。新架构单独列证据，官方�
 | 官网与资源 | L3/L4 | 首页、CSS、SVG、截图 HTTP 200；原图一致，CDN 有图片压缩；页面已验收 | [官网](https://lua-launcher.onrender.com)，本地 website-verification-v030 记录 |
 | 完整 Microsoft 登录与游戏 | L5 | 未通过，API 待审；批准前不继续真实流程 | [已知问题](KNOWN_ISSUES.md) |
 
-上述结果不自动继承到 0.4.0/0.5.0/0.6.0，不复用旧 CI 作为新提交通过证据。
+上述结果不自动继承到 0.4.0/0.5.0/0.6.0/0.6.1，不复用旧 CI 作为新提交通过证据。
 
 ## 0.4.0 本地结果及剩余验收
 
@@ -75,6 +75,24 @@ W=Windows x64，M=macOS ARM64，L=Linux x64。新架构单独列证据，官方�
 | AC-CONTENT-07 | 当前版本完整测试/check/build与包版本架构/hash；新 CI/原生/Release 独立验收 | L1/L2；本地包 L3 | 277/277、check/build 和未签名 macOS ARM64 DMG/ZIP 核对通过；原生、当前提交三平台 CI 及 Release 外部阻塞 | `.local/local-packages-v060.json`；[开发日志](devlog/0.6.0.md)；当前提交 CI 待恢复 |
 
 0.6 没有发起外部资源网络、真实认证或游戏运行，不改变 AC-AUTH-02 / AC-GAME-01。未新增启停、更新、删除、资源自动归位、世界 NBT 或递归目录大小；后续管理与写入场景不能引用本轮只读通过代替验收。官网与公开下载仍为 0.3.0。
+
+## 0.6.1 本地结果及剩余验收
+
+基准为 0.6.0 提交 `17c4a16c24f04f2a7075f847262e4bc684889111`，开发分支 `codex/resource-download-v0.6.1`。新增 catalog 23、安装事务 30、Core 接线 17 项，独立重跑 **70/70**，集成者全仓 **347/347**。最后的搜索修复后，全量 347 项与生产构建（含 TypeScript）重跑通过；测试桥完成注明范围，最终重新生成的未签名 macOS ARM64 包核对通过。真实样本由集成者执行，独立审查者仅复核报告。
+
+| ID | 场景与通过条件 | 等级 / 平台 | 当前状态 | 证据或计划位置 |
+| --- | --- | --- | --- | --- |
+| AC-RESOURCE-01 | 两来源搜索、项目类型、所选 MC 版本；资源包 minecraft，光影仅 iris/optifine | L1/L2，本地 | catalog/Core 测试及生产 Core 两来源两类型真实搜索通过；不等同于检测本机渲染前置 | `desktop/resource-catalog.test.ts`、`desktop/core-resources.test.ts` |
+| AC-RESOURCE-02 | 重读 selected project/version/file/hash；拒绝辅助主文件、坏字段、required/incompatible、外部文件；逐跳 API/CDN 隔离 | L2 | 身份与兼容回归、4 MiB/UTF-8、来源/类型边界通过；声明兼容不保证游戏效果 | catalog 与安装器测试；REVIEW-061-01/02 |
+| AC-RESOURCE-03 | 主 ZIP 保持压缩包写入固定 resourcepacks/shaderpacks；大小、SHA-512及已提供 SHA-1 全验证；不改 options、不解压 | L2；代表样本 L3/M | 默认安装器/临时目录及真实两样本通过；BBSMC 仅 fixture | 安装器 30 项、Core 17 项；真实 smoke JSON |
+| AC-RESOURCE-04 | 同字节复用、不覆盖其他内容；失败回滚、保护外部编辑；成功 ledger rename 后迟到取消仍成功 | L2，本地故障注入 | hash/断流/HTML/冲突/改写/回滚/提交边界通过；独立同 inode 外部编辑注入保留目标和 stage | `desktop/resource-install.test.ts`；REVIEW-061-03/04 |
+| AC-RESOURCE-05 | 实例互斥、全局最多四项；operation ID 绑定取消、退出和 worker 结算；旧库存扫描失效 | L2；UI源码 | Core 测试通过；同步资源锁已复核，测试桥下载中启动 disabled；原生待验 | `desktop/core-resources.test.ts`；REVIEW-061-05 |
+| AC-RESOURCE-06 | 安装后内容页关联来源/版本/日期/hash；不把历史 receipt 当当前 hash；A 完成不重置 B | L2；UI源码 | 实际临时 ZIP 安装/扫描及改坏当前字节后的历史记录回归通过；按实例刷新已源码复核；测试桥 A 完成时 B 世界分类与搜索保持 | Core 测试、REVIEW-061-06；resource-ui-v061-cross-instance 截图 |
+| AC-RESOURCE-07 | 官方真实文件下载、完整校验、正确归位、登记和再次安装复用 | L3，M/隔离实例 | Fresh Animations 743793 字节、Complementary Reimagined 553397 字节通过；无 Java/认证/游戏，不证明渲染/启用 | `.local/resource-real-smoke.json`；[开发日志](devlog/0.6.1.md) |
+| AC-RESOURCE-08 | 搜索/来源/目标/发布、关闭对话框后台继续、取消/失败、长名/空态、清单跳转及跨实例迟到结果 | 浏览器测试桥；原生 L4待验 | 显式目标、关闭弹窗后台继续、取消无残留、冲突保留/重试、跨实例保持和全过滤页前后翻页通过；无桥 MR/仅桌面提示和 Home/End 通过，浏览器 BBS fetch 失败如实报错 | `.local/resource-ui-v061*.png`；[开发日志](devlog/0.6.1.md)；原生另验 |
+| AC-RESOURCE-09 | 完整test/check/build、包版本/架构/hash、当前提交三平台CI/Release与签名状态 | L1/L2；包L3/原生L4待验 | 晚修后全仓347/347与生产构建（含tsc）通过；最终未签名 macOS ARM64 包版本/架构/hash 核对通过；三平台CI、原生、Release与签名/公证未完成 | `package.json`、`.local/build-v061.log`；`.local/local-packages-v061.json` |
+
+当前只写 ZIP 与历史下载登记，不进行自动启用、更新/覆盖、地图/世界数据包安装。Minecraft API 待审和 AC-AUTH-02 / AC-GAME-01 状态不变，官网与公开下载保持 0.3.0。真实匿名资源下载不需要也没有完成账户授权或游戏验收。
 
 ## 未来功能与发布门槛
 

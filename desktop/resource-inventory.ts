@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import { performance } from 'node:perf_hooks'
+import { readResourceRegistry } from './resource-install'
 
 export type InventoryKind = 'mods' | 'resourcepacks' | 'shaderpacks' | 'worlds'
 export interface RecordedResourceSource {
@@ -20,6 +21,8 @@ export interface InventoryItem {
   formatHint?: 'jar' | 'zip'
   /** Historical registry attribution, never proof of current contents or ownership. */
   recordedSource?: RecordedResourceSource
+  /** Download receipt only; the current file bytes have not been rehashed by this scan. */
+  recordedDownload?: { sha512: string; sha1?: string; size: number; installedAt: string }
   activation: 'unknown' | 'disabled-suffix'
 }
 export interface InventoryWarning {
@@ -40,6 +43,7 @@ export interface InventoryScanOptions {
   signal?: AbortSignal
   /** A main-process-owned path. Never take an arbitrary renderer file path. */
   managedModsFile?: string
+  managedResourcesFile?: string
 }
 export const INVENTORY_LIMITS = Object.freeze({
   entries: 5000,
@@ -54,7 +58,7 @@ const ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/
 const WINDOWS_DEVICE = /^(?:CON|PRN|AUX|NUL|CLOCK\$|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.|$)/i
 class TimeLimit extends Error {}
 type Budget = { check: () => void }
-type RegistryRecord = RecordedResourceSource & { filename: string }
+type RegistryRecord = RecordedResourceSource & { filename: string; download?: InventoryItem['recordedDownload'] }
 
 function key(name: string): string { return name.normalize('NFC').toLowerCase() }
 function safeName(name: string): boolean {
@@ -205,6 +209,7 @@ function attributeSources(result: ResourceInventory, records: RegistryRecord[]):
     if (!result.truncated && item?.entryType === 'file' && item.name === owner.filename) {
       const { source, projectId, versionId } = owner
       item.recordedSource = { source, projectId, versionId }
+      if (owner.download) item.recordedDownload = { ...owner.download }
     }
   }
 }
@@ -307,6 +312,21 @@ export async function scanResourceInventory(
           code: /^E[A-Z0-9]+$/.test(errno(error) ?? '') ? 'registry-unavailable' : 'registry-invalid',
           message: '来源登记文件无法安全读取或格式无效；仍显示文件清单，不关联来源',
         })
+      }
+    }
+    if ((kind === 'resourcepacks' || kind === 'shaderpacks') && options.managedResourcesFile !== undefined) {
+      try {
+        budget.check()
+        const registry = await readResourceRegistry(options.managedResourcesFile, options.signal)
+        budget.check()
+        const resourceKind = kind === 'resourcepacks' ? 'resourcepack' : 'shader'
+        records = Object.values(registry.records).filter(record => record.kind === resourceKind).map(record => ({
+          source: record.source, projectId: record.projectId, versionId: record.versionId, filename: record.filename,
+          download: { sha512: record.sha512, ...(record.sha1 ? { sha1: record.sha1 } : {}), size: record.size, installedAt: record.installedAt },
+        }))
+      } catch (error) {
+        if (error instanceof TimeLimit || options.signal?.aborted) throw error
+        result.warnings.push({ code: 'registry-invalid', message: '资源下载登记无法安全读取；仍显示文件清单，不关联来源' })
       }
     }
   } catch (error) {

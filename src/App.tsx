@@ -14,6 +14,8 @@ import MemorySettings from './components/MemorySettings'
 import JavaSettings from './components/JavaSettings'
 import InstanceSettings, { createInstanceSettingsDraft, parseInstanceJvmArgs, type InstanceSettingsDraft } from './components/InstanceSettings'
 import InstanceContent from './components/InstanceContent'
+import ResourcesView, { type ResourceInstallTask } from './components/ResourcesView'
+import type { InventoryKind, ResourceInstallInput, ResourceInstallReceipt, ResourceKind } from './api'
 import type { InstanceOptions, ResolvedInstanceOptions } from './api'
 import './App.css'
 import { Dialog, EmptyState, ErrorBox, PageHeading, Spinner } from './components/ui'
@@ -22,11 +24,12 @@ import ModCategoryPicker from './components/ModCategoryPicker'
 import { categoryLabel, type ModCategory } from './mod-categories'
 import { APP_VERSION } from './version'
 
-type View = 'library' | 'discover' | 'downloads' | 'modpacks' | 'settings' | 'account' | 'logs' | 'instance-settings' | 'instance-content'
+type View = 'library' | 'discover' | 'downloads' | 'modpacks' | 'settings' | 'account' | 'logs' | 'instance-settings' | 'instance-content' | 'resources'
 const navigation = [
   { id: 'library' as const, label: '启动游戏', icon: Play },
   { id: 'downloads' as const, label: '游戏下载', icon: ArrowDownToLine },
   { id: 'discover' as const, label: '模组下载', icon: Package },
+  { id: 'resources' as const, label: '资源包与光影', icon: Layers3 },
   { id: 'modpacks' as const, label: '整合包', icon: Layers3 },
 ]
 const statusLabels: Record<Instance['status'], string> = { 'not-installed': '等待安装', installing: '正在安装', ready: '准备就绪', running: '游戏运行中', error: '需要处理' }
@@ -43,6 +46,12 @@ function Logo({ small = false }: { small?: boolean }) {
 export default function App() {
   const [view, setView] = useState<View>('library')
   const [settingsOpened, setSettingsOpened] = useState(false)
+  const [resourcesOpened, setResourcesOpened] = useState(false)
+  const [resourceTasks, setResourceTasks] = useState<ResourceInstallTask[]>([])
+  const resourceLocks = useRef(new Set<string>())
+  const [contentKind, setContentKind] = useState<InventoryKind>('mods')
+  const [contentRevision, setContentRevision] = useState(0)
+  const [contentRefresh, setContentRefresh] = useState<Record<string, number>>({})
   const [resourceSource, setResourceSource] = useState<ResourceSource>('modrinth')
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
   const [account, setAccount] = useState<Account | null>(null)
@@ -127,6 +136,7 @@ export default function App() {
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(''), 6500); return () => clearTimeout(timer) }, [toast])
   const run = async (key: string, method: string, ...args: unknown[]) => {
     if (method === 'launch' && instanceSaveLocks.current.has(key)) { setToast('实例设置正在保存，请稍候再启动。'); return }
+    if (method === 'launch' && resourceLocks.current.has(key)) { setToast('资源正在下载，请等待完成或取消后再启动。'); return }
     setBusy(current => ({ ...current, [key]: true }))
     if (method === 'launch') setProgress(current => ({ ...current, [key]: { type: 'progress', instanceId: key, phase: '正在验证账户并准备启动', completed: 0, total: 0, bytesDownloaded: 0 } }))
     try { await call(method, ...args); await refresh() } catch (error) { setToast(errorText(error)) }
@@ -162,9 +172,43 @@ export default function App() {
   const downloads = instances.filter(instance => instance.status === 'installing' || busy[instance.id])
   const downloadCount = downloads.length + packTasks.filter(task => task.status === 'active' && !task.instanceId).length
     + javaTasks.filter(task => ['queued', 'active', 'cancelling'].includes(task.status)).length
+    + resourceTasks.filter(task => task.status === 'active').length
+  const resourceActive = new Set(resourceTasks.filter(task => task.status === 'active').map(task => task.instanceId))
   const filtered = instances.filter(instance => instance.name.toLowerCase().includes(gameQuery.toLowerCase()) && (gameFilter === 'all' || instance.loader === gameFilter))
   const openUrl = (url: string) => { void call('openExternal', url).catch(error => setToast(errorText(error))) }
-  const changeView = (next: View) => { if (next === 'settings') setSettingsOpened(true); setView(next); document.querySelector('main')?.scrollTo(0, 0) }
+  const changeView = (next: View) => { if (next === 'settings') setSettingsOpened(true); if (next === 'resources') setResourcesOpened(true); setView(next); document.querySelector('main')?.scrollTo(0, 0) }
+  function showInstanceContent(id: string, kind?: ResourceKind) {
+    setSelectedId(id); setContentKind(kind === 'resourcepack' ? 'resourcepacks' : kind === 'shader' ? 'shaderpacks' : 'mods')
+    setContentRevision(value => value + 1); changeView('instance-content')
+  }
+  async function installResource(instanceId: string, input: ResourceInstallInput) {
+    if (resourceLocks.current.has(instanceId)) throw new Error('此实例已有资源下载任务')
+    const instance = instances.find(item => item.id === instanceId)
+    if (!instance || instance.status !== 'ready') throw new Error('请明确选择已安装且已关闭游戏的实例')
+    resourceLocks.current.add(instanceId)
+    const task: ResourceInstallTask = { id: crypto.randomUUID(), instanceId, instanceName: instance.name,
+      title: input.filename, kind: input.kind, source: input.source, versionId: input.versionId, filename: input.filename, status: 'active' }
+    setResourceTasks(current => {
+      const next = [...current, task], active = next.filter(item => item.status === 'active')
+      const room = Math.max(0, 30 - active.length)
+      return [...active, ...(room ? next.filter(item => item.status !== 'active').slice(-room) : [])]
+    })
+    setProgress(current => ({ ...current, [instanceId]: { type: 'progress', instanceId, phase: '正在核对所选资源版本', completed: 0, total: 0, bytesDownloaded: 0, unit: 'bytes' } }))
+    try {
+      const result = await call<ResourceInstallReceipt>('installResource', instanceId, input, task.id)
+      setResourceTasks(current => current.map(item => item.id === task.id ? { ...item, status: 'complete', result } : item))
+      setContentRefresh(current => ({ ...current, [instanceId]: (current[instanceId] || 0) + 1 }))
+      setToast(`已放入 ${instance.name} 的 game/${result.folder}，需在游戏内选择启用。`)
+    } catch (error) {
+      const message = errorText(error)
+      setResourceTasks(current => current.map(item => item.id === task.id ? { ...item, status: message.includes('已取消') ? 'cancelled' : 'error', error: message } : item))
+      await refresh()
+      throw error
+    } finally { resourceLocks.current.delete(instanceId) }
+  }
+  async function cancelResource(task: ResourceInstallTask) {
+    await call('cancelResourceInstall', task.instanceId, task.id)
+  }
   function openInstanceSettings(instance: Instance) {
     if (!snapshot) return
     setSelectedId(instance.id); setEditingInstanceId(instance.id)
@@ -284,7 +328,7 @@ export default function App() {
       </div>
     </aside>
     <main className={`main-panel view-${view}`}>
-      <div className="topbar"><div className="breadcrumb">Lua 未央 <span>/</span> <strong>{({ library: '启动游戏', discover: '模组下载', downloads: '游戏下载', modpacks: '整合包', settings: '启动器设置', account: '游戏账户', logs: '运行日志', 'instance-settings': '实例设置', 'instance-content': '实例内容' })[view]}</strong></div><div className="topbar-right"><span className="version-tag">ALPHA {APP_VERSION}</span><button className="icon-button mobile-logs-button" aria-label="查看运行日志" onClick={() => changeView('logs')}><Terminal size={18} /></button><button className="icon-button" aria-label="管理游戏账户" onClick={() => changeView('account')}><UserRound size={18} /></button><button className="icon-button" aria-label="了解项目与开源许可" onClick={() => setToast('Lua 未央 · 独立开源 Minecraft Java 启动器。当前为 Alpha，支持原版、Fabric、Forge 与 NeoForge。Minecraft 是 Mojang 的商标，本项目与 Mojang、Microsoft 无关联。')}><CircleHelp size={18} /></button></div></div>
+      <div className="topbar"><div className="breadcrumb">Lua 未央 <span>/</span> <strong>{({ library: '启动游戏', discover: '模组下载', downloads: '游戏下载', modpacks: '整合包', settings: '启动器设置', account: '游戏账户', logs: '运行日志', 'instance-settings': '实例设置', 'instance-content': '实例内容', resources: '资源包与光影' })[view]}</strong></div><div className="topbar-right"><span className="version-tag">ALPHA {APP_VERSION}</span><button className="icon-button mobile-logs-button" aria-label="查看运行日志" onClick={() => changeView('logs')}><Terminal size={18} /></button><button className="icon-button" aria-label="管理游戏账户" onClick={() => changeView('account')}><UserRound size={18} /></button><button className="icon-button" aria-label="了解项目与开源许可" onClick={() => setToast('Lua 未央 · 独立开源 Minecraft Java 启动器。当前为 Alpha，支持原版、Fabric、Forge 与 NeoForge。Minecraft 是 Mojang 的商标，本项目与 Mojang、Microsoft 无关联。')}><CircleHelp size={18} /></button></div></div>
       <div className="page-content">
         {!isDesktop && <div className="preview-notice"><Monitor size={15} /><span>当前为浏览器预览。可探索模组、创建预览实例；安装和启动需使用桌面版。</span><span className="preview-label">PREVIEW</span></div>}
         {error && <ErrorBox message={error} retry={() => void refresh()} />}
@@ -304,26 +348,27 @@ export default function App() {
                 <button className="version-name" onClick={() => setSelectedId(instance.id)} aria-pressed={selectedInstance?.id === instance.id}><span className="version-symbol">{instance.loader === 'vanilla' ? <Gamepad2 size={23} /> : <Layers3 size={23} />}</span><span><strong>{instance.name}</strong><small>{!isDesktop ? '预览实例' : instance.lastPlayed ? `上次启动 ${new Date(instance.lastPlayed).toLocaleDateString('zh-CN')}` : '尚未启动'}</small></span></button>
                 <button className="version-meta" onClick={() => setSelectedId(instance.id)}><strong>{instance.version}</strong><small>{loaderNames[instance.loader]}{instance.loaderVersion ? ` ${instance.loaderVersion}` : ''}</small></button>
                 <div className={`instance-status status-${instance.status}`}><span>{statusLabels[instance.status]}{instance.status === 'installing' && ` ${percent(progress[instance.id])}%`}</span>{instance.status === 'installing' && <progress value={percent(progress[instance.id])} max="100" aria-label={`${instance.name} 安装进度`} />}</div>
-                <div className="version-actions"><button type="button" className="icon-button" title="实例内容" aria-label={`查看 ${instance.name} 的资源`} onClick={() => { setSelectedId(instance.id); changeView('instance-content') }}><Package size={17} /></button><button type="button" className="icon-button" title="实例设置" aria-label={`设置 ${instance.name}`} onClick={() => openInstanceSettings(instance)}><Settings2 size={17} /></button><button className="icon-button" aria-label={`打开 ${instance.name} 的文件夹`} title="打开游戏文件夹" onClick={() => void run(`folder-${instance.id}`, 'openInstance', instance.id)} disabled={!isDesktop}><FolderOpen size={17} /></button><button className="icon-button" title="查看日志" aria-label={`查看 ${instance.name} 的日志`} onClick={() => { setSelectedId(instance.id); changeView('logs') }}><Terminal size={17} /></button></div>
+                <div className="version-actions"><button type="button" className="icon-button" title="实例内容" aria-label={`查看 ${instance.name} 的资源`} onClick={() => showInstanceContent(instance.id)}><Package size={17} /></button><button type="button" className="icon-button" title="实例设置" aria-label={`设置 ${instance.name}`} onClick={() => openInstanceSettings(instance)}><Settings2 size={17} /></button><button className="icon-button" aria-label={`打开 ${instance.name} 的文件夹`} title="打开游戏文件夹" onClick={() => void run(`folder-${instance.id}`, 'openInstance', instance.id)} disabled={!isDesktop}><FolderOpen size={17} /></button><button className="icon-button" title="查看日志" aria-label={`查看 ${instance.name} 的日志`} onClick={() => { setSelectedId(instance.id); changeView('logs') }}><Terminal size={17} /></button></div>
                 {instance.error && <p className="version-error">{instance.error}</p>}
               </div>)}
             </div>
             <p className="library-note">每个实例使用独立的游戏目录，存档与模组相互隔离。当前选择仅保存在{isDesktop ? '本机' : '此浏览器'}，不跨设备同步。</p>
           </section>
-          <div className="launch-bar"><div className="launch-selection"><Gamepad2 size={25} /><div><strong>{selectedInstance?.name || '未选择游戏版本'}</strong><span>{selectedInstance ? `Minecraft ${selectedInstance.version} · ${loaderNames[selectedInstance.loader]}` : '请先添加游戏版本'}</span></div></div><div className="launch-controls">{selectedInstance && <><button type="button" className="button secondary" onClick={() => changeView('instance-content')}><Package size={16} />内容</button><button className="button secondary" onClick={() => changeView('logs')}><Terminal size={16} />日志</button></>}<button className="button primary launch-button" disabled={Boolean(selectedInstance && (busy[selectedInstance.id] || instanceSaving[selectedInstance.id] || selectedInstance.status === 'installing' || !isDesktop))} onClick={() => { if (!selectedInstance) showDownloadForm(); else if (selectedInstance.status === 'running' || selectedInstance.status === 'ready') void run(selectedInstance.id, selectedInstance.status === 'running' ? 'stop' : 'launch', selectedInstance.id); else { showTasks(); void installInstance(selectedInstance.id).catch(() => {}) } }}>{selectedInstance && (busy[selectedInstance.id] || selectedInstance.status === 'installing') ? <Spinner size={20} /> : selectedInstance?.status === 'running' ? <Square size={19} /> : selectedInstance?.status === 'ready' ? <Play size={20} /> : <Download size={20} />}{!selectedInstance ? '下载游戏' : !isDesktop ? '桌面版可启动' : selectedInstance.status === 'running' ? '结束游戏' : selectedInstance.status === 'ready' ? '启动游戏' : selectedInstance.status === 'installing' ? '安装中…' : selectedInstance.status === 'error' ? '重新安装' : '安装游戏'}</button></div></div>
+          <div className="launch-bar"><div className="launch-selection"><Gamepad2 size={25} /><div><strong>{selectedInstance?.name || '未选择游戏版本'}</strong><span>{selectedInstance ? `Minecraft ${selectedInstance.version} · ${loaderNames[selectedInstance.loader]}` : '请先添加游戏版本'}</span></div></div><div className="launch-controls">{selectedInstance && <><button type="button" className="button secondary" onClick={() => showInstanceContent(selectedInstance.id)}><Package size={16} />内容</button><button className="button secondary" onClick={() => changeView('logs')}><Terminal size={16} />日志</button></>}<button className="button primary launch-button" disabled={Boolean(selectedInstance && (busy[selectedInstance.id] || instanceSaving[selectedInstance.id] || resourceActive.has(selectedInstance.id) || selectedInstance.status === 'installing' || !isDesktop))} onClick={() => { if (!selectedInstance) showDownloadForm(); else if (selectedInstance.status === 'running' || selectedInstance.status === 'ready') void run(selectedInstance.id, selectedInstance.status === 'running' ? 'stop' : 'launch', selectedInstance.id); else { showTasks(); void installInstance(selectedInstance.id).catch(() => {}) } }}>{selectedInstance && (busy[selectedInstance.id] || selectedInstance.status === 'installing') ? <Spinner size={20} /> : selectedInstance?.status === 'running' ? <Square size={19} /> : selectedInstance?.status === 'ready' ? <Play size={20} /> : <Download size={20} />}{!selectedInstance ? '下载游戏' : !isDesktop ? '桌面版可启动' : resourceActive.has(selectedInstance.id) ? '资源下载中…' : selectedInstance.status === 'running' ? '结束游戏' : selectedInstance.status === 'ready' ? '启动游戏' : selectedInstance.status === 'installing' ? '安装中…' : selectedInstance.status === 'error' ? '重新安装' : '安装游戏'}</button></div></div>
         </>}
         {view === 'instance-settings' && snapshot && (editingInstance && instanceDrafts[editingInstance.id] ? <>
           <div className="instance-switcher"><label htmlFor="instance-settings-target">游戏实例</label><select id="instance-settings-target" value={editingInstance.id} onChange={event => { const next = instances.find(item => item.id === event.target.value); if (next) openInstanceSettings(next) }}>{instances.map(item => <option key={item.id} value={item.id}>{item.name} · {item.version}</option>)}</select></div>
           {effectiveError && <ErrorBox message={`生效配置读取失败：${effectiveError}`} retry={() => setEffectiveRetry(value => value + 1)} />}
-          <InstanceSettings key={editingInstance.id} instance={editingInstance} globalSettings={snapshot.settings} draft={instanceDrafts[editingInstance.id]} runtimes={instanceRuntimes} resolved={resolved} disabled={busy[editingInstance.id]} saving={instanceSaving[editingInstance.id]} saveError={instanceSaveErrors[editingInstance.id]} onDraftChange={draft => {
+          <InstanceSettings key={editingInstance.id} instance={editingInstance} globalSettings={snapshot.settings} draft={instanceDrafts[editingInstance.id]} runtimes={instanceRuntimes} resolved={resolved} disabled={busy[editingInstance.id] || resourceActive.has(editingInstance.id)} saving={instanceSaving[editingInstance.id]} saveError={instanceSaveErrors[editingInstance.id]} onDraftChange={draft => {
             if (instanceSaveLocks.current.has(draft.instanceId)) return
             setInstanceDrafts(current => ({ ...current, [draft.instanceId]: draft }))
             setInstanceSaveErrors(current => ({ ...current, [draft.instanceId]: '' }))
           }} onSave={(name, options) => saveInstanceSettings(editingInstance.id, name, options)} onCancel={() => changeView('library')} onPickJava={isDesktop ? () => call<string | null>('chooseJava') : undefined} onRefreshRuntimes={isDesktop ? detectInstanceJava : undefined} />
         </> : <EmptyState icon={<Settings2 size={26} />} title="没有可设置的实例" action={<button type="button" className="button secondary" onClick={() => changeView('library')}>返回版本列表</button>}>请先添加一个游戏版本。</EmptyState>)}
-        {view === 'instance-content' && <InstanceContent instances={instances} selectedId={selectedInstance?.id || ''} onSelect={setSelectedId} onOpenSettings={openInstanceSettings} onOpenFolder={id => call<void>('openInstance', id)} onBack={() => changeView('library')} />}
+        {view === 'instance-content' && <InstanceContent key={contentRevision} initialKind={contentKind} refreshRevision={contentRefresh[selectedId] || 0} instances={instances} selectedId={selectedInstance?.id || ''} onSelect={setSelectedId} onOpenSettings={openInstanceSettings} onOpenFolder={id => call<void>('openInstance', id)} onBack={() => changeView('library')} />}
+        {resourcesOpened && <div hidden={view !== 'resources'}><ResourcesView source={resourceSource} setSource={setResourceSource} instances={instances} tasks={resourceTasks} progress={progress} install={installResource} cancel={cancelResource} showContent={showInstanceContent} openUrl={openUrl} /></div>}
         {view === 'discover' && <Discover source={resourceSource} setSource={setResourceSource} openUrl={openUrl} instances={instances} installed={async name => { await refresh(); setToast(`${name} 已安装，必需依赖已一并处理。`) }} />}
-        {view === 'downloads' && <DownloadsView tab={downloadTab} setTab={setDownloadTab} instances={instances} progress={progress} busy={busy} taskErrors={taskErrors} packTasks={packTasks} javaTasks={javaTasks} cancelJava={async id => { await call('cancelJavaInstall', id) }} retryJava={async major => { await call('installJava', major) }} download={downloadGame} install={installInstance} cancel={cancelDownload} showGame={id => { setSelectedId(id); changeView('library') }} showLogs={id => { setSelectedId(id); changeView('logs') }} showPacks={source => { if (source && source !== 'local') setResourceSource(source); changeView('modpacks') }} />}
+        {view === 'downloads' && <DownloadsView tab={downloadTab} setTab={setDownloadTab} instances={instances} progress={progress} busy={busy} taskErrors={taskErrors} packTasks={packTasks} javaTasks={javaTasks} resourceTasks={resourceTasks} cancelResource={cancelResource} showContent={showInstanceContent} cancelJava={async id => { await call('cancelJavaInstall', id) }} retryJava={async major => { await call('installJava', major) }} download={downloadGame} install={installInstance} cancel={cancelDownload} showGame={id => { setSelectedId(id); changeView('library') }} showLogs={id => { setSelectedId(id); changeView('logs') }} showPacks={source => { if (source && source !== 'local') setResourceSource(source); changeView('modpacks') }} />}
         {view === 'modpacks' && <ModpacksView source={resourceSource} setSource={setResourceSource} tasks={packTasks} progress={progress} installOnline={(versionId, name, source) => installPack('installModpack', versionId, name, source)} importLocal={(token, name) => installPack('importModpack', token, name)} cancel={cancelDownload} showTasks={showTasks} openUrl={openUrl} />}
         {settingsOpened && snapshot && <div hidden={view !== 'settings'}><SettingsView instance={selectedInstance} settings={snapshot.settings} rootDir={snapshot.rootDir} javaTasks={javaTasks} save={async settings => {
           const next = await call<Snapshot>('updateSettings', settings)

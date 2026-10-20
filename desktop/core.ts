@@ -15,6 +15,10 @@ import metadata from '../package.json'
 import { validateInstanceOptions, resolveInstanceOptions, type InstanceOptions, type ResolvedInstanceOptions } from './instance-options'
 import { applyGameWindowSettings } from './game-window'
 import { scanResourceInventory, type InventoryKind, type ResourceInventory } from './resource-inventory'
+import { installResourceZip, ResourceInstallRecoveryError, type ResourceInstallResult } from './resource-install'
+import { assertResourceSelection, catalogSource, normalizeResourceSearch, parseResourceProject, prepareResourceVersion,
+  resourceKind, resourceSearchParameters, resourceVersionsParameters, validateResourceSelection,
+  type ResourceKind, type ResourceVersion, type ResourceSearchResult } from './resource-catalog'
 export type { PackPreview } from './modpack'
 export interface InstanceInventory extends ResourceInventory { instanceId: string }
 
@@ -206,6 +210,7 @@ interface CoreOptions {
   javaRuntimeManager?: Pick<JavaRuntimeManager, 'ensure' | 'discover'>
   javaRuntimeProbe?: JavaRuntimeProbe
   inventoryScanner?: typeof scanResourceInventory
+  resourceInstaller?: typeof installResourceZip
 }
 interface DownloadJob { file: string; download: Download; allowedHosts?: ReadonlySet<string> }
 
@@ -306,6 +311,8 @@ export class LauncherCore {
   private readonly memorySystem: MemorySystem
   private readonly javaRuntimeManager: Pick<JavaRuntimeManager, 'ensure' | 'discover'>
   private readonly inventoryScanner: typeof scanResourceInventory
+  private readonly resourceInstaller: typeof installResourceZip
+  private resourceDownloads = new Map<string, { operationId: string; controller: AbortController }>()
   private inventoryScans = new Map<string, { instanceId: string; controller: AbortController; promise: Promise<InstanceInventory> }>()
   private javaTasks = new Map<string, JavaRuntimeTask>()
   private javaDownloads = new Map<string, AbortController>()
@@ -330,6 +337,7 @@ export class LauncherCore {
     this.memorySystem = options.memorySystem ?? {}
     this.javaRuntimeManager = options.javaRuntimeManager ?? new JavaRuntimeManager(this.rootDir, { fetch: this.fetcher, probe: options.javaRuntimeProbe })
     this.inventoryScanner = options.inventoryScanner ?? scanResourceInventory
+    this.resourceInstaller = options.resourceInstaller ?? installResourceZip
   }
 
   async init(): Promise<LauncherSnapshot> {
@@ -405,6 +413,7 @@ export class LauncherCore {
     const promise = this.inventoryScanner(this.getInstancePath(id), kind, {
       signal: controller.signal,
       ...(kind === 'mods' ? { managedModsFile: safeJoin(this.instanceDirectory(id), 'managed-mods.json') } : {}),
+      ...(kind === 'resourcepacks' || kind === 'shaderpacks' ? { managedResourcesFile: safeJoin(this.instanceDirectory(id), 'managed-resources.json') } : {}),
     }).then(result => {
       controller.signal.throwIfAborted()
       if (this.installs.has(id)) throw new Error('扫描期间此实例开始安装，请完成或取消后刷新资源清单')
@@ -547,6 +556,17 @@ export class LauncherCore {
     const response = await this.request(url, signal)
     const bytes = await this.readResponse(response, 32 * 1024 * 1024)
     return JSON.parse(bytes.toString('utf8')) as T
+  }
+  private async resourceJson(url: string, source: ResourceSource, signal?: AbortSignal): Promise<unknown> {
+    const provider = resourceProvider(source)
+    const response = await this.request(url, signal, new Set([new URL(provider.api).hostname]))
+    if (response.headers.get('content-type')?.toLowerCase().includes('text/html')) {
+      await response.body?.cancel()
+      throw new Error('资源站返回了网页，未读取为资源元数据；请稍后重试或前往官网')
+    }
+    const bytes = await this.readResponse(response, 4 * 1024 * 1024)
+    signal?.throwIfAborted()
+    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes))
   }
   private async readResponse(response: Response, limit: number): Promise<Buffer> {
     if (!response.body) throw new Error('下载服务器返回了空响应')
@@ -1278,6 +1298,83 @@ export class LauncherCore {
     })
     const result = await this.json<ModrinthSearchResponse>(`${provider.api}/search?${params}`)
     return { ...result, hits: result.hits.map(hit => ({ ...hit, source })) }
+  }
+
+  async searchResources(query: string, options: { kind: ResourceKind; gameVersion?: string; offset?: number; source?: ResourceSource }): Promise<ResourceSearchResult> {
+    const source = catalogSource(options.source ?? 'modrinth')
+    const provider = resourceProvider(source)
+    const params = resourceSearchParameters(query, options)
+    return normalizeResourceSearch(await this.resourceJson(`${provider.api}/search?${params}`, source), options.kind, source)
+  }
+
+  async resourceVersions(projectId: string, instanceId: string, kind: ResourceKind, source: ResourceSource = 'modrinth'): Promise<ResourceVersion[]> {
+    const instance = this.instance(instanceId)
+    resourceKind(kind); catalogSource(source); sanitizeId(projectId)
+    const provider = resourceProvider(source)
+    const context = { projectId, kind, source, gameVersion: instance.version }
+    parseResourceProject(await this.resourceJson(`${provider.api}/project/${encodeURIComponent(projectId)}`, source), context)
+    const params = resourceVersionsParameters(kind, instance.version)
+    const raw = await this.resourceJson(`${provider.api}/project/${encodeURIComponent(projectId)}/version?${params}`, source)
+    if (!Array.isArray(raw) || raw.length > 1000) throw new Error('资源版本列表格式无效或过大')
+    return raw.map(version => prepareResourceVersion(version, context).info)
+  }
+
+  cancelResourceInstall(instanceId: string, operationId: string): void {
+    this.instance(instanceId)
+    const pending = this.resourceDownloads.get(instanceId)
+    if (pending?.operationId === operationId) pending.controller.abort(new DOMException('资源下载已取消', 'AbortError'))
+  }
+
+  async installResource(instanceId: string, selection: unknown, operationId: string): Promise<ResourceInstallResult> {
+    const instance = this.instance(instanceId)
+    const input = validateResourceSelection(selection)
+    if (typeof operationId !== 'string' || !/^[a-f0-9-]{36}$/.test(operationId)) throw new Error('资源任务标识无效')
+    if (instance.status !== 'ready') throw new Error('请先完成游戏下载或修复并关闭游戏，再安装资源')
+    if (this.installs.has(instanceId) || this.launching.has(instanceId) || this.processes.has(instanceId) || this.instanceSettingsSaving.has(instanceId)) {
+      throw new Error('此实例正在安装、启动、运行或保存设置，请稍后再试')
+    }
+    if (this.resourceDownloads.size >= 4) throw new Error('资源下载任务较多，请等待当前任务结束')
+    const controller = new AbortController(), signal = controller.signal
+    this.installs.set(instanceId, controller)
+    this.resourceDownloads.set(instanceId, { operationId, controller })
+    this.invalidateInventory(instanceId)
+    try {
+      this.emit({ type: 'progress', instanceId, phase: '正在核对所选资源版本', completed: 0, total: 0, bytesDownloaded: 0, unit: 'bytes' })
+      const provider = resourceProvider(input.source)
+      const context = { ...input, gameVersion: instance.version }
+      const project = parseResourceProject(await this.resourceJson(`${provider.api}/project/${encodeURIComponent(input.projectId)}`, input.source, signal), context)
+      const raw = await this.resourceJson(`${provider.api}/version/${encodeURIComponent(input.versionId)}`, input.source, signal)
+      const prepared = prepareResourceVersion(raw, context)
+      if (!prepared.artifact) throw new Error(`${prepared.info.externalReason || '此资源不能安全自动安装'}：${prepared.info.projectUrl}`)
+      assertResourceSelection(input, prepared.artifact)
+      signal.throwIfAborted()
+      const result = await this.resourceInstaller(this.instanceDirectory(instanceId), prepared.artifact, {
+        fetch: this.fetcher, signal, rename: this.renameFile,
+        onProgress: update => this.emit({ type: 'progress', instanceId,
+          phase: update.phase === 'download' ? `正在下载：${project.title}` : update.phase === 'verify' ? '正在校验资源文件' : '正在提交资源文件',
+          completed: update.completedBytes, total: update.totalBytes, bytesDownloaded: update.completedBytes, unit: 'bytes' }),
+      })
+      // A successful registry commit wins a cancellation delivered during rename.
+      this.log(instanceId, 'info', `${project.title} 已${result.reused ? '校验复用' : '下载'}到 game/${result.folder}/${result.filename}；尚未自动启用`)
+      for (const warning of result.warnings) this.log(instanceId, 'warn', warning)
+      this.emit({ type: 'progress', instanceId, phase: '资源已放入实例目录，尚未启用', completed: result.size, total: result.size, bytesDownloaded: result.size, unit: 'bytes' })
+      return result
+    } catch (error) {
+      if (error instanceof ResourceInstallRecoveryError) {
+        instance.status = 'error'; instance.error = error.message
+        await this.save()
+      }
+      if (signal.aborted && !(error instanceof ResourceInstallRecoveryError)) {
+        this.log(instanceId, 'info', '资源下载已取消')
+        throw new Error('资源下载已取消')
+      }
+      this.log(instanceId, signal.aborted ? 'info' : 'error', errorMessage(error))
+      throw error
+    } finally {
+      this.invalidateInventory(instanceId)
+      this.resourceDownloads.delete(instanceId)
+      this.installs.delete(instanceId)
+    }
   }
 
   async searchModpacks(query: string, options: { offset?: number; source?: ResourceSource } = {}): Promise<ModrinthSearchResponse> {

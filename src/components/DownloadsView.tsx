@@ -4,6 +4,8 @@ import { call, errorText, isDesktop, loaderNames, type Loader, type LoaderVersio
 import { bytes, EmptyState, ErrorBox, PageHeading, percent, Spinner } from './ui'
 import { resourceSources } from './ResourceSourcePicker'
 import { JavaTaskList, type JavaDownloadMajor, type JavaRuntimeTaskView } from './JavaSettings'
+import { ResourceTaskList, type ResourceInstallTask } from './ResourcesView'
+import type { ResourceKind } from '../api'
 
 export type DownloadInput = { name: string; version: string; loader: Loader; loaderVersion?: string }
 export type PackTask = {
@@ -33,6 +35,9 @@ type Props = {
   javaTasks?: JavaRuntimeTaskView[]
   cancelJava?: (id: string) => Promise<void>
   retryJava?: (major: JavaDownloadMajor) => Promise<void>
+  resourceTasks: ResourceInstallTask[]
+  cancelResource: (task: ResourceInstallTask) => Promise<void>
+  showContent: (id: string, kind?: ResourceKind) => void
 }
 
 export default function DownloadsView(props: Props) {
@@ -43,9 +48,11 @@ export default function DownloadsView(props: Props) {
   const javaTasks = props.javaTasks || []
   const javaCategory = (task: JavaRuntimeTaskView) => ['queued', 'active', 'cancelling'].includes(task.status) ? 'active' : task.status === 'cancelled' ? 'waiting' : task.status
   const visibleJavaTasks = javaTasks.filter(task => filter === 'all' || javaCategory(task) === filter)
+  const resourceTasks = props.resourceTasks
+  const visibleResourceTasks = resourceTasks.filter(task => filter === 'all' || (task.status === 'cancelled' ? 'waiting' : task.status) === filter)
   const standalonePacks = packTasks.filter(task => !task.instanceId)
-  const active = instances.filter(item => item.status === 'installing' || busy[item.id]).length + standalonePacks.filter(task => task.status === 'active').length + javaTasks.filter(task => javaCategory(task) === 'active').length
-  const failed = instances.filter(item => item.status === 'error' || taskErrors[item.id]).length + standalonePacks.filter(task => task.status === 'error').length + javaTasks.filter(task => task.status === 'error').length
+  const active = instances.filter(item => item.status === 'installing' || busy[item.id]).length + standalonePacks.filter(task => task.status === 'active').length + javaTasks.filter(task => javaCategory(task) === 'active').length + resourceTasks.filter(task => task.status === 'active').length
+  const failed = instances.filter(item => item.status === 'error' || taskErrors[item.id]).length + standalonePacks.filter(task => task.status === 'error').length + javaTasks.filter(task => task.status === 'error').length + resourceTasks.filter(task => task.status === 'error').length
   function category(instance: Instance) {
     if (instance.status === 'installing' || busy[instance.id]) return 'active'
     if (instance.status === 'error' || taskErrors[instance.id]) return 'error'
@@ -78,7 +85,8 @@ export default function DownloadsView(props: Props) {
       <div className="task-toolbar"><div className="segmented" aria-label="筛选下载任务">{[{ id: 'all', label: '全部' }, { id: 'active', label: '进行中' }, { id: 'error', label: '失败' }, { id: 'complete', label: '已安装' }, { id: 'waiting', label: '待安装' }].map(item => <button key={item.id} aria-pressed={filter === item.id} className={filter === item.id ? 'selected' : ''} onClick={() => setFilter(item.id)}>{item.label}</button>)}</div><button className="text-button" onClick={() => setTab('game')}><Plus size={15} />添加下载</button></div>
       {error && <ErrorBox message={error} />}
       {visibleJavaTasks.length > 0 && <JavaTaskList tasks={visibleJavaTasks} desktop={isDesktop} onCancel={props.cancelJava} onRetry={props.retryJava} busyMajors={javaTasks.filter(task => javaCategory(task) === 'active').map(task => task.major)} />}
-      {!visibleTasks.length && !visibleJavaTasks.length ? <EmptyState icon={<Download size={28} />} title={instances.length || packTasks.length || javaTasks.length ? '此分类下没有任务' : '暂无下载任务'} action={<button className="button secondary" onClick={() => setTab('game')}><Plus size={16} />下载游戏</button>}>{instances.length || packTasks.length || javaTasks.length ? '选择其他任务分类查看记录。' : '选择游戏版本和加载器，开始下载。'}</EmptyState> : visibleTasks.length > 0 && <div className="download-list">
+      {visibleResourceTasks.length > 0 && <ResourceTaskList tasks={visibleResourceTasks} progress={progress} cancel={props.cancelResource} showContent={props.showContent} />}
+      {!visibleTasks.length && !visibleJavaTasks.length && !visibleResourceTasks.length ? <EmptyState icon={<Download size={28} />} title={instances.length || packTasks.length || javaTasks.length || resourceTasks.length ? '此分类下没有任务' : '暂无下载任务'} action={<button className="button secondary" onClick={() => setTab('game')}><Plus size={16} />下载游戏</button>}>{instances.length || packTasks.length || javaTasks.length || resourceTasks.length ? '选择其他任务分类查看记录。' : '选择游戏版本和加载器，开始下载。'}</EmptyState> : visibleTasks.length > 0 && <div className="download-list">
         {visibleTasks.map(entry => {
           if (entry.kind === 'pack') {
             const task = entry.task

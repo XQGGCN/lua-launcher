@@ -3,6 +3,9 @@ import { resolveInstanceOptions, validateInstanceOptions, type InstanceOptions }
 export type { InstanceOptions, ResolvedInstanceOptions } from '../desktop/instance-options'
 export type { InventoryKind, InventoryItem, ResourceInventory } from '../desktop/resource-inventory'
 export type { InstanceInventory } from '../desktop/core'
+export type { ResourceKind, ResourceVersion, ResourceInstallInput, ResourceDependency, ResourceSearchResult } from '../desktop/resource-catalog'
+export type { ResourceInstallResult as ResourceInstallReceipt } from '../desktop/resource-install'
+import { resourceSearchParameters, normalizeResourceSearch } from '../desktop/resource-catalog'
 
 export type ResourceSource = 'modrinth' | 'bbsmc'
 export type Loader = 'vanilla' | 'fabric' | 'forge' | 'neoforge'
@@ -153,6 +156,13 @@ export async function call<T>(method: string, ...args: unknown[]): Promise<T> {
   if (window.launcher) return window.launcher.call(method, ...args) as Promise<T>
   let result: unknown
   switch (method) {
+    case 'searchResources': {
+      const options = args[1] as { kind: import('../desktop/resource-catalog').ResourceKind; gameVersion?: string; offset?: number; source?: ResourceSource }
+      const source = options.source ?? 'modrinth'
+      const params = resourceSearchParameters(String(args[0] ?? ''), options)
+      result = normalizeResourceSearch(await json(`${resourceAPI(source)}/search?${params}`), options.kind, source)
+      break
+    }
     case 'snapshot': result = structuredClone(preview); break
     case 'account': result = null; break
     case 'authConfig': result = { configured: false, clientId: '', source: 'none' }; break

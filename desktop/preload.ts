@@ -11,6 +11,7 @@ const methods = new Set([
   'managedJava', 'runtimeRequirement', 'runtimeTasks', 'installJava', 'cancelJavaInstall', 'chooseJava', 'cancelLaunch',
   'instanceOptions', 'updateInstanceSettings',
   'inventory',
+  'searchResources', 'resourceVersions', 'installResource', 'cancelResourceInstall',
 ])
 contextBridge.exposeInMainWorld('launcher', {
   call(method: string, ...args: unknown[]) {
