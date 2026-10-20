@@ -12,13 +12,16 @@ import DownloadsView, { type DownloadInput, type PackTask } from './components/D
 import ModpacksView from './components/ModpacksView'
 import MemorySettings from './components/MemorySettings'
 import JavaSettings from './components/JavaSettings'
+import InstanceSettings, { createInstanceSettingsDraft, parseInstanceJvmArgs, type InstanceSettingsDraft } from './components/InstanceSettings'
+import type { InstanceOptions, ResolvedInstanceOptions } from './api'
+import './App.css'
 import { Dialog, EmptyState, ErrorBox, PageHeading, Spinner } from './components/ui'
 import ResourceSourcePicker, { resourceProjectUrl, resourceSources } from './components/ResourceSourcePicker'
 import ModCategoryPicker from './components/ModCategoryPicker'
 import { categoryLabel, type ModCategory } from './mod-categories'
 import { APP_VERSION } from './version'
 
-type View = 'library' | 'discover' | 'downloads' | 'modpacks' | 'settings' | 'account' | 'logs'
+type View = 'library' | 'discover' | 'downloads' | 'modpacks' | 'settings' | 'account' | 'logs' | 'instance-settings'
 const navigation = [
   { id: 'library' as const, label: '启动游戏', icon: Play },
   { id: 'downloads' as const, label: '游戏下载', icon: ArrowDownToLine },
@@ -28,6 +31,10 @@ const navigation = [
 const statusLabels: Record<Instance['status'], string> = { 'not-installed': '等待安装', installing: '正在安装', ready: '准备就绪', running: '游戏运行中', error: '需要处理' }
 const count = (value: number) => new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 }).format(value)
 const percent = (progress?: Progress) => progress && progress.total > 0 ? Math.min(100, Math.round(progress.completed / progress.total * 100)) : 0
+const selectedInstancePreference = `lua-selected-instance-${isDesktop ? 'desktop' : 'preview'}`
+function readSelectedInstance() {
+  try { return localStorage.getItem(selectedInstancePreference) || '' } catch { return '' }
+}
 
 function Logo({ small = false }: { small?: boolean }) {
   return <span className={`logo-mark ${small ? 'small' : ''}`} aria-hidden="true"><Moon size={small ? 16 : 29} strokeWidth={1.7} /></span>
@@ -54,7 +61,16 @@ export default function App() {
   const authStateRevision = useRef(0)
   const [gameQuery, setGameQuery] = useState('')
   const [gameFilter, setGameFilter] = useState('all')
-  const [selectedId, setSelectedId] = useState('')
+  const [selectedId, setSelectedId] = useState(readSelectedInstance)
+  const [editingInstanceId, setEditingInstanceId] = useState('')
+  const [instanceDrafts, setInstanceDrafts] = useState<Record<string, InstanceSettingsDraft>>({})
+  const [instanceSaving, setInstanceSaving] = useState<Record<string, boolean>>({})
+  const [instanceSaveErrors, setInstanceSaveErrors] = useState<Record<string, string>>({})
+  const instanceSaveLocks = useRef(new Set<string>())
+  const [instanceRuntimes, setInstanceRuntimes] = useState<JavaRuntime[]>([])
+  const runtimeRequest = useRef(0)
+  const [effectiveOptions, setEffectiveOptions] = useState<{ key: string; value?: ResolvedInstanceOptions; error?: string }>()
+  const [effectiveRetry, setEffectiveRetry] = useState(0)
   const applySnapshot = useCallback((next: Snapshot) => {
     setSnapshot(next)
     setPackTasks(tasks => tasks.map(task => {
@@ -109,6 +125,7 @@ export default function App() {
   }, [refresh, applySnapshot])
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(''), 6500); return () => clearTimeout(timer) }, [toast])
   const run = async (key: string, method: string, ...args: unknown[]) => {
+    if (method === 'launch' && instanceSaveLocks.current.has(key)) { setToast('实例设置正在保存，请稍候再启动。'); return }
     setBusy(current => ({ ...current, [key]: true }))
     if (method === 'launch') setProgress(current => ({ ...current, [key]: { type: 'progress', instanceId: key, phase: '正在验证账户并准备启动', completed: 0, total: 0, bytesDownloaded: 0 } }))
     try { await call(method, ...args); await refresh() } catch (error) { setToast(errorText(error)) }
@@ -116,15 +133,77 @@ export default function App() {
   }
   const instances = snapshot?.instances || []
   const selectedInstance = instances.find(instance => instance.id === selectedId) || instances[0]
+  useEffect(() => {
+    if (!snapshot) return
+    if (!snapshot.instances.some(instance => instance.id === selectedId)) {
+      const fallback = snapshot.instances[0]?.id || ''
+      if (fallback !== selectedId) { setSelectedId(fallback); return }
+    }
+    try {
+      if (selectedId) localStorage.setItem(selectedInstancePreference, selectedId)
+      else localStorage.removeItem(selectedInstancePreference)
+    } catch { /* UI preference only; a restricted browser remains usable. */ }
+  }, [snapshot, selectedId])
+  const editingInstance = instances.find(instance => instance.id === editingInstanceId)
+  const effectiveInstance = view === 'instance-settings' ? editingInstance : selectedInstance
+  const effectiveKey = effectiveInstance && snapshot ? JSON.stringify([effectiveInstance.id, effectiveInstance.options, snapshot.settings]) : ''
+  useEffect(() => {
+    let active = true
+    if (!effectiveInstance || !effectiveKey) { setEffectiveOptions(undefined); return }
+    void call<ResolvedInstanceOptions>('instanceOptions', effectiveInstance.id)
+      .then(value => { if (active) setEffectiveOptions({ key: effectiveKey, value }) })
+      .catch(error => { if (active) setEffectiveOptions({ key: effectiveKey, error: errorText(error) }) })
+    return () => { active = false }
+  }, [effectiveKey, effectiveRetry])
+  useEffect(() => () => { ++runtimeRequest.current }, [])
+  const resolved = effectiveOptions?.key === effectiveKey ? effectiveOptions.value : undefined
+  const effectiveError = effectiveOptions?.key === effectiveKey ? effectiveOptions.error : undefined
   const downloads = instances.filter(instance => instance.status === 'installing' || busy[instance.id])
   const downloadCount = downloads.length + packTasks.filter(task => task.status === 'active' && !task.instanceId).length
     + javaTasks.filter(task => ['queued', 'active', 'cancelling'].includes(task.status)).length
   const filtered = instances.filter(instance => instance.name.toLowerCase().includes(gameQuery.toLowerCase()) && (gameFilter === 'all' || instance.loader === gameFilter))
   const openUrl = (url: string) => { void call('openExternal', url).catch(error => setToast(errorText(error))) }
   const changeView = (next: View) => { if (next === 'settings') setSettingsOpened(true); setView(next); document.querySelector('main')?.scrollTo(0, 0) }
+  function openInstanceSettings(instance: Instance) {
+    if (!snapshot) return
+    setSelectedId(instance.id); setEditingInstanceId(instance.id)
+    setInstanceDrafts(current => current[instance.id] ? current : { ...current, [instance.id]: createInstanceSettingsDraft(instance, snapshot.settings) })
+    changeView('instance-settings')
+  }
+  async function detectInstanceJava() {
+    const request = ++runtimeRequest.current
+    try {
+      const next = await call<JavaRuntime[]>('detectJava')
+      if (request === runtimeRequest.current) setInstanceRuntimes(next)
+    } catch (error) { if (request === runtimeRequest.current) throw error }
+  }
+  async function saveInstanceSettings(id: string, name: string, options: InstanceOptions) {
+    if (instanceSaveLocks.current.has(id)) throw new Error('此实例设置正在保存，请稍候。')
+    instanceSaveLocks.current.add(id)
+    setInstanceSaving(current => ({ ...current, [id]: true }))
+    setInstanceSaveErrors(current => ({ ...current, [id]: '' }))
+    try {
+      const next = await call<Snapshot>('updateInstanceSettings', id, { name, options })
+      const saved = next.instances.find(item => item.id === id)
+      if (!saved) throw new Error('保存完成后未找到此实例，请刷新列表后重试。')
+      // Only this instance belongs to this operation. Do not replace another
+      // instance's more recent snapshot or its unsaved draft with this response.
+      setSnapshot(current => current ? { ...current, instances: current.instances.map(item => item.id === id ? { ...item, name: saved.name, options: saved.options } : item) } : next)
+      setInstanceDrafts(current => ({ ...current, [id]: createInstanceSettingsDraft(saved, next.settings) }))
+      setEffectiveRetry(value => value + 1)
+      setToast(isDesktop ? `${saved.name} 的实例设置已保存。` : '预览实例设置已保存在此浏览器。')
+    } catch (error) {
+      setInstanceSaveErrors(current => ({ ...current, [id]: errorText(error) }))
+      throw error
+    } finally {
+      instanceSaveLocks.current.delete(id)
+      setInstanceSaving(current => ({ ...current, [id]: false }))
+    }
+  }
   const showDownloadForm = () => { setDownloadTab('game'); changeView('downloads') }
   const showTasks = () => { setDownloadTab('tasks'); changeView('downloads') }
   async function installInstance(id: string) {
+    if (instanceSaveLocks.current.has(id)) throw new Error('实例设置正在保存，请稍候再安装。')
     setTaskErrors(errors => { const next = { ...errors }; delete next[id]; return next })
     setBusy(current => ({ ...current, [id]: true }))
     try { applySnapshot(await call<Snapshot>('install', id)); setToast('游戏安装完成。登录验证后可启动。') }
@@ -204,7 +283,7 @@ export default function App() {
       </div>
     </aside>
     <main className={`main-panel view-${view}`}>
-      <div className="topbar"><div className="breadcrumb">Lua 未央 <span>/</span> <strong>{({ library: '启动游戏', discover: '模组下载', downloads: '游戏下载', modpacks: '整合包', settings: '启动器设置', account: '游戏账户', logs: '运行日志' })[view]}</strong></div><div className="topbar-right"><span className="version-tag">ALPHA {APP_VERSION}</span><button className="icon-button mobile-logs-button" aria-label="查看运行日志" onClick={() => changeView('logs')}><Terminal size={18} /></button><button className="icon-button" aria-label="管理游戏账户" onClick={() => changeView('account')}><UserRound size={18} /></button><button className="icon-button" aria-label="了解项目与开源许可" onClick={() => setToast('Lua 未央 · 独立开源 Minecraft Java 启动器。当前为 Alpha，支持原版、Fabric、Forge 与 NeoForge。Minecraft 是 Mojang 的商标，本项目与 Mojang、Microsoft 无关联。')}><CircleHelp size={18} /></button></div></div>
+      <div className="topbar"><div className="breadcrumb">Lua 未央 <span>/</span> <strong>{({ library: '启动游戏', discover: '模组下载', downloads: '游戏下载', modpacks: '整合包', settings: '启动器设置', account: '游戏账户', logs: '运行日志', 'instance-settings': '实例设置' })[view]}</strong></div><div className="topbar-right"><span className="version-tag">ALPHA {APP_VERSION}</span><button className="icon-button mobile-logs-button" aria-label="查看运行日志" onClick={() => changeView('logs')}><Terminal size={18} /></button><button className="icon-button" aria-label="管理游戏账户" onClick={() => changeView('account')}><UserRound size={18} /></button><button className="icon-button" aria-label="了解项目与开源许可" onClick={() => setToast('Lua 未央 · 独立开源 Minecraft Java 启动器。当前为 Alpha，支持原版、Fabric、Forge 与 NeoForge。Minecraft 是 Mojang 的商标，本项目与 Mojang、Microsoft 无关联。')}><CircleHelp size={18} /></button></div></div>
       <div className="page-content">
         {!isDesktop && <div className="preview-notice"><Monitor size={15} /><span>当前为浏览器预览。可探索模组、创建预览实例；安装和启动需使用桌面版。</span><span className="preview-label">PREVIEW</span></div>}
         {error && <ErrorBox message={error} retry={() => void refresh()} />}
@@ -213,7 +292,7 @@ export default function App() {
           <div className="launch-summary">
             <button className="summary-item" onClick={() => changeView('account')}><UserRound size={22} /><span><small>游戏账户</small><strong>{account?.username || '尚未登录'}</strong><em>{account ? 'Microsoft 账户' : '添加 Microsoft 账户'}</em></span><ChevronDown size={15} /></button>
             <div className="summary-item"><Layers3 size={22} /><span><small>当前版本</small><strong>{selectedInstance?.name || '未选择游戏版本'}</strong><em>{selectedInstance ? `${selectedInstance.version} · ${loaderNames[selectedInstance.loader]}` : '在下方列表选择版本'}</em></span></div>
-            <button className="summary-item" onClick={() => changeView('settings')}><Cpu size={22} /><span><small>运行环境</small><strong>{snapshot?.settings.javaPath ? '指定 Java 路径' : '自动选择 Java'}</strong><em>{snapshot ? snapshot.settings.memoryMode === 'manual' ? `手动内存 ${(snapshot.settings.memoryMb / 1024).toFixed(1)} GB` : '内存自动分配' : '正在读取设置…'}</em></span><Settings2 size={15} /></button>
+            <button type="button" className="summary-item" onClick={() => selectedInstance ? openInstanceSettings(selectedInstance) : changeView('settings')}><Cpu size={22} /><span><small>{selectedInstance ? '此实例运行环境' : '运行环境'}</small><strong>{selectedInstance ? resolved ? resolved.values.javaPath ? '指定 Java 路径' : '自动选择 Java' : effectiveError ? '查看实例运行设置' : '正在读取实例配置…' : '配置全局运行环境'}</strong><em>{selectedInstance && resolved ? resolved.values.memoryMode === 'manual' ? `手动内存 ${(resolved.values.memoryMb / 1024).toFixed(1)} GB · 实例设置` : '内存自动分配 · 实例设置' : selectedInstance ? 'Java、内存、JVM 与游戏窗口' : '未选择游戏实例'}</em></span><Settings2 size={15} /></button>
           </div>
           <section className="library-section">
             <div className="section-heading"><h2>版本列表 <span className="heading-count">{instances.length}</span></h2><button className="button primary" onClick={showDownloadForm}><Plus size={16} />添加游戏版本</button></div>
@@ -224,18 +303,33 @@ export default function App() {
                 <button className="version-name" onClick={() => setSelectedId(instance.id)} aria-pressed={selectedInstance?.id === instance.id}><span className="version-symbol">{instance.loader === 'vanilla' ? <Gamepad2 size={23} /> : <Layers3 size={23} />}</span><span><strong>{instance.name}</strong><small>{!isDesktop ? '预览实例' : instance.lastPlayed ? `上次启动 ${new Date(instance.lastPlayed).toLocaleDateString('zh-CN')}` : '尚未启动'}</small></span></button>
                 <button className="version-meta" onClick={() => setSelectedId(instance.id)}><strong>{instance.version}</strong><small>{loaderNames[instance.loader]}{instance.loaderVersion ? ` ${instance.loaderVersion}` : ''}</small></button>
                 <div className={`instance-status status-${instance.status}`}><span>{statusLabels[instance.status]}{instance.status === 'installing' && ` ${percent(progress[instance.id])}%`}</span>{instance.status === 'installing' && <progress value={percent(progress[instance.id])} max="100" aria-label={`${instance.name} 安装进度`} />}</div>
-                <div className="version-actions"><button className="icon-button" aria-label={`打开 ${instance.name} 的文件夹`} title="打开游戏文件夹" onClick={() => void run(`folder-${instance.id}`, 'openInstance', instance.id)} disabled={!isDesktop}><FolderOpen size={17} /></button><button className="icon-button" title="查看日志" aria-label={`查看 ${instance.name} 的日志`} onClick={() => { setSelectedId(instance.id); changeView('logs') }}><Terminal size={17} /></button></div>
+                <div className="version-actions"><button type="button" className="icon-button" title="实例设置" aria-label={`设置 ${instance.name}`} onClick={() => openInstanceSettings(instance)}><Settings2 size={17} /></button><button className="icon-button" aria-label={`打开 ${instance.name} 的文件夹`} title="打开游戏文件夹" onClick={() => void run(`folder-${instance.id}`, 'openInstance', instance.id)} disabled={!isDesktop}><FolderOpen size={17} /></button><button className="icon-button" title="查看日志" aria-label={`查看 ${instance.name} 的日志`} onClick={() => { setSelectedId(instance.id); changeView('logs') }}><Terminal size={17} /></button></div>
                 {instance.error && <p className="version-error">{instance.error}</p>}
               </div>)}
             </div>
-            <p className="library-note">每个实例使用独立的游戏目录，存档与模组相互隔离。</p>
+            <p className="library-note">每个实例使用独立的游戏目录，存档与模组相互隔离。当前选择仅保存在{isDesktop ? '本机' : '此浏览器'}，不跨设备同步。</p>
           </section>
-          <div className="launch-bar"><div className="launch-selection"><Gamepad2 size={25} /><div><strong>{selectedInstance?.name || '未选择游戏版本'}</strong><span>{selectedInstance ? `Minecraft ${selectedInstance.version} · ${loaderNames[selectedInstance.loader]}` : '请先添加游戏版本'}</span></div></div><div className="launch-controls">{selectedInstance && <button className="button secondary" onClick={() => changeView('logs')}><Terminal size={16} />日志</button>}<button className="button primary launch-button" disabled={Boolean(selectedInstance && (busy[selectedInstance.id] || selectedInstance.status === 'installing' || !isDesktop))} onClick={() => { if (!selectedInstance) showDownloadForm(); else if (selectedInstance.status === 'running' || selectedInstance.status === 'ready') void run(selectedInstance.id, selectedInstance.status === 'running' ? 'stop' : 'launch', selectedInstance.id); else { showTasks(); void installInstance(selectedInstance.id).catch(() => {}) } }}>{selectedInstance && (busy[selectedInstance.id] || selectedInstance.status === 'installing') ? <Spinner size={20} /> : selectedInstance?.status === 'running' ? <Square size={19} /> : selectedInstance?.status === 'ready' ? <Play size={20} /> : <Download size={20} />}{!selectedInstance ? '下载游戏' : !isDesktop ? '桌面版可启动' : selectedInstance.status === 'running' ? '结束游戏' : selectedInstance.status === 'ready' ? '启动游戏' : selectedInstance.status === 'installing' ? '安装中…' : selectedInstance.status === 'error' ? '重新安装' : '安装游戏'}</button></div></div>
+          <div className="launch-bar"><div className="launch-selection"><Gamepad2 size={25} /><div><strong>{selectedInstance?.name || '未选择游戏版本'}</strong><span>{selectedInstance ? `Minecraft ${selectedInstance.version} · ${loaderNames[selectedInstance.loader]}` : '请先添加游戏版本'}</span></div></div><div className="launch-controls">{selectedInstance && <button className="button secondary" onClick={() => changeView('logs')}><Terminal size={16} />日志</button>}<button className="button primary launch-button" disabled={Boolean(selectedInstance && (busy[selectedInstance.id] || instanceSaving[selectedInstance.id] || selectedInstance.status === 'installing' || !isDesktop))} onClick={() => { if (!selectedInstance) showDownloadForm(); else if (selectedInstance.status === 'running' || selectedInstance.status === 'ready') void run(selectedInstance.id, selectedInstance.status === 'running' ? 'stop' : 'launch', selectedInstance.id); else { showTasks(); void installInstance(selectedInstance.id).catch(() => {}) } }}>{selectedInstance && (busy[selectedInstance.id] || selectedInstance.status === 'installing') ? <Spinner size={20} /> : selectedInstance?.status === 'running' ? <Square size={19} /> : selectedInstance?.status === 'ready' ? <Play size={20} /> : <Download size={20} />}{!selectedInstance ? '下载游戏' : !isDesktop ? '桌面版可启动' : selectedInstance.status === 'running' ? '结束游戏' : selectedInstance.status === 'ready' ? '启动游戏' : selectedInstance.status === 'installing' ? '安装中…' : selectedInstance.status === 'error' ? '重新安装' : '安装游戏'}</button></div></div>
         </>}
+        {view === 'instance-settings' && snapshot && (editingInstance && instanceDrafts[editingInstance.id] ? <>
+          <div className="instance-switcher"><label htmlFor="instance-settings-target">游戏实例</label><select id="instance-settings-target" value={editingInstance.id} onChange={event => { const next = instances.find(item => item.id === event.target.value); if (next) openInstanceSettings(next) }}>{instances.map(item => <option key={item.id} value={item.id}>{item.name} · {item.version}</option>)}</select></div>
+          {effectiveError && <ErrorBox message={`生效配置读取失败：${effectiveError}`} retry={() => setEffectiveRetry(value => value + 1)} />}
+          <InstanceSettings key={editingInstance.id} instance={editingInstance} globalSettings={snapshot.settings} draft={instanceDrafts[editingInstance.id]} runtimes={instanceRuntimes} resolved={resolved} disabled={busy[editingInstance.id]} saving={instanceSaving[editingInstance.id]} saveError={instanceSaveErrors[editingInstance.id]} onDraftChange={draft => {
+            if (instanceSaveLocks.current.has(draft.instanceId)) return
+            setInstanceDrafts(current => ({ ...current, [draft.instanceId]: draft }))
+            setInstanceSaveErrors(current => ({ ...current, [draft.instanceId]: '' }))
+          }} onSave={(name, options) => saveInstanceSettings(editingInstance.id, name, options)} onCancel={() => changeView('library')} onPickJava={isDesktop ? () => call<string | null>('chooseJava') : undefined} onRefreshRuntimes={isDesktop ? detectInstanceJava : undefined} />
+        </> : <EmptyState icon={<Settings2 size={26} />} title="没有可设置的实例" action={<button type="button" className="button secondary" onClick={() => changeView('library')}>返回版本列表</button>}>请先添加一个游戏版本。</EmptyState>)}
         {view === 'discover' && <Discover source={resourceSource} setSource={setResourceSource} openUrl={openUrl} instances={instances} installed={async name => { await refresh(); setToast(`${name} 已安装，必需依赖已一并处理。`) }} />}
         {view === 'downloads' && <DownloadsView tab={downloadTab} setTab={setDownloadTab} instances={instances} progress={progress} busy={busy} taskErrors={taskErrors} packTasks={packTasks} javaTasks={javaTasks} cancelJava={async id => { await call('cancelJavaInstall', id) }} retryJava={async major => { await call('installJava', major) }} download={downloadGame} install={installInstance} cancel={cancelDownload} showGame={id => { setSelectedId(id); changeView('library') }} showLogs={id => { setSelectedId(id); changeView('logs') }} showPacks={source => { if (source && source !== 'local') setResourceSource(source); changeView('modpacks') }} />}
         {view === 'modpacks' && <ModpacksView source={resourceSource} setSource={setResourceSource} tasks={packTasks} progress={progress} installOnline={(versionId, name, source) => installPack('installModpack', versionId, name, source)} importLocal={(token, name) => installPack('importModpack', token, name)} cancel={cancelDownload} showTasks={showTasks} openUrl={openUrl} />}
-        {settingsOpened && snapshot && <div hidden={view !== 'settings'}><SettingsView instance={selectedInstance} settings={snapshot.settings} rootDir={snapshot.rootDir} javaTasks={javaTasks} save={async settings => { await call('updateSettings', settings); await refresh(); setToast(isDesktop ? '设置已保存。' : '预览设置已保存在此浏览器。') }} /></div>}
+        {settingsOpened && snapshot && <div hidden={view !== 'settings'}><SettingsView instance={selectedInstance} settings={snapshot.settings} rootDir={snapshot.rootDir} javaTasks={javaTasks} save={async settings => {
+          const next = await call<Snapshot>('updateSettings', settings)
+          // This response owns global settings only. Instance state may have
+          // advanced through an event while this request was in flight.
+          setSnapshot(current => current ? { ...current, settings: next.settings } : next)
+          setToast(isDesktop ? '设置已保存。' : '预览设置已保存在此浏览器。')
+        }} /></div>}
         {view === 'account' && <AccountView account={account} refresh={refresh} auth={authState} authError={authError} login={beginLogin} cancelLogin={cancelLogin} openUrl={openUrl} />}
         {view === 'logs' && <LogsView instances={instances} initialId={selectedInstance?.id} />}
       </div>
@@ -345,9 +439,29 @@ function InstallModDialog({ source, mod, instances, close, installed, openUrl }:
   </Dialog>
 }
 
+type AdvancedSettingsDraft = {
+  jvmMode: 'default' | 'custom'; jvmText: string
+  widthMode: 'default' | 'custom'; width: string
+  heightMode: 'default' | 'custom'; height: string
+  fullscreen: 'default' | 'on' | 'off'
+}
+function advancedSettingsDraft(settings: Settings): AdvancedSettingsDraft {
+  return {
+    jvmMode: settings.jvmArgs === undefined ? 'default' : 'custom', jvmText: (settings.jvmArgs || []).join('\n'),
+    widthMode: settings.windowWidth === undefined ? 'default' : 'custom', width: String(settings.windowWidth ?? 1280),
+    heightMode: settings.windowHeight === undefined ? 'default' : 'custom', height: String(settings.windowHeight ?? 720),
+    fullscreen: settings.fullscreen === undefined ? 'default' : settings.fullscreen ? 'on' : 'off',
+  }
+}
+function globalWindowSize(text: string, min: number, max: number, label: string) {
+  const value = Number(text)
+  if (!text.trim() || !Number.isInteger(value) || value < min || value > max) throw new Error(`${label}需要填写 ${min}–${max} 之间的整数。`)
+  return value
+}
 function SettingsView({ settings, rootDir, save, instance, javaTasks }: { settings: Settings; rootDir: string; save: (settings: Settings) => Promise<void>; instance?: Instance; javaTasks: JavaRuntimeTask[] }) {
   const initialDraft = () => ({ ...settings, memoryMode: settings.memoryMode || 'auto', manualJavaPath: settings.manualJavaPath || settings.javaPath || '' })
   const [draft, setDraft] = useState(initialDraft)
+  const [advancedDraft, setAdvancedDraft] = useState(() => advancedSettingsDraft(settings))
   const [runtimes, setRuntimes] = useState<JavaRuntime[]>([])
   const [detecting, setDetecting] = useState(false)
   const [detectError, setDetectError] = useState('')
@@ -358,9 +472,33 @@ function SettingsView({ settings, rootDir, save, instance, javaTasks }: { settin
   const [requirementRetry, setRequirementRetry] = useState(0)
   const [resetKey, setResetKey] = useState(0)
   const [saving, setSaving] = useState(false)
+  const savingRef = useRef(false)
+  const mounted = useRef(true)
   const [error, setError] = useState('')
-  const [savedDraft, setSavedDraft] = useState(() => JSON.stringify(initialDraft()))
-  const dirty = JSON.stringify(draft) !== savedDraft
+  const signature = (normal: typeof draft, advanced: AdvancedSettingsDraft) => JSON.stringify([normal, advanced])
+  const [savedDraft, setSavedDraft] = useState(() => signature(initialDraft(), advancedSettingsDraft(settings)))
+  const dirty = signature(draft, advancedDraft) !== savedDraft
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
+  function changeAdvanced(patch: Partial<AdvancedSettingsDraft>) {
+    if (!savingRef.current) { setAdvancedDraft(current => ({ ...current, ...patch })); setError('') }
+  }
+  async function submit() {
+    if (savingRef.current) return
+    savingRef.current = true; setSaving(true); setError('')
+    try {
+      // Undefined must remain an own property: IPC uses it to clear saved
+      // optional overrides rather than retaining the previous value.
+      const pending: Settings = { ...draft,
+        jvmArgs: advancedDraft.jvmMode === 'custom' ? parseInstanceJvmArgs(advancedDraft.jvmText) : undefined,
+        windowWidth: advancedDraft.widthMode === 'custom' ? globalWindowSize(advancedDraft.width, 640, 7680, '窗口宽度') : undefined,
+        windowHeight: advancedDraft.heightMode === 'custom' ? globalWindowSize(advancedDraft.height, 360, 4320, '窗口高度') : undefined,
+        fullscreen: advancedDraft.fullscreen === 'default' ? undefined : advancedDraft.fullscreen === 'on',
+      }
+      await save(pending)
+      if (mounted.current) setSavedDraft(signature(draft, advancedDraft))
+    } catch (error) { if (mounted.current) setError(errorText(error)) }
+    finally { savingRef.current = false; if (mounted.current) setSaving(false) }
+  }
   const terminalTasks = javaTasks.filter(task => task.status === 'complete').map(task => task.id).join(',')
   async function detect() {
     const revision = ++detectRevision.current
@@ -389,18 +527,25 @@ function SettingsView({ settings, rootDir, save, instance, javaTasks }: { settin
       .finally(() => { if (current) setRequirementLoading(false) })
     return () => { current = false }
   }, [instance?.id, requirementRetry])
-  return <><PageHeading title="启动器设置" subtitle="配置 Java、游戏内存和下载选项。" /><form className="settings-form" onSubmit={event => {
-    event.preventDefault()
-    if (saving) return
-    const pending = { ...draft }
-    setSaving(true); setError('')
-    save(pending).then(() => setSavedDraft(JSON.stringify(pending)))
-      .catch(error => setError(errorText(error))).finally(() => setSaving(false))
-  }}>
-    <section className="settings-card"><div className="settings-card-heading"><Cpu size={20} /><div><h2>游戏运行</h2><p>更改后将在下一次安装或启动游戏时生效。</p></div></div><MemorySettings settings={draft} change={next => setDraft({ ...next, manualJavaPath: next.manualJavaPath || '' })} instanceId={instance?.id} instanceName={instance?.name} /><JavaSettings javaPath={draft.javaPath} manualJavaPath={draft.manualJavaPath} onChangeJavaPath={(javaPath, manualJavaPath) => setDraft(current => ({ ...current, javaPath, manualJavaPath }))} desktop={isDesktop} resetKey={resetKey} requirement={requirement} requirementLoading={requirementLoading} requirementError={requirementError} onRetryRequirement={() => setRequirementRetry(value => value + 1)} runtimes={runtimes} detecting={detecting} detectError={detectError} onDetect={detect} tasks={javaTasks} onInstall={async major => { await call('installJava', major) }} onCancelTask={async id => { await call('cancelJavaInstall', id) }} onPickJava={() => call<string | null>('chooseJava')} onRefresh={detect} /></section>
+  return <><PageHeading title="启动器设置" subtitle="配置全局 Java、内存、JVM 参数、游戏窗口和下载选项。实例设置可单独覆盖。" /><form className="settings-form" noValidate onSubmit={event => { event.preventDefault(); void submit() }}>
+    <fieldset className="settings-fieldset" disabled={saving}>
+    <section className="settings-card"><div className="settings-card-heading"><Cpu size={20} /><div><h2>全局游戏运行</h2><p>更改后将在下一次安装或启动游戏时生效；实例已覆盖的项目保持实例设置。</p></div></div><MemorySettings settings={draft} change={next => { if (!savingRef.current) setDraft({ ...next, manualJavaPath: next.manualJavaPath || '' }) }} instanceId={instance?.id} instanceName={instance?.name} /><JavaSettings javaPath={draft.javaPath} manualJavaPath={draft.manualJavaPath} onChangeJavaPath={(javaPath, manualJavaPath) => { if (!savingRef.current) setDraft(current => ({ ...current, javaPath, manualJavaPath })) }} desktop={isDesktop} resetKey={resetKey} requirement={requirement} requirementLoading={requirementLoading} requirementError={requirementError} onRetryRequirement={() => setRequirementRetry(value => value + 1)} runtimes={runtimes} detecting={detecting} detectError={detectError} onDetect={detect} tasks={javaTasks} onInstall={async major => { await call('installJava', major) }} onCancelTask={async id => { await call('cancelJavaInstall', id) }} onPickJava={() => call<string | null>('chooseJava')} onRefresh={detect} /></section>
+    <section className="settings-card global-advanced-settings"><div className="settings-card-heading"><Settings2 size={20} /><div><h2>JVM 与游戏窗口</h2><p>适用于未单独覆盖的实例。所有参数在保存后生效。</p></div></div>
+      <div className="setting-row"><div><h3>自定义 JVM 参数</h3><p>每行一个完整参数，整体替换；空格、引号和反斜线原样保留。</p></div><select aria-label="全局 JVM 参数来源" value={advancedDraft.jvmMode} onChange={event => changeAdvanced({ jvmMode: event.target.value as AdvancedSettingsDraft['jvmMode'] })}><option value="default">启动器默认</option><option value="custom">自定义参数</option></select></div>
+      {advancedDraft.jvmMode === 'custom' && <label className="field"><span>全局 JVM 参数（每行一个）</span><textarea rows={6} spellCheck={false} autoComplete="off" value={advancedDraft.jvmText} placeholder={'-Dfile.encoding=UTF-8\n-Dexample.label=含 空格的值'} onChange={event => changeAdvanced({ jvmText: event.target.value })} /><small>不会按 shell 拆分，包含空格的值不需要外层引号。参数名与独立值各占一行；空行忽略。留空表示不添加自定义参数。</small></label>}
+      <p className="form-hint">内存、类路径及账户参数由启动器管理。不支持的参数会在保存时报错；本实例自定义参数不会和全局参数拼接。</p>
+      <div className="global-window-fields">
+        <div><label className="field"><span>全局窗口宽度</span><select value={advancedDraft.widthMode} onChange={event => changeAdvanced({ widthMode: event.target.value as AdvancedSettingsDraft['widthMode'] })}><option value="default">启动器默认（1280 像素）</option><option value="custom">自定义宽度</option></select></label>{advancedDraft.widthMode === 'custom' && <label className="field"><span>宽度（像素）</span><input type="number" min={640} max={7680} step={1} value={advancedDraft.width} onChange={event => changeAdvanced({ width: event.target.value })} /></label>}</div>
+        <div><label className="field"><span>全局窗口高度</span><select value={advancedDraft.heightMode} onChange={event => changeAdvanced({ heightMode: event.target.value as AdvancedSettingsDraft['heightMode'] })}><option value="default">启动器默认（720 像素）</option><option value="custom">自定义高度</option></select></label>{advancedDraft.heightMode === 'custom' && <label className="field"><span>高度（像素）</span><input type="number" min={360} max={4320} step={1} value={advancedDraft.height} onChange={event => changeAdvanced({ height: event.target.value })} /></label>}</div>
+      </div>
+      <div className="setting-row"><div><h3>全屏状态</h3><p>沿用游戏设置时不强制改变状态；强制开启或关闭会在下次启动时应用。</p></div><select aria-label="全局全屏状态" value={advancedDraft.fullscreen} onChange={event => changeAdvanced({ fullscreen: event.target.value as AdvancedSettingsDraft['fullscreen'] })}><option value="default">沿用游戏设置</option><option value="on">强制全屏</option><option value="off">强制窗口</option></select></div>
+      <p className="form-hint">宽高只影响 Minecraft 游戏窗口。全屏时保留宽高，回到窗口模式后使用。</p>
+      <button type="button" className="text-button" onClick={() => changeAdvanced({ jvmMode: 'default', widthMode: 'default', heightMode: 'default', fullscreen: 'default' })}>将 JVM 与窗口设置恢复默认</button>
+    </section>
     <section className="settings-card"><div className="settings-card-heading"><Download size={20} /><div><h2>下载与存储</h2><p>游戏与依赖文件统一保存在启动器数据目录。</p></div></div><div className="setting-row"><div><h3>并行下载数</h3><p>网络不稳定时，可以减少同时下载的文件数。</p></div><select aria-label="并行下载数" value={draft.concurrentDownloads} onChange={event => setDraft({ ...draft, concurrentDownloads: Number(event.target.value) })}>{[2, 4, 6, 8, 12].map(value => <option key={value} value={value}>{value} 个文件</option>)}</select></div><div className="data-directory"><HardDrive size={18} /><div><strong>数据目录</strong><code>{rootDir}</code></div></div></section>
     <section className="settings-card about-card"><Logo /><div><h3>Lua 未央 <span className="version-tag">{APP_VERSION} ALPHA</span></h3><p>独立开源的 Minecraft Java 启动器。</p><small>Minecraft 是 Mojang 的商标。本项目与 Mojang、Microsoft 无关联。</small></div></section>
-    {error && <ErrorBox message={error} />}<div className="settings-save"><span className="form-hint" role="status">{dirty ? '有尚未保存的设置' : '设置已保存'}</span><button type="button" className="button secondary" disabled={saving} onClick={() => { const next = initialDraft(); setDraft(next); setSavedDraft(JSON.stringify(next)); setResetKey(value => value + 1); setError('') }}>撤销更改</button><button className="button primary" disabled={saving || !dirty}>{saving ? <Spinner size={16} /> : <Check size={16} />}保存设置</button></div>
+    </fieldset>
+    {error && <ErrorBox message={error} retry={!saving ? () => void submit() : undefined} />}<div className="settings-save"><span className="form-hint" role="status">{saving ? '正在保存设置…' : dirty ? '有尚未保存的设置，切页后草稿保留' : '设置已保存'}</span><button type="button" className="button secondary" disabled={saving} onClick={() => { const next = initialDraft(); const advanced = advancedSettingsDraft(settings); setDraft(next); setAdvancedDraft(advanced); setSavedDraft(signature(next, advanced)); setResetKey(value => value + 1); setError('') }}>撤销更改</button><button className="button primary" disabled={saving || !dirty}>{saving ? <Spinner size={16} /> : <Check size={16} />}保存设置</button></div>
   </form></>
 }
 

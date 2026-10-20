@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process'
 import { createReadStream } from 'node:fs'
 import * as fs from 'node:fs/promises'
 import path from 'node:path'
+import { javaProcessEnvironment } from './java-environment'
 
 // Mojang's runtime catalog and manifests are data, never executable installer scripts.
 export const JAVA_RUNTIME_INDEX = 'https://launchermeta.mojang.com/v1/products/java-runtime/2ec0cc96c44e5a76b9c8b7c39df7210883d12871/all.json'
@@ -166,7 +167,7 @@ export const probeJavaRuntime: JavaRuntimeProbe = async (executable, signal) => 
   const output = await new Promise<string>((resolve, reject) => {
     const child = spawn(executable, ['-XshowSettings:properties', '-version'], {
       windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, JAVA_TOOL_OPTIONS: '', JDK_JAVA_OPTIONS: '', _JAVA_OPTIONS: '' },
+      env: javaProcessEnvironment(),
     })
     let failure: Error | undefined
     const chunks: Buffer[] = []

@@ -1,6 +1,6 @@
 # 验收矩阵
 
-更新：2026-10-21。发布基线为 0.3.0，0.4.0 本地实现和独立审查完成，当前提交三平台 CI 与发布待验。L1 静态/类型、L2 确定性测试、L3 真实网络与文件、L4 真实桌面、L5 真实账户/游戏/联机分别记录；低一级结果不能代替高一级。
+更新：2026-10-21。发布基线为 0.3.0，0.4.0 本地实现、独立审查、最终构建及未签名 macOS ARM64 DMG/ZIP 完成；0.5.0 实例设置已在本地实现并完成浏览器验证。两版尚未发布，当前提交三平台 CI 与 0.5 原生验收待完成。L1 静态/类型、L2 确定性测试、L3 真实网络与文件、L4 真实桌面、L5 真实账户/游戏/联机分别记录；低一级结果不能代替高一级。
 
 W=Windows x64，M=macOS ARM64，L=Linux x64。新架构单独列证据，官方有 Java 包不等于 Lua 安装包或游戏已支持。每次结果关联版本/commit、平台、命令/步骤和证据路径；私有日志与截图留在被忽略目录，不保存令牌。
 
@@ -15,11 +15,11 @@ W=Windows x64，M=macOS ARM64，L=Linux x64。新架构单独列证据，官方�
 | 官网与资源 | L3/L4 | 首页、CSS、SVG、截图 HTTP 200；原图一致，CDN 有图片压缩；页面已验收 | [官网](https://lua-launcher.onrender.com)，本地 website-verification-v030 记录 |
 | 完整 Microsoft 登录与游戏 | L5 | 未通过，API 待审；批准前不继续真实流程 | [已知问题](KNOWN_ISSUES.md) |
 
-上述结果不自动继承到 0.4.0，不复用旧 CI 作为新提交通过证据。
+上述结果不自动继承到 0.4.0/0.5.0，不复用旧 CI 作为新提交通过证据。
 
 ## 0.4.0 本地结果及剩余验收
 
-集成者报告本地测试 201/201 通过；上一轮 `pnpm check` 和 `pnpm build` 通过，最后加载器冲突防护改动后的新构建与打包仍待复验。独立审查者另执行 8 项定向回归通过，并读取真实 smoke 报告、查看桌面任务截图。后两项只说明证据已复核，不表示独立重复了全部下载或桌面操作。命令、修复和证据来源见[审查记录](reviews/0.4.0.md)。
+集成者报告本地测试 201/201、最终 `pnpm check` 和 `pnpm build` 通过，未签名 macOS ARM64 DMG/ZIP 已生成。独立审查者另执行 8 项定向回归通过，并读取真实 smoke 报告、查看桌面任务截图。后两项只说明证据已复核，不表示独立重复了全部下载或桌面操作。命令、修复和证据来源见[审查记录](reviews/0.4.0.md)。
 
 | ID | 场景与通过条件 | 等级 / 平台 | 当前状态 | 证据或计划位置 |
 | --- | --- | --- | --- | --- |
@@ -40,9 +40,25 @@ W=Windows x64，M=macOS ARM64，L=Linux x64。新架构单独列证据，官方�
 | AC-AUTH-01 | 凭据等待及 Java 准备期间取消、退出、换账户；禁止晚到 spawn，renderer 无 credential | L2，W/M/L | 本地相关测试通过；凭据阶段三项及迟到 Java 一项由独立审查者重跑通过；不涉及真实账户 | `launch-preparation.test.ts`、Core/auth/accounts 测试及 main/preload 审查 |
 | AC-AUTH-02 | 自有应用完整授权、所有权/profile、刷新、重启、退出及撤销 | L5 | 外部阻塞，批准前不执行 | 接入说明，批准后独立记录 |
 | AC-GAME-01 | 四加载器/代表包进入主菜单、临时世界保存再载入；受控联机另记 | L5，W/M/L | 外部阻塞，未验证 | 批准后每平台真实验收 |
-| AC-RELEASE-01 | check/test/build及当前commit三平台CI；新测试确实纳入入口 | L1/L2，W/M/L | 本地 201/201 通过，入口已核对；前一轮 check/build 通过，最终 guard 后新构建与当前提交三平台 CI 待验 | `package.json`、[开发日志](devlog/0.4.0.md)、本轮新 CI |
-| AC-RELEASE-02 | 产物架构、版本、配置、打开；下载名称/大小/hash、非draft与全部asset | L3/L4，W/M/L | 待本轮发布 | 新Release/资产清单、实机记录 |
+| AC-RELEASE-01 | check/test/build及当前commit三平台CI；新测试确实纳入入口 | L1/L2，W/M/L | 本地 201/201 通过，入口已核对；最终 check/build 与本地 macOS ARM64 打包通过；当前提交三平台 CI 待验 | `package.json`、[开发日志](devlog/0.4.0.md)、本轮新 CI |
+| AC-RELEASE-02 | 产物架构、版本、配置、打开；下载名称/大小/hash、非draft与全部asset | L3/L4，W/M/L | 0.4 本地未签名 macOS ARM64 DMG/ZIP 已生成；远端资产、三平台及完整包后实机验收待补 | 新Release/资产清单、实机记录 |
 | AC-WEB-01 | 发布成功后更新现有站；service/commit/live、资源200、截图和说明一致 | L3/L4 | 待0.4发布后执行 | website、部署及HTTP/hash记录 |
+
+## 0.5.0 本地结果及剩余验收
+
+开发基准为本地 0.4.0 提交 `b3130280c338a7a8e4b9d26ec6eb6c92439e6ee7`，分支 `codex/instance-settings-v0.5.0`。晚修新增旧 `java` 迁移回归后，最终 245 项全量测试与生产构建通过；重新生成的未签名 macOS ARM64 DMG/ZIP 已核对 0.5.0 版本、ARM64 架构和 SHA-256。浏览器 UI 证据与原生 L4 分开记录。
+
+| ID | 场景与通过条件 | 等级 / 平台 | 当前状态 | 证据或计划位置 |
+| --- | --- | --- | --- | --- |
+| AC-INSTANCE-01 | 名称只改显示；Java/内存/JVM/窗口按字段继承，空 argv 与 false 明确覆盖 | L1/L2；浏览器预览 | 配置/API smoke 和最终相关测试通过；实例保存及来源显示已有浏览器证据 | `instance-options.test.ts`、`core-instance-options.test.ts`；[开发日志](devlog/0.5.0.md) |
+| AC-INSTANCE-02 | A/B 草稿分别保留，关闭/跨页可返回；保存锁按 ID，错误可重试；本机记住当前选择 | 浏览器交互；原生 L4 待验 | 切页草稿及保存后刷新通过；源码具备锁和迟到结果保护，全部原生竞态操作未穷举 | `.local/instance-ui-v050.png`；`src/App.tsx`、`InstanceSettings.tsx` |
+| AC-INSTANCE-03 | 候选配置提交成功才生效；rename 失败保留旧值；运行/安装互斥 | L2 | 独立延迟 rename/EIO 注入通过；最终全量回归通过 | REVIEW-050-01；Core 实例测试 |
+| AC-INSTANCE-04 | argv 保留空格/引号/Unicode/路径边界；拒绝堆、classpath、身份、入口等受管覆盖 | L2；浏览器预览 | 相关 fixture、API smoke、浏览器非法堆参数拒绝通过；真实游戏未执行 | 参数策略测试；`.local/instance-ui-v050.png` |
+| AC-INSTANCE-05 | 6144 MB、1600×720、false 全屏与含空格属性保存后有效；首页摘要正确；全局 reset 清除旧覆盖 | L2；浏览器预览 | 浏览器保存/刷新摘要通过；全局 GC/含空格属性、1920 宽及全屏保存→恢复默认→保存/刷新实测通过，实例内存覆盖保持；实际游戏窗口待验 | `game-window.test.ts`；本轮浏览器记录 |
+| AC-INSTANCE-06 | 首次安装状态保存失败释放锁；Windows 混合大小写 Java 注入变量从四入口清理 | L2，模拟故障/平台 | 首次 save 故障独立复核通过；游戏启动及处理器/probe 的环境变量定向回归独立通过，不作为 Windows 实机证据 | REVIEW-050-02/03；Core/loader/runtime 回归 |
+| AC-INSTANCE-07 | 最终测试/build、当前提交三平台 CI、0.5 原生设置操作及安装包 | L1/L2；L3/L4 待验 | 最终 245/245、build 和未签名 macOS ARM64 DMG/ZIP 通过，包版本/架构/hash 已核对；0.5 原生因 Mac 锁屏未验，远端授权阻塞 CI/Release | `.local/tests-v050.log`、`.local/build-v050.log`、`.local/local-packages-v050.json`；当前提交新 CI 待恢复 |
+
+0.5 没有新增真实账户或游戏验收，不改变 AC-AUTH-02 / AC-GAME-01 的外部阻塞状态。复制、导出、归档、删除、完整资源库存与旧版未实现，不能因基础设置页存在而标记全部实例管理完成。公开下载与官网仍指向已发布 0.3.0。
 
 ## 未来功能与发布门槛
 

@@ -1,0 +1,13 @@
+.app-shell .version-table-heading,.app-shell .version-row{grid-template-columns:minmax(175px,1.5fr) minmax(130px,1fr) minmax(110px,.8fr) 98px}
+.instance-switcher{display:flex;align-items:center;gap:16px;margin-bottom:23px;max-width:920px;font-size:13px;color:#3e4a55}
+.instance-switcher select{max-width:440px;min-width:0;flex:1;font-size:13px}
+.settings-fieldset{border:0;min-width:0;margin:0;padding:0}
+.global-advanced-settings .field{margin:17px 0}
+.global-advanced-settings textarea{width:100%;min-height:132px;resize:vertical;padding:10px 11px;border:1px solid #ccd5de;border-radius:4px;background:#fff;color:#3e4a55;font:12px/1.8 ui-monospace,SFMono-Regular,Consolas,monospace;caret-color:#437cae;white-space:pre}
+.global-advanced-settings textarea::placeholder{color:#697782}
+.global-advanced-settings textarea:focus-visible{outline:2px solid #437cae;outline-offset:3px}
+.global-advanced-settings>.text-button{margin-top:17px;min-height:32px}
+.global-window-fields{display:grid;grid-template-columns:1fr 1fr;gap:22px}
+.settings-fieldset:disabled textarea{opacity:.6}
+@media(max-width:1100px) and (min-width:601px){.app-shell .version-table-heading,.app-shell .version-row{grid-template-columns:minmax(135px,1.5fr) minmax(100px,1fr) minmax(85px,.8fr) 98px}}
+@media(max-width:600px){.app-shell .version-row{grid-template-columns:minmax(150px,1fr) 100px}.global-window-fields{grid-template-columns:1fr;gap:0}.instance-switcher{align-items:flex-start;flex-direction:column;gap:8px}.instance-switcher select{width:100%;max-width:none}.global-advanced-settings .setting-row{align-items:flex-start;flex-direction:column}.global-advanced-settings .setting-row select{max-width:none;width:100%}}

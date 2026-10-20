@@ -5,7 +5,7 @@ import * as fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { PassThrough } from 'node:stream'
-import type { ChildProcess, spawn } from 'node:child_process'
+import type { ChildProcess, spawn, SpawnOptions } from 'node:child_process'
 import test, { type TestContext } from 'node:test'
 import AdmZip from 'adm-zip'
 import { installForge, installerArtifact, loaderMetadataUrl, parseInstaller, parseLoaderVersions, runProcessor, type ForgeInstallOptions, type ProcessorCommand } from './loader'
@@ -233,4 +233,43 @@ test('processor nonzero and signal exits are errors, and successful exit is acce
     await outcome
     assert.deepEqual(fake.kills, [])
   }
+})
+
+test('loader processors remove case-insensitive Java injection variables while preserving unrelated environment', async t => {
+  const blocked = new Set(['JAVA_TOOL_OPTIONS', 'JDK_JAVA_OPTIONS', '_JAVA_OPTIONS', 'CLASSPATH'])
+  const original = Object.entries(process.env).filter(([name]) => blocked.has(name.toUpperCase()))
+  const preservedName = 'LUA_PROCESSOR_TEST_PRESERVED'
+  const preservedOriginal = process.env[preservedName]
+  const clear = () => {
+    for (const name of Object.keys(process.env)) if (blocked.has(name.toUpperCase())) delete process.env[name]
+  }
+  t.after(() => {
+    clear()
+    for (const [name, value] of original) process.env[name] = value
+    if (preservedOriginal === undefined) delete process.env[preservedName]
+    else process.env[preservedName] = preservedOriginal
+  })
+  const variants = ['java_tool_options', 'Jdk_Java_Options', '_java_OPTIONS', 'classPath']
+  clear()
+  for (const name of variants) process.env[name] = `must-not-reach-processor-${name}`
+  process.env[preservedName] = 'retain this exact value with spaces'
+  const fake = fakeProcess()
+  let captured: SpawnOptions | undefined
+  const requested = { ...command(new AbortController().signal), args: ['-cp', 'verified-tool.jar', 'test.Processor'] }
+  const spawnFake = ((java: string, args: string[], options: SpawnOptions) => {
+    assert.equal(java, requested.java)
+    assert.deepEqual(args, requested.args)
+    captured = options
+    queueMicrotask(() => fake.child.emit('close', 0, null))
+    return fake.child
+  }) as typeof spawn
+  await runProcessor(requested, () => {}, spawnFake, { timeoutMs: 1000 })
+  assert.ok(captured?.env)
+  assert.equal(captured.shell, false)
+  assert.equal(captured.cwd, requested.cwd)
+  assert.deepEqual(Object.keys(captured.env).filter(name => blocked.has(name.toUpperCase())), [])
+  assert.equal(captured.env[preservedName], process.env[preservedName])
+  assert.equal(captured.env.PATH, process.env.PATH)
+  for (const name of variants) assert.equal(process.env[name], `must-not-reach-processor-${name}`)
+  assert.deepEqual(fake.kills, [])
 })

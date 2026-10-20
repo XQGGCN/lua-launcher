@@ -16,6 +16,8 @@ export class LaunchPreparations {
     this.active.get(id)?.abort(new DOMException('启动准备已取消', 'AbortError'))
   }
 
+  has(id: string): boolean { return this.active.has(id) }
+
   close(): void {
     this.closed = true
     for (const controller of this.active.values()) {

@@ -1,4 +1,6 @@
 import { categoryFacet } from './mod-categories'
+import { resolveInstanceOptions, validateInstanceOptions, type InstanceOptions } from '../desktop/instance-options'
+export type { InstanceOptions, ResolvedInstanceOptions } from '../desktop/instance-options'
 
 export type ResourceSource = 'modrinth' | 'bbsmc'
 export type Loader = 'vanilla' | 'fabric' | 'forge' | 'neoforge'
@@ -14,6 +16,7 @@ export interface Instance {
   lastPlayed?: string
   playtimeMs: number
   error?: string
+  options?: InstanceOptions
   modpack?: {
     name: string
     versionId: string
@@ -26,7 +29,7 @@ export interface Instance {
     applied: boolean
   }
 }
-export interface Settings { memoryMode: 'auto' | 'manual'; memoryMb: number; javaPath: string; manualJavaPath?: string; concurrentDownloads: number }
+export interface Settings extends InstanceOptions { memoryMode: 'auto' | 'manual'; memoryMb: number; javaPath: string; concurrentDownloads: number }
 export interface MemoryInfo {
   totalMb: number
   availableMb: number
@@ -102,13 +105,31 @@ const defaultSnapshot: Snapshot = {
 function readPreview(): Snapshot {
   try {
     const raw = JSON.parse(localStorage.getItem('lua-preview') || 'null') as Snapshot | null
-    if (raw && Array.isArray(raw.instances) && raw.settings) return { ...raw, settings: { ...raw.settings, memoryMode: raw.settings.memoryMode === 'manual' ? 'manual' : 'auto' } }
+    if (raw && Array.isArray(raw.instances) && raw.settings) {
+      const javaPath = raw.settings.javaPath === 'java' ? '' : raw.settings.javaPath || ''
+      const manual = raw.settings.manualJavaPath ?? javaPath
+      return { ...raw, settings: { ...defaultSnapshot.settings, ...raw.settings, javaPath,
+        manualJavaPath: manual === 'java' ? '' : manual,
+        memoryMode: raw.settings.memoryMode === 'manual' ? 'manual' : 'auto' } }
+    }
   } catch { /* Storage can be unavailable in private browsing. */ }
   return structuredClone(defaultSnapshot)
 }
 let preview = readPreview()
 function savePreview() {
   try { localStorage.setItem('lua-preview', JSON.stringify(preview)) } catch { /* Session-only preview remains usable. */ }
+}
+function previewSettings(input: Settings): Settings {
+  const { concurrentDownloads, ...options } = input
+  const validated = validateInstanceOptions({ ...options,
+    javaPath: options.javaPath === 'java' ? '' : options.javaPath,
+    manualJavaPath: options.manualJavaPath === 'java' ? '' : options.manualJavaPath })
+  if (!Number.isInteger(concurrentDownloads) || concurrentDownloads < 1 || concurrentDownloads > 16) {
+    throw new Error('并发下载数需要在 1–16 之间')
+  }
+  const values = { ...defaultSnapshot.settings, ...validated, concurrentDownloads }
+  if (values.javaPath) values.manualJavaPath = values.javaPath
+  return values
 }
 async function json(url: string): Promise<unknown> {
   const response = await fetch(url)
@@ -160,10 +181,27 @@ export async function call<T>(method: string, ...args: unknown[]): Promise<T> {
       break
     }
     case 'updateSettings':
-      preview.settings = { ...preview.settings, ...args[0] as Partial<Settings> }
+      preview.settings = previewSettings({ ...preview.settings, ...args[0] as Partial<Settings> })
       savePreview()
       result = structuredClone(preview)
       break
+    case 'instanceOptions': {
+      const instance = preview.instances.find(item => item.id === args[0])
+      if (!instance) throw new Error('实例不存在')
+      const { concurrentDownloads: _downloads, ...global } = previewSettings(preview.settings)
+      result = resolveInstanceOptions(global, instance.options)
+      break
+    }
+    case 'updateInstanceSettings': {
+      const instance = preview.instances.find(item => item.id === args[0])
+      if (!instance) throw new Error('实例不存在')
+      const input = args[1] as { name: string; options: unknown }
+      if (typeof input?.name !== 'string' || !input.name.trim() || input.name.trim().length > 64 || /[\u0000-\u001f\u007f]/u.test(input.name)) throw new Error('实例名称需要 1–64 个字符，不能包含控制字符')
+      const options = validateInstanceOptions(input.options)
+      instance.name = input.name.trim(); instance.options = options
+      savePreview(); result = structuredClone(preview)
+      break
+    }
     case 'searchMods':
     case 'searchModpacks': {
       const options = (args[1] || {}) as { loader?: string; gameVersion?: string; offset?: number; source?: ResourceSource; category?: string }

@@ -9,8 +9,11 @@ import AdmZip from 'adm-zip'
 import { MODPACK_LIMITS, PACK_REDIRECT_HOSTS, readModpack, validatePackPath, validatePackUrl, type PackPreview, type ParsedModpack } from './modpack'
 import { installForge, loaderMetadataUrl, parseLoaderVersions, type LoaderVersion } from './loader'
 import { effectiveMemory, type MemorySystem } from './memory'
+import { javaProcessEnvironment } from './java-environment'
 import { JavaRuntimeManager, type ManagedJavaRuntime, type JavaRuntimeProgress, type JavaRuntimeProbe } from './java-runtime'
 import metadata from '../package.json'
+import { validateInstanceOptions, resolveInstanceOptions, type InstanceOptions, type ResolvedInstanceOptions } from './instance-options'
+import { applyGameWindowSettings } from './game-window'
 export type { PackPreview } from './modpack'
 
 const execFileAsync = promisify(execFile)
@@ -57,6 +60,7 @@ export interface Instance {
   lastPlayed?: string
   playtimeMs: number
   error?: string
+  options?: InstanceOptions
   modpack?: {
     name: string
     versionId: string
@@ -75,6 +79,10 @@ export interface LauncherSettings {
   javaPath: string
   /** Retain the explicit preference while automatic selection is enabled. */
   manualJavaPath?: string
+  jvmArgs?: string[]
+  windowWidth?: number
+  windowHeight?: number
+  fullscreen?: boolean
   concurrentDownloads: number
 }
 export interface LauncherSnapshot {
@@ -189,6 +197,7 @@ interface CoreOptions {
   fetch?: typeof globalThis.fetch
   spawn?: typeof spawn
   renameFile?: typeof fs.rename
+  stateRename?: typeof fs.rename
   platform?: NodeJS.Platform
   arch?: string
   memorySystem?: MemorySystem
@@ -288,6 +297,7 @@ export class LauncherCore {
   private readonly fetcher: typeof globalThis.fetch
   private readonly spawnProcess: typeof spawn
   private readonly renameFile: typeof fs.rename
+  private readonly stateRename: typeof fs.rename
   private readonly platform: NodeJS.Platform
   private readonly arch: string
   private readonly memorySystem: MemorySystem
@@ -295,6 +305,7 @@ export class LauncherCore {
   private javaTasks = new Map<string, JavaRuntimeTask>()
   private javaDownloads = new Map<string, AbortController>()
   private launchControllers = new Map<string, AbortController>()
+  private instanceSettingsSaving = new Set<string>()
   private installs = new Map<string, AbortController>()
   private processes = new Map<string, ChildProcess>()
   private launching = new Set<string>()
@@ -308,6 +319,7 @@ export class LauncherCore {
     this.fetcher = options.fetch ?? globalThis.fetch
     this.spawnProcess = options.spawn ?? spawn
     this.renameFile = options.renameFile ?? fs.rename
+    this.stateRename = options.stateRename ?? fs.rename
     this.platform = options.platform ?? process.platform
     this.arch = normalizeArch(options.arch ?? process.arch)
     this.memorySystem = options.memorySystem ?? {}
@@ -324,7 +336,8 @@ export class LauncherCore {
             !['vanilla', 'fabric', 'forge', 'neoforge'].includes(item.loader) || typeof item.name !== 'string') {
           throw new Error('实例数据损坏，请检查 launcher.json')
         }
-        return { ...item, status: item.status === 'running' ? 'ready' : item.status === 'installing' ? 'not-installed' : item.status }
+        return { ...item, ...(item.options === undefined ? {} : { options: validateInstanceOptions(item.options) }),
+          status: item.status === 'running' ? 'ready' : item.status === 'installing' ? 'not-installed' : item.status }
       })
       this.settings = this.validateSettings({ ...this.settings, ...state.settings })
     } catch (error) {
@@ -338,13 +351,23 @@ export class LauncherCore {
     return structuredClone({ instances: this.instances, settings: this.settings, rootDir: this.rootDir })
   }
 
-  private async save(): Promise<void> {
-    const content = JSON.stringify({ schema: 1, instances: this.instances, settings: this.settings }, null, 2)
+  private async save(prepare?: () => { instances?: Instance[]; settings?: LauncherSettings; commit: () => void }): Promise<void> {
     const run = this.writes.catch(() => {}).then(async () => {
       const file = path.join(this.rootDir, 'launcher.json')
       const temporary = `${file}.${randomUUID()}.tmp`
-      await fs.writeFile(temporary, content, { mode: 0o600 })
-      await fs.rename(temporary, file)
+      try {
+        // Settings remain committed values for readers and launch preparation
+        // until their candidate file has been atomically published.
+        const candidate = prepare?.()
+        const content = JSON.stringify({ schema: 1, instances: candidate?.instances ?? this.instances,
+          settings: candidate?.settings ?? this.settings }, null, 2)
+        await fs.writeFile(temporary, content, { mode: 0o600, flag: 'wx' })
+        await this.stateRename(temporary, file)
+        candidate?.commit()
+      } catch (error) {
+        await fs.rm(temporary, { force: true }).catch(() => {})
+        throw error
+      }
     })
     this.writes = run
     await run
@@ -362,6 +385,37 @@ export class LauncherCore {
   }
   getInstancePath(id: string): string {
     return safeJoin(this.instanceDirectory(id), 'game')
+  }
+
+  instanceOptions(id: string): ResolvedInstanceOptions {
+    const { concurrentDownloads: _downloads, ...global } = this.settings
+    // Schema 1 historically allowed the bare command "java" as automatic mode.
+    return resolveInstanceOptions({ ...global, javaPath: global.javaPath === 'java' ? '' : global.javaPath,
+      manualJavaPath: global.manualJavaPath === 'java' ? '' : global.manualJavaPath }, this.instance(id).options)
+  }
+
+  async updateInstanceSettings(id: string, input: { name: string; options: unknown }): Promise<LauncherSnapshot> {
+    const instance = this.instance(id)
+    if (this.instanceSettingsSaving.has(id)) throw new Error('此实例的设置正在保存')
+    if (this.installs.has(id) || this.launching.has(id) || this.processes.has(id)) {
+      throw new Error('请先完成安装或关闭此实例的游戏，再修改实例设置')
+    }
+    if (typeof input.name !== 'string' || !input.name.trim() || input.name.trim().length > 64 || /[\u0000-\u001f\u007f]/u.test(input.name)) {
+      throw new Error('实例名称需要 1–64 个字符，不能包含控制字符')
+    }
+    const options = validateInstanceOptions(input.options)
+    const name = input.name.trim()
+    this.instanceSettingsSaving.add(id)
+    try {
+      await this.save(() => {
+        if (this.installs.has(id) || this.launching.has(id) || this.processes.has(id)) throw new Error('此实例正在安装或运行，设置未保存')
+        return {
+          instances: this.instances.map(item => item.id === id ? { ...item, name, options } : item),
+          commit: () => { instance.name = name; instance.options = options },
+        }
+      })
+      return this.snapshot()
+    } finally { this.instanceSettingsSaving.delete(id) }
   }
 
   async createInstance(input: { name: string; version: string; loader: Loader; loaderVersion?: string }): Promise<Instance> {
@@ -405,14 +459,18 @@ export class LauncherCore {
         (manualJavaPath !== '' && manualJavaPath !== 'java' && !path.isAbsolute(manualJavaPath))) {
       throw new Error('请选择 Java 可执行文件的绝对路径')
     }
-    return { memoryMode: input.memoryMode ?? 'auto', memoryMb: input.memoryMb, javaPath: input.javaPath,
-      manualJavaPath: input.javaPath && input.javaPath !== 'java' ? input.javaPath : manualJavaPath,
-      concurrentDownloads: input.concurrentDownloads }
+    const advanced = validateInstanceOptions({ jvmArgs: input.jvmArgs, windowWidth: input.windowWidth,
+      windowHeight: input.windowHeight, fullscreen: input.fullscreen })
+    return { memoryMode: input.memoryMode ?? 'auto', memoryMb: input.memoryMb, javaPath: input.javaPath === 'java' ? '' : input.javaPath,
+      manualJavaPath: input.javaPath && input.javaPath !== 'java' ? input.javaPath : manualJavaPath === 'java' ? '' : manualJavaPath,
+      concurrentDownloads: input.concurrentDownloads, ...advanced }
   }
 
   async updateSettings(settings: Partial<LauncherSettings>): Promise<LauncherSnapshot> {
-    this.settings = this.validateSettings({ ...this.settings, ...settings })
-    await this.save()
+    await this.save(() => {
+      const next = this.validateSettings({ ...this.settings, ...settings })
+      return { settings: next, commit: () => { this.settings = next } }
+    })
     return this.snapshot()
   }
 
@@ -581,10 +639,12 @@ export class LauncherCore {
 
   async install(id: string): Promise<LauncherSnapshot> {
     const instance = this.instance(id)
+    if (this.instanceSettingsSaving.has(id)) throw new Error('请等待此实例的设置保存完成')
     if (this.installs.has(id)) throw new Error('该实例正在安装')
     if (this.processes.has(id) || this.launching.has(id)) throw new Error('请先关闭正在运行或启动中的游戏')
     const controller = new AbortController()
     const signal = controller.signal
+    const preferences = this.instanceOptions(id).values
     this.installs.set(id, controller)
     instance.status = 'installing'
     delete instance.error
@@ -598,9 +658,10 @@ export class LauncherCore {
         this.emit({ type: 'progress', instanceId: id, phase, completed, total, bytesDownloaded: downloadedBytes })
       }
     }
-    await this.save()
-    progress('正在获取官方版本信息', true)
     try {
+      await this.save()
+      signal.throwIfAborted()
+      progress('正在获取官方版本信息', true)
       let pack: ParsedModpack | undefined
       if (instance.modpack && !instance.modpack.applied) {
         const archiveFile = safeJoin(this.instanceDirectory(id), 'pack.mrpack')
@@ -628,7 +689,7 @@ export class LauncherCore {
       const javaRequirement = this.javaRequirement(version, instance)
       progress(`正在准备 Java ${javaRequirement.major}`, true)
       const runtime = await this.selectJava(javaRequirement.major, javaRequirement.component, {
-        signal, onProgress: update => {
+        signal, javaPath: preferences.javaPath, onProgress: update => {
           this.emit({ type: 'progress', instanceId: id, phase: `${JAVA_PHASES[update.phase]}（Java ${javaRequirement.major}）`,
             completed: update.completedBytes, total: update.totalBytes, bytesDownloaded: update.completedBytes, unit: 'bytes' })
         },
@@ -915,9 +976,9 @@ export class LauncherCore {
     }
   }
 
-  async detectJava(): Promise<JavaRuntime[]> {
+  async detectJava(additionalPath?: string): Promise<JavaRuntime[]> {
     const executable = this.platform === 'win32' ? 'java.exe' : 'java'
-    const candidates = new Set<string>([this.settings.javaPath, 'java'].filter(Boolean))
+    const candidates = new Set<string>([additionalPath, this.settings.javaPath, 'java'].filter((value): value is string => Boolean(value)))
     if (process.env.JAVA_HOME) candidates.add(path.join(process.env.JAVA_HOME, 'bin', executable))
     if (this.platform === 'darwin') {
       try {
@@ -947,7 +1008,7 @@ export class LauncherCore {
     const runtimes = await Promise.all([...candidates].map(async candidate => {
       try {
         const { stdout, stderr } = await execFileAsync(candidate, ['-XshowSettings:properties', '-version'], {
-          timeout: 8000, windowsHide: true, maxBuffer: 256 * 1024,
+          timeout: 8000, windowsHide: true, maxBuffer: 256 * 1024, env: javaProcessEnvironment(),
         })
         const output = `${stdout}\n${stderr}`
         const version = /(?:openjdk|java) version "([^"]+)"/.exec(output)?.[1] ??
@@ -956,7 +1017,7 @@ export class LauncherCore {
         const major = Number(version.startsWith('1.') ? version.split('.')[1] : version.split(/[.+\-]/)[0])
         const arch = normalizeArch(/os\.arch\s*=\s*(\S+)/.exec(output)?.[1] ?? this.arch)
         const javaHome = /java\.home\s*=\s*(.+)/.exec(output)?.[1].trim()
-        const resolvedPath = candidate === this.settings.javaPath && candidate !== 'java'
+        const resolvedPath = (candidate === additionalPath || candidate === this.settings.javaPath) && candidate !== 'java'
           ? candidate : javaHome ? path.join(javaHome, 'bin', executable) : candidate
         return { path: resolvedPath, version, major, arch }
       } catch { return undefined }
@@ -967,6 +1028,7 @@ export class LauncherCore {
   }
 
   async launch(id: string, account: LaunchAccount, beforeSpawn?: () => void): Promise<{ pid: number | undefined }> {
+    if (this.instanceSettingsSaving.has(id)) throw new Error('请等待此实例的设置保存完成')
     if (this.launching.has(id)) throw new Error('该实例正在启动')
     // Acquire synchronously: installed-manifest reads and Java detection both yield before spawn.
     this.launching.add(id)
@@ -980,10 +1042,11 @@ export class LauncherCore {
     }
   }
 
-  private async selectJava(required: number, component?: string, options: { signal?: AbortSignal; onProgress?: (progress: JavaRuntimeProgress) => void } = {}): Promise<JavaRuntime> {
+  private async selectJava(required: number, component?: string, options: { signal?: AbortSignal; javaPath?: string; onProgress?: (progress: JavaRuntimeProgress) => void } = {}): Promise<JavaRuntime> {
     options.signal?.throwIfAborted()
-    const explicitPath = this.settings.javaPath && this.settings.javaPath !== 'java' ? this.settings.javaPath : ''
-    const runtimes = await this.detectJava()
+    const configured = options.javaPath ?? this.settings.javaPath
+    const explicitPath = configured && configured !== 'java' ? configured : ''
+    const runtimes = await this.detectJava(explicitPath)
     options.signal?.throwIfAborted()
     let runtime = explicitPath
       ? runtimes.find(java => java.path === explicitPath)
@@ -1017,6 +1080,8 @@ export class LauncherCore {
     }
     // Keep the validated credentials stable while filesystem and Java checks await.
     const credentials = { ...account }
+    const resolved = this.instanceOptions(id)
+    const preferences = resolved.values
     const token = credentials.accessToken
     const directory = this.instanceDirectory(id)
     const installed: InstalledManifest = JSON.parse(await fs.readFile(safeJoin(directory, 'installed.json'), 'utf8'))
@@ -1025,7 +1090,7 @@ export class LauncherCore {
     }
     const requirement = installed.version.javaVersion?.component
       ? this.javaRequirement(installed.version, instance) : await this.runtimeRequirement(id)
-    const runtime = await this.selectJava(requirement.major, requirement.component, { signal, onProgress: update => {
+    const runtime = await this.selectJava(requirement.major, requirement.component, { signal, javaPath: preferences.javaPath, onProgress: update => {
       this.emit({ type: 'progress', instanceId: id, phase: `${JAVA_PHASES[update.phase]}（Java ${requirement.major}）`,
         completed: update.completedBytes, total: update.totalBytes, bytesDownloaded: update.completedBytes, unit: 'bytes' })
     } })
@@ -1055,25 +1120,37 @@ export class LauncherCore {
       library_directory: safeJoin(this.rootDir, installed.loaderLibraryDirectory ?? 'libraries'),
       user_type: 'msa',
       user_properties: '{}',
-      resolution_width: '1280',
-      resolution_height: '800',
+      resolution_width: String(preferences.windowWidth),
+      resolution_height: String(preferences.windowHeight),
     }
     const features = { has_custom_resolution: true }
     const jvm = resolveArguments([...installed.version.arguments.jvm, ...installed.fabricArguments.jvm], variables, this.platform, this.arch, features)
     const game = resolveArguments([...installed.version.arguments.game, ...installed.fabricArguments.game], variables, this.platform, this.arch, features)
-    const allocation = effectiveMemory(this.settings, {
+    const allocation = effectiveMemory(preferences, {
       gameVersion: instance.version, modded: instance.loader !== 'vanilla', javaArch: runtime.arch,
     }, this.memorySystem)
-    const args = ['-Xms512M', `-Xmx${allocation.effectiveMb}M`, ...jvm]
+    const args = ['-Xms512M', `-Xmx${allocation.effectiveMb}M`, ...jvm, ...preferences.jvmArgs]
     if (installed.loggingFile && installed.version.logging?.client) {
       args.push(installed.version.logging.client.argument.replace('${path}', safeJoin(this.rootDir, installed.loggingFile)))
     }
     args.push(installed.mainClass, ...game)
+    if (resolved.sources.fullscreen !== 'default') {
+      await applyGameWindowSettings(gameDir, preferences.fullscreen, {
+        backupDirectory: safeJoin(directory, 'backups/window-options'), signal,
+      })
+      // Explicit false must also override a previous persisted true game option.
+      // Remove a forced flag from the resolved metadata before adding our choice.
+      const mainIndex = args.indexOf(installed.mainClass)
+      for (let index = args.length - 1; index > mainIndex; index--) {
+        if (args[index] === '--fullscreen') args.splice(index, 1)
+      }
+      if (preferences.fullscreen) args.push('--fullscreen')
+    }
     this.log(id, 'info', `正在使用 Java ${runtime.version} 启动 ${instance.name}`)
     this.log(id, 'info', `${allocation.mode === 'auto' ? '自动' : '手动'}分配内存：${allocation.effectiveMb} MB${allocation.clamped ? `（已按当前可用内存限制，原目标 ${allocation.requestedMb} MB）` : ''}`)
     // No await between the coordinator's final session check and creating Java.
     beforeSpawn?.()
-    const child = this.spawnProcess(runtime.path, args, { cwd: gameDir, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], shell: false })
+    const child = this.spawnProcess(runtime.path, args, { cwd: gameDir, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], shell: false, env: javaProcessEnvironment() })
     this.processes.set(id, child)
     const started = Date.now()
     const scrub = (text: string) => text.split(token).join('[REDACTED]')
@@ -1455,6 +1532,7 @@ export class LauncherCore {
 
   /** Installs required dependencies too; rejects incompatible versions instead of guessing. */
   async installMod(instanceId: string, versionId: string, source: ResourceSource = 'modrinth'): Promise<LauncherSnapshot> {
+    if (this.instanceSettingsSaving.has(instanceId)) throw new Error('请等待此实例的设置保存完成')
     const provider = resourceProvider(source)
     const instance = this.instance(instanceId)
     if (instance.loader === 'vanilla' || instance.status !== 'ready') throw new Error('请先安装 Fabric、Forge 或 NeoForge 实例，并关闭游戏')

@@ -4,6 +4,7 @@ import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import { spawn, type ChildProcess } from 'node:child_process'
 import AdmZip from 'adm-zip'
+import { javaProcessEnvironment } from './java-environment'
 import { mavenPath, safeJoin, type GameArgument } from './core'
 
 // Official processor/data contract; implementation below is original TypeScript.
@@ -190,7 +191,7 @@ export async function runProcessor(
     }
     const abort = () => { terminate() }
     try {
-      child = spawnProcess(command.java, command.args, { cwd: command.cwd, windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'pipe'] })
+      child = spawnProcess(command.java, command.args, { cwd: command.cwd, windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: javaProcessEnvironment() })
     } catch (error) { finish(error instanceof Error ? error : new Error(String(error))); return }
     // Bound UI output even if a processor unexpectedly writes continuously.
     let loggedBytes = 0

@@ -163,6 +163,13 @@ if (hasLock) app.whenReady().then(async () => {
           loaderVersion: input.loaderVersion === undefined || input.loaderVersion === '' ? undefined : text(input.loaderVersion, 80),
         })
       }
+      case 'instanceOptions': return core.instanceOptions(text(args[0], 80))
+      case 'updateInstanceSettings': {
+        const id = text(args[0], 80)
+        if (launches.has(id)) throw new Error('请等待启动准备结束，再修改实例设置')
+        const input = object(args[1])
+        return core.updateInstanceSettings(id, { name: text(input.name, 80), options: object(input.options) })
+      }
       case 'install': return core.install(text(args[0], 80))
       case 'cancelInstall': return core.cancelInstall(text(args[0], 80))
       case 'cancelLaunch': {
@@ -187,16 +194,15 @@ if (hasLock) app.whenReady().then(async () => {
       case 'stop': return core.stop(text(args[0], 80))
       case 'updateSettings': {
         const input = object(args[0])
-        const current = core.snapshot().settings
-        const memoryMode = input.memoryMode === undefined ? current.memoryMode : text(input.memoryMode, 10)
-        if (memoryMode !== 'auto' && memoryMode !== 'manual') throw new Error('不支持的内存分配模式')
-        return core.updateSettings({
-          memoryMode,
-          memoryMb: input.memoryMb === undefined ? current.memoryMb : Number(input.memoryMb),
-          javaPath: input.javaPath === undefined ? current.javaPath : text(input.javaPath, 2048),
-          manualJavaPath: input.manualJavaPath === undefined ? current.manualJavaPath : text(input.manualJavaPath, 2048),
-          concurrentDownloads: input.concurrentDownloads === undefined ? current.concurrentDownloads : Number(input.concurrentDownloads),
-        } as LauncherSettings)
+        // Preserve absent fields until the core's serialized transaction runs.
+        // A renderer's second partial save must not restore an older snapshot.
+        const patch: Partial<LauncherSettings> = {}
+        const keys = ['memoryMode', 'memoryMb', 'javaPath', 'manualJavaPath', 'jvmArgs',
+          'windowWidth', 'windowHeight', 'fullscreen', 'concurrentDownloads'] as const
+        for (const key of keys) if (Object.hasOwn(input, key)) {
+          ;(patch as Record<string, unknown>)[key] = input[key]
+        }
+        return core.updateSettings(patch)
       }
       case 'memoryInfo': {
         const id = args[0] === undefined ? undefined : text(args[0], 80)

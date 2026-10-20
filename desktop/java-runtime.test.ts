@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict'
+import type { ChildProcess, spawn, SpawnOptions } from 'node:child_process'
 import { createHash } from 'node:crypto'
+import { EventEmitter } from 'node:events'
 import * as fs from 'node:fs/promises'
 import { createRequire, syncBuiltinESMExports } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
+import { PassThrough } from 'node:stream'
 import test, { type TestContext } from 'node:test'
 import {
   JAVA_RUNTIME_INDEX, JavaRuntimeManager, probeJavaRuntime,
@@ -424,4 +427,69 @@ test('real Java probing is cancellable and never requires a Minecraft account', 
   aborted.abort()
   await assert.rejects(probeJavaRuntime(path.resolve('nonexistent-java'), aborted.signal), { name: 'AbortError' })
   await assert.rejects(probeJavaRuntime(path.resolve('nonexistent-java')), { code: 'ENOENT' })
+})
+
+test('the default runtime probe strips Java injection variables before accepting version and architecture', async t => {
+  const f = await fixture(t)
+  const blocked = new Set(['JAVA_TOOL_OPTIONS', 'JDK_JAVA_OPTIONS', '_JAVA_OPTIONS', 'CLASSPATH'])
+  const original = Object.entries(process.env).filter(([name]) => blocked.has(name.toUpperCase()))
+  const preservedName = 'LUA_PROBE_TEST_PRESERVED'
+  const preservedOriginal = process.env[preservedName]
+  const clear = () => {
+    for (const name of Object.keys(process.env)) if (blocked.has(name.toUpperCase())) delete process.env[name]
+  }
+  t.after(() => {
+    clear()
+    for (const [name, value] of original) process.env[name] = value
+    if (preservedOriginal === undefined) delete process.env[preservedName]
+    else process.env[preservedName] = preservedOriginal
+  })
+  clear()
+  const variants = ['java_tool_options', 'Jdk_Java_Options', '_java_OPTIONS', 'classPath']
+  for (const name of variants) process.env[name] = `must-not-reach-probe-${name}`
+  process.env[preservedName] = 'retain this exact value with spaces'
+  const mutableChildProcess = createRequire(import.meta.url)('node:child_process') as typeof import('node:child_process')
+  const calls: Array<{ executable: string; args: string[]; options: SpawnOptions }> = []
+  const fakeSpawn = ((executable: string, args: string[], options: SpawnOptions) => {
+    calls.push({ executable, args: [...args], options })
+    const stdout = new PassThrough()
+    const stderr = new PassThrough()
+    const child = Object.assign(new EventEmitter(), {
+      stdout, stderr,
+      kill: () => { throw new Error('The successful probe must not need to be killed') },
+    }) as unknown as ChildProcess
+    queueMicrotask(() => {
+      const arch = process.arch === 'arm64' ? 'aarch64' : process.arch === 'x64' ? 'amd64' : process.arch
+      stderr.end(Buffer.from(`Property settings:\n    java.version = 17.0.15\n    os.arch = ${arch}\nopenjdk version "17.0.15"\n`))
+      stdout.end()
+      child.emit('close', 0, null)
+    })
+    return child
+  }) as typeof spawn
+  const mockedSpawn = t.mock.method(mutableChildProcess, 'spawn', fakeSpawn)
+  syncBuiltinESMExports()
+  try {
+    // No injected probe: execute the manager's actual probe code, replacing only
+    // the OS process boundary so this test needs no installed Java on any host.
+    const manager = new JavaRuntimeManager(f.root, { fetch: f.fetcher })
+    const result = await manager.ensure(f.request)
+    assert.equal(result.version, '17.0.15')
+    assert.equal(result.major, 17)
+    assert.equal(result.arch, process.arch)
+    assert.equal(calls.length, 1)
+    assert.ok(calls[0].executable.includes(`${path.sep}.staging-`))
+    assert.ok(calls[0].executable.endsWith(path.join(...f.executable.split('/'))))
+    assert.deepEqual(calls[0].args, ['-XshowSettings:properties', '-version'])
+    assert.notEqual(calls[0].options.shell, true)
+    const environment = calls[0].options.env!
+    assert.deepEqual(Object.keys(environment).filter(name => blocked.has(name.toUpperCase())), [])
+    assert.equal(environment[preservedName], process.env[preservedName])
+    assert.equal(environment.PATH, process.env.PATH)
+    for (const name of variants) assert.equal(process.env[name], `must-not-reach-probe-${name}`)
+    assert.deepEqual(await fs.readFile(result.path), JAVA)
+    assert.deepEqual(await f.staging(), [])
+  } finally {
+    mockedSpawn.mock.restore()
+    syncBuiltinESMExports()
+  }
 })
