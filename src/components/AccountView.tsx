@@ -18,7 +18,6 @@ export default function AccountView({ account, auth, authError, login, cancelLog
   const [configLoading, setConfigLoading] = useState(true)
   const [clientId, setClientId] = useState('')
   const [advanced, setAdvanced] = useState(false)
-  const [username, setUsername] = useState('')
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
   const [configSaved, setConfigSaved] = useState(false)
@@ -53,9 +52,13 @@ export default function AccountView({ account, auth, authError, login, cancelLog
       setClientId(saved.source === 'custom' ? saved.clientId : '')
     })
   }
+  const logout = async () => {
+    try { await call('logout') }
+    finally { await refresh() }
+  }
   return <>
-    <PageHeading title="游戏账户" subtitle="使用 Microsoft 账户登录 Minecraft Java，或设置本地离线身份。" />
-    {account && <div className="account-current"><span className="account-avatar"><UserRound size={28} /></span><div><h2>{account.username}</h2><p>{account.mode === 'microsoft' ? 'Microsoft · Minecraft Java' : '离线模式 · 无在线身份验证'}</p></div><button className="button secondary" disabled={Boolean(busy) || auth.active} onClick={() => void perform('logout', async () => { await call('logout'); await refresh() })}>{busy === 'logout' ? <Spinner size={16} /> : <LogOut size={16} />}退出账户</button></div>}
+    <PageHeading title="游戏账户" subtitle="使用 Microsoft 账户登录 Minecraft Java。" />
+    {account && <div className="account-current"><span className="account-avatar"><UserRound size={28} /></span><div><h2>{account.username}</h2><p>Microsoft · Minecraft Java</p></div><button className="button secondary" disabled={Boolean(busy) || auth.active} onClick={() => void perform('logout', logout)}>{busy === 'logout' ? <Spinner size={16} /> : <LogOut size={16} />}退出账户</button></div>}
     <section className="account-card account-login-card">
       <div className="account-section-heading"><div className="account-card-icon"><div className="microsoft-mark"><i /><i /><i /><i /></div></div><div><h2>Microsoft 登录</h2><p>在 Microsoft 官方网页完成授权，无需在启动器输入密码。</p></div></div>
       <div className="security-note"><ShieldCheck size={16} /><span>登录后会验证 Minecraft Java 游戏所有权。</span></div>
@@ -73,7 +76,7 @@ export default function AccountView({ account, auth, authError, login, cancelLog
       {(authError || (auth.status?.stage === 'error' ? auth.status.message : '')) && <ErrorBox message={authError || auth.status!.message} />}
       {!auth.active && auth.status?.stage === 'cancelled' && <p className="auth-cancelled" role="status">已取消登录，当前账户保持不变。</p>}
     </section>
-    <details className="offline-section auth-advanced" open={advanced} onToggle={event => setAdvanced(event.currentTarget.open)}>
+    <details className="account-disclosure auth-advanced" open={advanced} onToggle={event => setAdvanced(event.currentTarget.open)}>
       <summary><Settings2 size={17} /><span>高级：Microsoft 登录应用</span><ChevronDown size={16} /></summary>
       <p>仅在当前构建没有可用登录配置，或需要使用自有应用时修改。Client ID 是应用标识，不是账户密码。</p>
       <form onSubmit={event => void saveConfig(event)}>
@@ -81,7 +84,6 @@ export default function AccountView({ account, auth, authError, login, cancelLog
         <div className="auth-config-actions"><button className="button secondary" disabled={!isDesktop || auth.active || Boolean(busy)}>{busy === 'config' ? <Spinner size={16} /> : <Check size={16} />}保存配置</button><button type="button" className="text-button" onClick={() => openUrl('https://github.com/XQGGCN/lua-launcher/blob/main/docs/MICROSOFT_LOGIN.md')}>Microsoft 登录接入帮助<ExternalLink size={14} /></button>{configSaved && <span className="config-saved" role="status">{config?.configured ? '配置已保存，可尝试登录。' : '已清除自定义配置。'}</span>}</div>
       </form>
     </details>
-    <details className="offline-section"><summary><UserRound size={17} /><span>离线模式</span><ChevronDown size={16} /></summary><p>用于离线环境下的本地游玩，不提供正版服务器认证。请使用自己拥有的游戏副本。</p><form onSubmit={event => { event.preventDefault(); void perform('offline', async () => { await call('setOffline', username.trim()); await refresh() }) }}><label className="field"><span>玩家名称</span><input value={username} onChange={event => setUsername(event.target.value)} placeholder="3–16 位字母、数字或下划线" pattern="[A-Za-z0-9_]{3,16}" minLength={3} maxLength={16} required disabled={Boolean(busy) || auth.active} /></label><button className="button secondary" disabled={Boolean(busy) || auth.active || !isDesktop}>{busy === 'offline' ? <Spinner size={16} /> : <UserRound size={16} />}使用离线身份</button></form></details>
     {error && <ErrorBox message={error} retry={!config ? () => setRetry(value => value + 1) : undefined} />}
   </>
 }
