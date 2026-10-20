@@ -2,13 +2,15 @@
 
 一个面向 Windows、macOS 和 Linux 的独立 Minecraft Java 启动器。采用参考 PCL / HMCL 的实用、紧凑浅色桌面布局，把账户、版本、Java 与启动操作放在清晰的位置；集成 Modrinth 与 BBSMC 资源搜索，使用原创实现与独立品牌。
 
-**当前版本：0.3.0 Alpha，纯在线账户版。** 在现代原版与 Fabric、隔离实例及 `.mrpack` 安装的基础上，新增 Forge / NeoForge 安装、自动内存分配和 19 个模组功能类别筛选。启动游戏需要完成 Microsoft 登录、Minecraft Java 所有权和档案验证。Minecraft 服务接入目前仍返回 `403`，因此新用户暂时无法完成登录并启动游戏。BBSMC 接入为实验性，尚未达到 PCL / HMCL 的完整功能覆盖。
+**当前版本：0.4.0 Alpha，纯在线账户版。** 在原版、Fabric、Forge / NeoForge、独立实例和资源安装的基础上，新增官方 Java 自动下载、校验与安装，保留手动路径及自动内存设置。启动游戏需要完成 Microsoft 登录、Minecraft Java 所有权和档案验证。Minecraft 服务接入目前仍返回 `403`，因此新用户暂时无法完成登录并启动游戏。BBSMC 接入为实验性，尚未达到 PCL / HMCL 的完整功能覆盖。
 
 ## 验证状态
 
 截至 2026-10-21：
 
-- **0.3.0 本地 156 项确定性测试通过**：覆盖认证与配置、账户并发、启动内核、Forge / NeoForge 安装器、自动内存、模组分类、整合包事务、文件选择及资源站隔离。Windows、Linux、macOS 的测试与安装包构建结果以对应提交的 [GitHub Actions](https://github.com/XQGGCN/lua-launcher/actions) 为准；本地通过不等于三平台 CI 已成功。模拟网络测试也不代表真实账户登录或游戏运行已经通过。
+- **0.4.0 本地 201 项确定性测试通过**：新增 Java 下载与发现、全新目录接线、共享取消、原子提交、旧记录恢复和启动取消测试；原有测试继续覆盖认证与配置、账户并发、启动内核、Forge / NeoForge 安装器、自动内存、模组分类、整合包事务、文件选择及资源站隔离。Windows、Linux、macOS 的测试与安装包构建结果以对应提交的 [GitHub Actions](https://github.com/XQGGCN/lua-launcher/actions) 为准；本地通过不等于三平台 CI 已成功。模拟网络测试也不代表真实账户登录或游戏运行已经通过。
+- **0.4.0 Java 实测**：macOS ARM64 的官方 Java 17.0.15、21.0.7、25.0.1 均完成真实下载、完整文件校验与 `java -version` 探测；重建管理器后关闭网络仍能复用。损坏运行时被识别并重新安装，旧目录与其他版本保留。
+- **0.4.0 自动 Java 核心集成实测**：在隔离目录中强制关闭系统 Java 探测，完成 Minecraft 1.20.1 原版安装，并使用新托管 Java 17 完成 Forge 47.4.0 的 5 个 JVM 处理器及产物校验。没有登录账户或启动游戏。
 - **0.3.0 加载器安装实测**：macOS ARM64、本机 Java 17 下，Minecraft 1.20.1 + Forge 47.4.0，以及 Minecraft 1.20.2 + NeoForge 20.2.93 均完成核心完整安装流程，安装器处理步骤（processors）执行成功，生成 JAR 校验通过。验证范围是安装流水线，没有验证这两个实例进入游戏、存档或联机。
 - **0.3.0 分类实测**：Modrinth 与 BBSMC 的“性能优化”真实搜索各检查前 20 项结果，分类标签均与对应来源条件匹配。此结果验证分类查询，没有验证全部类别或结果中的模组组合。
 - **历史 macOS ARM64 实测（0.2.1 及之前）**：Minecraft 1.20.1 原版，以及 1.20.1 + Fabric Loader 0.19.5，曾在当时的离线模式下完成游戏初始化。0.2.2 已移除此路径，这些结果不等于当前纯在线版启动验收通过。
@@ -25,7 +27,8 @@
 - 选择 Minecraft 与加载器后直接下载；任务页展示进度、取消、重试与已完成文件复用。
 - Modrinth / BBSMC 整合包在线搜索、版本选择和下载；本地 `.mrpack` 导入前预览名称、版本、加载器与文件大小。
 - 整合包固定加载器版本、验证 SHA-1 与 SHA-512、应用客户端配置；取消或失败后可从任务页重试，完整安装成功才标记为可启动。
-- Java 自动探测、手动路径、自动 / 手动内存与并发设置；启动前重新计算内存分配。
+- Java 自动探测、官方运行时自动下载与安装、手动路径；切换自动模式会保留手动路径。设置页可提前下载 Java 17 / 21 / 25，任务页显示实际进度、取消与重试。
+- 自动 / 手动内存与并发设置；启动前重新计算内存分配。
 - 游戏启动、关闭、状态跟踪与实时日志。
 - Microsoft 设备码认证、授权进度和倒计时、取消、许可与档案检查、刷新令牌安全存储；**已注册 Lua 自己的客户端 ID，Microsoft / Xbox 实测通过，Minecraft 服务接入仍被 `403` 阻塞**。
 - 仅支持经过完整验证的 Microsoft 账户启动；没有离线入口、离线 IPC 或登录失败后的离线回退。旧版本的离线账户文件不会被加载。
@@ -55,7 +58,9 @@ pnpm install
 pnpm desktop
 ```
 
-Java 需要与游戏要求一致。1.20.1 使用 Java 17；较新版本通常需要 Java 21 或更高，以游戏官方元数据为准。首版不会自动下载 Java。
+Java 自动管理会读取每个游戏的官方 `javaVersion.majorVersion` 与 `component`，优先使用匹配的本机或托管 Java，缺失时下载 Mojang 运行时。以实际版本清单为准，例如 1.20.1 需要 17、1.20.5 需要 21、26.3 需要 25。可在设置中提前准备 17 / 21 / 25，或选择自己的 Java 可执行文件。
+
+运行时保存在 `launcher/runtimes/`，不改系统 PATH 或 JAVA_HOME。下载验证清单和每个文件的大小及 SHA-1，完成权限准备、版本与架构探测后才提交。Linux ARM64 等官方未提供的组合会明确提示手动选择，不会偷偷换架构。下载页任务记录限当前进程；重启后复核并复用已安装运行时，尚不提供字节级续传。
 
 ```sh
 pnpm dev       # 浏览器 UI 预览，不能启动 Java
@@ -96,9 +101,9 @@ Quilt、旧游戏版本和 CurseForge 格式会给出明确的不兼容提示。
 
 ## 获取构建
 
-软件免费公开下载，源码采用 MIT 许可。打开 [0.3.0 Release](https://github.com/XQGGCN/lua-launcher/releases/tag/v0.3.0)，在 Assets 获取已完成发布的平台安装包；各平台构建与发布状态以 [GitHub Actions](https://github.com/XQGGCN/lua-launcher/actions) 和 Release 实际附件为准。构建尚未代码签名或公证，仍属于 Alpha 测试版。
+软件免费公开下载，源码采用 MIT 许可。打开 [GitHub Releases](https://github.com/XQGGCN/lua-launcher/releases)，在 Assets 获取已完成发布的平台安装包；各平台构建与发布状态以 [GitHub Actions](https://github.com/XQGGCN/lua-launcher/actions) 和 Release 实际附件为准。构建尚未代码签名或公证，仍属于 Alpha 测试版。
 
-Lua 安装包不捆绑 Minecraft 游戏、模组或整合包；安装时从对应发布来源下载。Java 需要自行安装，Minecraft Java 游戏许可需要由玩家持有。
+Lua 安装包不捆绑 Minecraft 游戏、模组或整合包；安装时从对应发布来源下载。Java 可按需从官方自动下载，也可自行安装；Minecraft Java 游戏许可需要由玩家持有。
 
 ## 数据与隐私
 
@@ -109,7 +114,7 @@ Lua 安装包不捆绑 Minecraft 游戏、模组或整合包；安装时从对�
 ## 兼容性与限制
 
 - 跨平台架构及打包配置已提供；实际验证范围见上方“验证状态”，Windows / Linux 游戏运行仍待测试。
-- 旧版 Minecraft、快照、Quilt、CurseForge 包、整合包导出、自动 Java 安装、皮肤管理、自动更新尚未实现。
+- 旧版 Minecraft、快照、Quilt、CurseForge 包、整合包导出、皮肤管理、自动更新尚未实现。
 - Forge / NeoForge 只完成有限版本的真实安装验收，不能据此承诺所有加载器版本、模组组合或系统均可正常游玩。
 - 模组更新、卸载和冲突分析尚未实现。Alpha 阶段建议新建测试实例。
 - 安装包尚未做 Windows 代码签名或 macOS 公证。开发者需要自行配置签名后正式分发。
@@ -122,6 +127,8 @@ src/                React UI 与受限的桌面 API 客户端
 desktop/core.ts     安装、平台规则、Java、启动与资源来源
 desktop/loader.ts   Forge / NeoForge 元数据、安装器与产物校验
 desktop/memory.ts   系统内存采样、自动建议与启动堆限额
+desktop/java-runtime.ts 官方 Java 下载、校验、发现与共享任务
+desktop/launch-preparation.ts 凭据获取之前的启动取消与退出保护
 desktop/auth.ts     Microsoft → Xbox → Minecraft 认证
 desktop/modpack.ts  Modrinth 包格式、路径与归档校验
 desktop/main.ts     Electron 生命周期、IPC 与系统安全存储
@@ -133,3 +140,5 @@ docs/RESEARCH.md    功能参照与源码许可研究
 Electron 禁用 renderer Node 集成、启用 context isolation / sandbox、验证 IPC 来源并限定命令。下载仅允许指定官方域名，验证校验值并拒绝路径穿越。测试使用临时目录与模拟网络响应，不依赖个人账号。
 
 原创代码采用 [MIT](LICENSE) 许可。依赖保留各自许可，见 [第三方说明](THIRD_PARTY_NOTICES.md)。贡献请参阅 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+每个小版本的变更见 [CHANGELOG](CHANGELOG.md)，详细开发日志见 [docs/devlog](docs/devlog)，独立审查见 [docs/reviews](docs/reviews)。完整需求与状态见 [功能矩阵](docs/FEATURE_MATRIX.md)，每个验证等级的边界见 [验收矩阵](docs/ACCEPTANCE_MATRIX.md)。

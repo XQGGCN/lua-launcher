@@ -19,3 +19,7 @@ No source or packaged assets from PCL, HMCL or Modrinth App are included. Their 
 Minecraft is a trademark of Mojang / Microsoft. Lua is an independent project, not an official Minecraft product.
 
 Forge and NeoForge installer metadata and processor JARs are downloaded on request from their official Maven repositories. Their binaries retain their own licenses and are not bundled with Lua. Lua implements the installer orchestration in original TypeScript. Official projects and support links: [Forge](https://minecraftforge.net/), [Forge support](https://www.patreon.com/LexManos), [NeoForge](https://neoforged.net/).
+
+## Downloaded Java runtimes
+
+Lua 0.4.0 downloads selected Mojang-distributed OpenJDK runtime files on demand from official metadata. These runtimes are not bundled in the Lua application or relicensed under MIT. Runtime `legal/` license and notice files remain in the installed runtime. Consult those files for the exact build’s GPLv2 with Classpath Exception and any component-specific notices.

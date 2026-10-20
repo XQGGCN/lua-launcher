@@ -11,7 +11,7 @@
 ## Implementation scope
 
 Electron, React and TypeScript. Original UI and launcher integration; no copied PCL, HMCL or Modrinth implementation or brand assets.
-The current version is 0.3.0 Alpha: modern Vanilla, Fabric, Forge and NeoForge installation; isolated instances; Java selection; automatic or manual heap allocation; task progress; logs; Microsoft account flow; and Modrinth / experimental BBSMC discovery and `.mrpack` installation. Broader feature parity remains a roadmap.
+The current version is 0.4.0 Alpha: modern Vanilla, Fabric, Forge and NeoForge installation; isolated instances; verified automatic Mojang Java provisioning and manual selection; automatic or manual heap allocation; task progress; logs; Microsoft account flow; and Modrinth / experimental BBSMC discovery and `.mrpack` installation. Broader feature parity remains a roadmap.
 
 Version 0.3.0 implements 19 official Modrinth mod categories, corresponding BBSMC Chinese search facets, and the category-filter UI. Real optimization-category searches on both sources returned matching category tags for the first 20 results checked per source. Categories describe upstream project tags, not locally inferred mod behavior; this sample does not validate every category or mod combination.
 
@@ -28,3 +28,5 @@ On macOS ARM64 with local Java 17, full core installation completed for Minecraf
 Historical versions through 0.2.1 completed game initialization on macOS ARM64 for Minecraft 1.20.1 Vanilla and Fabric Loader 0.19.5 using their former offline mode. This does not establish successful authenticated gameplay in the current build.
 
 Microsoft device authorization and Xbox/XSTS authentication have passed, but the Minecraft login endpoint returns HTTP 403. The service-access application was submitted on 2026-10-21 and is awaiting approval. Complete account login and current online-only gameplay, including Windows / Linux gameplay, remain unverified. See [README.md](README.md#验证状态) for the public validation statement.
+
+Version 0.4.0 adds shared, cancellable Mojang Java provisioning for exact manifest components, managed-runtime validation and atomic publication, retained manual-path preferences, and launcher-session task views. Local 201 deterministic tests and build passed. On macOS ARM64, Java 17/21/25 downloads/probes, offline cache reuse and repair passed; Vanilla 1.20.1 and Forge 47.4.0 installed with system Java detection deliberately disabled and only the new managed Java allowed for processors. No current game or authentication run was performed. See docs/devlog/0.4.0.md and docs/reviews/0.4.0.md for evidence and remaining limits.
