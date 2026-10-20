@@ -8,6 +8,7 @@ import path from 'node:path'
 import { PassThrough } from 'node:stream'
 import test from 'node:test'
 import AdmZip from 'adm-zip'
+import metadata from '../package.json'
 import { LauncherCore, isSupportedVersion, mavenPath, resolveArguments, rulesAllow, safeJoin, type CoreEvent, type LaunchAccount } from './core'
 
 const sha1 = (body: string) => createHash('sha1').update(body).digest('hex')
@@ -119,6 +120,21 @@ const microsoftAccount: LaunchAccount = {
 }
 const testRuntime = { path: '/fake/java', version: '17.0.12', major: 17, arch: 'x64' }
 
+// These existing installation/launch tests isolate Java provisioning. Its real
+// selection, download and cancellation contract has dedicated integration tests.
+function fixtureCore(...[directory, emit, options = {}]: ConstructorParameters<typeof LauncherCore>) {
+  const core = new LauncherCore(directory, emit, {
+    ...options,
+    javaRuntimeManager: {
+      discover: async () => [],
+      ensure: async request => { throw new Error(`需要 Java ${request.major}（isolated test runtime unavailable）`) },
+    },
+  })
+  core.detectJava = async () => [{ ...testRuntime, arch: options.arch || process.arch }]
+  return core
+}
+
+
 async function assertNoStaging(core: LauncherCore, id: string) {
   assert.equal((await fs.readdir(core.instanceDirectory(id))).some(file => file.startsWith('.mod-staging-')), false)
 }
@@ -184,7 +200,7 @@ test('installer downloads verified files, persists ready state, and reuses its c
   t.after(() => fs.rm(directory, { recursive: true, force: true }))
   const fake = fixture()
   const events: CoreEvent[] = []
-  const core = new LauncherCore(directory, event => events.push(event), { fetch: fake.fetcher, platform: 'darwin', arch: 'arm64' })
+  const core = fixtureCore(directory, event => events.push(event), { fetch: fake.fetcher, platform: 'darwin', arch: 'arm64' })
   await core.init()
   assert.deepEqual((await core.versions()).map(v => v.id), ['1.20.1'])
   const instance = await core.createInstance({ name: 'Test world', version: '1.20.1', loader: 'vanilla' })
@@ -196,7 +212,7 @@ test('installer downloads verified files, persists ready state, and reuses its c
   await core.install(instance.id)
   assert.equal(fake.requests.length, firstDownloadCount)
   assert(events.some(event => event.type === 'progress' && event.phase === '安装完成' && event.total === event.completed))
-  const reopened = new LauncherCore(directory, undefined, { fetch: fake.fetcher })
+  const reopened = fixtureCore(directory, undefined, { fetch: fake.fetcher })
   await reopened.init()
   assert.equal(reopened.snapshot().instances[0].id, instance.id)
   assert.equal(reopened.snapshot().instances[0].status, 'ready')
@@ -207,7 +223,7 @@ test('corrupt downloads never become installed artifacts and can be retried', as
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'lua-core-corrupt-'))
   t.after(() => fs.rm(directory, { recursive: true, force: true }))
   const fake = fixture(true)
-  const core = new LauncherCore(directory, undefined, { fetch: fake.fetcher })
+  const core = fixtureCore(directory, undefined, { fetch: fake.fetcher })
   await core.init()
   const instance = await core.createInstance({ name: 'Broken download', version: '1.20.1', loader: 'vanilla' })
   await assert.rejects(core.install(instance.id), /SHA-1/)
@@ -234,7 +250,7 @@ test('cancellation settles all workers and leaves an instance that can resume', 
     }
     return fake.fetcher(input, options)
   }
-  const core = new LauncherCore(directory, undefined, { fetch: slowFetch })
+  const core = fixtureCore(directory, undefined, { fetch: slowFetch })
   await core.init()
   const instance = await core.createInstance({ name: 'Cancel test', version: '1.20.1', loader: 'vanilla' })
   const installing = core.install(instance.id)
@@ -243,7 +259,7 @@ test('cancellation settles all workers and leaves an instance that can resume', 
   core.cancelInstall(instance.id)
   await rejects
   assert.equal(core.snapshot().instances[0].status, 'not-installed')
-  const reopened = new LauncherCore(directory, undefined, { fetch: fake.fetcher })
+  const reopened = fixtureCore(directory, undefined, { fetch: fake.fetcher })
   await reopened.init()
   await reopened.install(instance.id)
   assert.equal(reopened.snapshot().instances[0].status, 'ready')
@@ -253,7 +269,7 @@ test('Fabric installation merges the loader profile and verifies Maven libraries
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'lua-core-fabric-'))
   t.after(() => fs.rm(directory, { recursive: true, force: true }))
   const fake = fabricFixture()
-  const core = new LauncherCore(directory, undefined, { fetch: fake.fetcher })
+  const core = fixtureCore(directory, undefined, { fetch: fake.fetcher })
   await core.init()
   const instance = await core.createInstance({ name: 'Fabric world', version: '1.20.1', loader: 'fabric' })
   await core.install(instance.id)
@@ -272,7 +288,7 @@ test('Modrinth required dependencies are verified, and managed upgrades remove o
   addMod('modv1', 'example', 'example v1', [{ dependency_type: 'required', version_id: 'dependency1' }])
   addMod('modv2', 'example', 'example v2', [{ dependency_type: 'required', version_id: 'dependency1' }])
   addMod('incompatible', 'wrong', 'wrong jar', [], ['1.21.1'])
-  const core = new LauncherCore(directory, undefined, { fetch: fake.fetcher })
+  const core = fixtureCore(directory, undefined, { fetch: fake.fetcher })
   await core.init()
   const instance = await core.createInstance({ name: 'Mod world', version: '1.20.1', loader: 'fabric' })
   await core.install(instance.id)
@@ -292,7 +308,7 @@ test('one launch owns an instance while Java detection is pending', async t => {
   t.after(() => fs.rm(directory, { recursive: true, force: true }))
   const fake = fixture()
   const processes = processHarness()
-  const core = new LauncherCore(directory, undefined, { fetch: fake.fetcher, spawn: processes.spawn, memorySystem: { totalmem: () => 16 * 1024 ** 3, freemem: () => 12 * 1024 ** 3 }, platform: 'linux', arch: 'x64' })
+  const core = fixtureCore(directory, undefined, { fetch: fake.fetcher, spawn: processes.spawn, memorySystem: { totalmem: () => 16 * 1024 ** 3, freemem: () => 12 * 1024 ** 3 }, platform: 'linux', arch: 'x64' })
   await core.init()
   const instance = await core.createInstance({ name: 'Launch lock', version: '1.20.1', loader: 'vanilla' })
   await core.install(instance.id)
@@ -325,7 +341,7 @@ test('launch rejects offline and invalid credentials before preparing Java', asy
   t.after(() => fs.rm(directory, { recursive: true, force: true }))
   const fake = fixture()
   const processes = processHarness()
-  const core = new LauncherCore(directory, undefined, { fetch: fake.fetcher, spawn: processes.spawn, memorySystem: { totalmem: () => 16 * 1024 ** 3, freemem: () => 12 * 1024 ** 3 }, platform: 'linux', arch: 'x64' })
+  const core = fixtureCore(directory, undefined, { fetch: fake.fetcher, spawn: processes.spawn, memorySystem: { totalmem: () => 16 * 1024 ** 3, freemem: () => 12 * 1024 ** 3 }, platform: 'linux', arch: 'x64' })
   await core.init()
   const instance = await core.createInstance({ name: 'Microsoft credentials', version: '1.20.1', loader: 'vanilla' })
   await core.install(instance.id)
@@ -358,7 +374,7 @@ test('the final session guard blocks a logout during preparation and releases th
   t.after(() => fs.rm(directory, { recursive: true, force: true }))
   const fake = fixture()
   const processes = processHarness()
-  const core = new LauncherCore(directory, undefined, { fetch: fake.fetcher, spawn: processes.spawn, memorySystem: { totalmem: () => 16 * 1024 ** 3, freemem: () => 12 * 1024 ** 3 }, platform: 'linux', arch: 'x64' })
+  const core = fixtureCore(directory, undefined, { fetch: fake.fetcher, spawn: processes.spawn, memorySystem: { totalmem: () => 16 * 1024 ** 3, freemem: () => 12 * 1024 ** 3 }, platform: 'linux', arch: 'x64' })
   await core.init()
   const instance = await core.createInstance({ name: 'Session guard', version: '1.20.1', loader: 'vanilla' })
   await core.install(instance.id)
@@ -397,7 +413,7 @@ test('the final session guard blocks a logout during preparation and releases th
   assert.equal(argument('--userType'), 'msa')
   assert.equal(argument('--clientId'), microsoftAccount.clientId)
   assert.equal(argument('--xuid'), microsoftAccount.xuid)
-  assert.ok(args.includes('-Dminecraft.launcher.version=0.3.0'))
+  assert.ok(args.includes(`-Dminecraft.launcher.version=${metadata.version}`))
   const closed = once(processes.children[0], 'close')
   core.stop(instance.id)
   await closed
@@ -409,7 +425,7 @@ test('a failed prelaunch releases its reservation so the same instance can retry
   t.after(() => fs.rm(directory, { recursive: true, force: true }))
   const fake = fixture()
   const processes = processHarness()
-  const core = new LauncherCore(directory, undefined, { fetch: fake.fetcher, spawn: processes.spawn, memorySystem: { totalmem: () => 16 * 1024 ** 3, freemem: () => 12 * 1024 ** 3 }, platform: 'linux', arch: 'x64' })
+  const core = fixtureCore(directory, undefined, { fetch: fake.fetcher, spawn: processes.spawn, memorySystem: { totalmem: () => 16 * 1024 ** 3, freemem: () => 12 * 1024 ** 3 }, platform: 'linux', arch: 'x64' })
   await core.init()
   const instance = await core.createInstance({ name: 'Launch retry', version: '1.20.1', loader: 'vanilla' })
   await core.install(instance.id)
@@ -429,7 +445,7 @@ test('a late close from a failed child cannot erase a newer running process', as
   t.after(() => fs.rm(directory, { recursive: true, force: true }))
   const fake = fixture()
   const processes = processHarness(1)
-  const core = new LauncherCore(directory, undefined, { fetch: fake.fetcher, spawn: processes.spawn, memorySystem: { totalmem: () => 16 * 1024 ** 3, freemem: () => 12 * 1024 ** 3 }, platform: 'linux', arch: 'x64' })
+  const core = fixtureCore(directory, undefined, { fetch: fake.fetcher, spawn: processes.spawn, memorySystem: { totalmem: () => 16 * 1024 ** 3, freemem: () => 12 * 1024 ** 3 }, platform: 'linux', arch: 'x64' })
   await core.init()
   const instance = await core.createInstance({ name: 'Child ownership', version: '1.20.1', loader: 'vanilla' })
   await core.install(instance.id)
@@ -450,7 +466,7 @@ test('unexpected crash signals are reported instead of being treated as normal s
   t.after(() => fs.rm(directory, { recursive: true, force: true }))
   const fake = fixture()
   const processes = processHarness()
-  const core = new LauncherCore(directory, undefined, { fetch: fake.fetcher, spawn: processes.spawn, memorySystem: { totalmem: () => 16 * 1024 ** 3, freemem: () => 12 * 1024 ** 3 }, platform: 'linux', arch: 'x64' })
+  const core = fixtureCore(directory, undefined, { fetch: fake.fetcher, spawn: processes.spawn, memorySystem: { totalmem: () => 16 * 1024 ** 3, freemem: () => 12 * 1024 ** 3 }, platform: 'linux', arch: 'x64' })
   await core.init()
   const instance = await core.createInstance({ name: 'Crash signals', version: '1.20.1', loader: 'vanilla' })
   await core.install(instance.id)
@@ -471,7 +487,7 @@ test('a failed dependency download leaves installed mods and their registry unch
   fake.addMod('new', 'example', 'new jar', [{ dependency_type: 'required', version_id: 'dependency' }])
   const dependencyUrl = fake.addMod('dependency', 'api', 'dep jar')
   fake.responses.set(dependencyUrl, 'bad jar')
-  const core = new LauncherCore(directory, undefined, { fetch: fake.fetcher })
+  const core = fixtureCore(directory, undefined, { fetch: fake.fetcher })
   await core.init()
   const instance = await core.createInstance({ name: 'Failed dependency', version: '1.20.1', loader: 'fabric' })
   await core.install(instance.id)
@@ -506,7 +522,7 @@ test('cancelling a mod download keeps the prior complete installation launchable
     }
     return fake.fetcher(url, options)
   }
-  const core = new LauncherCore(directory, undefined, { fetch: fetcher })
+  const core = fixtureCore(directory, undefined, { fetch: fetcher })
   await core.init()
   const instance = await core.createInstance({ name: 'Cancelled dependency', version: '1.20.1', loader: 'fabric' })
   await core.install(instance.id)
@@ -542,7 +558,7 @@ test('a commit failure after placing a new jar restores the old jars and registr
     }
     await fs.rename(from, to)
   }
-  const core = new LauncherCore(directory, undefined, { fetch: fake.fetcher, renameFile })
+  const core = fixtureCore(directory, undefined, { fetch: fake.fetcher, renameFile })
   await core.init()
   const instance = await core.createInstance({ name: 'Commit rollback', version: '1.20.1', loader: 'fabric' })
   await core.install(instance.id)
@@ -567,7 +583,7 @@ test('metadata cannot redirect the downloader into a local service', async t => 
     requests.push(String(input))
     return new Response(null, { status: 302, headers: { location: 'https://127.0.0.1/private' } })
   }
-  const core = new LauncherCore(directory, undefined, { fetch: fetcher })
+  const core = fixtureCore(directory, undefined, { fetch: fetcher })
   await core.init()
   await assert.rejects(core.versions(), /不允许的下载来源/)
   assert.deepEqual(requests, [MANIFEST])
@@ -589,7 +605,7 @@ test('local modpack import pins its Fabric version and becomes ready only after 
     'server-overrides/config/server.json': 'server',
   }))
   const readyEvents: boolean[] = []
-  const core = new LauncherCore(path.join(directory, 'data'), event => {
+  const core = fixtureCore(path.join(directory, 'data'), event => {
     if (event.type === 'state') readyEvents.push(event.snapshot.instances.some(instance => instance.status === 'ready'))
   }, { fetch: fake.fetcher })
   await core.init()
@@ -627,7 +643,7 @@ test('cancelled modpack imports retain their source and retry successfully after
     }
     return fake.fetcher(url, options)
   }
-  const core = new LauncherCore(path.join(directory, 'data'), undefined, { fetch: slowFetch })
+  const core = fixtureCore(path.join(directory, 'data'), undefined, { fetch: slowFetch })
   await core.init()
   const pending = core.importModpack(archiveFile)
   const rejected = assert.rejects(pending, /安装已取消/)
@@ -639,7 +655,7 @@ test('cancelled modpack imports retain their source and retry successfully after
   assert.equal(core.snapshot().instances[0].status, 'not-installed')
   assert.equal(core.snapshot().instances[0].modpack?.applied, false)
   await fs.rm(archiveFile)
-  const reopened = new LauncherCore(path.join(directory, 'data'), undefined, { fetch: fake.fetcher })
+  const reopened = fixtureCore(path.join(directory, 'data'), undefined, { fetch: fake.fetcher })
   await reopened.init()
   await reopened.install(instance.id)
   assert.equal(reopened.snapshot().instances[0].status, 'ready')
@@ -658,7 +674,7 @@ test('pack files require SHA-512 as well as SHA-1 and failed imports never publi
   fake.responses.set(file.downloads[0], 'jar body')
   const archiveFile = path.join(directory, 'bad-hash.mrpack')
   await fs.writeFile(archiveFile, testPack([file], {}, { minecraft: '1.20.1' }))
-  const core = new LauncherCore(path.join(directory, 'data'), undefined, { fetch: fake.fetcher })
+  const core = fixtureCore(path.join(directory, 'data'), undefined, { fetch: fake.fetcher })
   await core.init()
   await assert.rejects(core.importModpack(archiveFile), /SHA-512/)
   const instance = core.snapshot().instances[0]
@@ -682,7 +698,7 @@ test('online modpack installs verify the archive and expose a cancellable downlo
   const events: CoreEvent[] = []
   const fetcher: typeof fetch = (input, options) => String(input) === archiveUrl
     ? Promise.resolve(new Response(new Uint8Array(contents))) : fake.fetcher(input, options)
-  const core = new LauncherCore(directory, event => events.push(event), { fetch: fetcher })
+  const core = fixtureCore(directory, event => events.push(event), { fetch: fetcher })
   await core.init()
   const result = await core.installModpack('pack1', { name: 'Online copy' })
   assert.equal(result.instances[0].status, 'ready')
@@ -721,7 +737,7 @@ test('online pack cancellation interrupts archive, manifest, and Fabric preparat
       }
       return String(input) === archiveUrl ? new Response(new Uint8Array(contents)) : fake.fetcher(input, options)
     }
-    const core = new LauncherCore(path.join(directory, String(index)), undefined, { fetch: fetcher })
+    const core = fixtureCore(path.join(directory, String(index)), undefined, { fetch: fetcher })
     await core.init()
     const pending = core.installModpack('pack1')
     const rejected = assert.rejects(pending, /安装已取消/)
@@ -744,7 +760,7 @@ test('unsupported modpacks are inspectable but rejected before creating an insta
   const archiveFile = path.join(directory, 'quilt.mrpack')
   await fs.writeFile(archiveFile, testPack([], {}, { minecraft: '1.20.1', 'quilt-loader': '0.26.0' }))
   const fake = fixture()
-  const core = new LauncherCore(path.join(directory, 'data'), undefined, { fetch: fake.fetcher })
+  const core = fixtureCore(path.join(directory, 'data'), undefined, { fetch: fake.fetcher })
   await core.init()
   assert.match((await core.inspectModpack(archiveFile)).unsupportedReason ?? '', /quilt-loader/)
   await assert.rejects(core.importModpack(archiveFile), /quilt-loader/)
@@ -769,7 +785,7 @@ test('modpack commit failure rolls back changed files and the saved package supp
     }
     await fs.rename(from, to)
   }
-  const core = new LauncherCore(path.join(directory, 'data'), undefined, { fetch: fake.fetcher, renameFile })
+  const core = fixtureCore(path.join(directory, 'data'), undefined, { fetch: fake.fetcher, renameFile })
   await core.init()
   await assert.rejects(core.importModpack(archiveFile), /simulated pack commit failure/)
   const instance = core.snapshot().instances[0]
@@ -792,7 +808,7 @@ test('Fabric selection and modpack version lists only offer supported configurat
     version, { ...version, id: 'old', game_versions: ['1.19.4'] }, { ...version, id: 'forge', loaders: ['forge'] },
     { ...version, id: 'wrong-file', files: [{ filename: 'something.jar' }] },
   ]))
-  const core = new LauncherCore(directory, undefined, { fetch: fake.fetcher })
+  const core = fixtureCore(directory, undefined, { fetch: fake.fetcher })
   await core.init()
   assert.deepEqual(await core.fabricVersions('1.20.1'), [{ version: '0.16.10', stable: true }])
   assert.deepEqual((await core.modpackVersions('example')).map(version => version.id), ['a', 'forge'])
@@ -816,7 +832,7 @@ test('BBSMC searches use their own API and external versions remain visible with
     disk_only: true, files: [{ filename: '', hashes: {}, size: 0, url: 'https://pan.quark.cn/s/example' }], dependencies: [] }
   fake.responses.set('https://api.bbsmc.net/v2/project/shared/version?include_changelog=false', JSON.stringify([external]))
   fake.responses.set('https://api.bbsmc.net/v2/version/drive', JSON.stringify(external))
-  const core = new LauncherCore(directory, undefined, { fetch: fetcher })
+  const core = fixtureCore(directory, undefined, { fetch: fetcher })
   await core.init()
   assert.equal((await core.searchMods('中文', { source: 'bbsmc', loader: 'fabric' })).hits[0].source, 'bbsmc')
   await core.searchModpacks('', { source: 'bbsmc' })
@@ -858,7 +874,7 @@ test('provider-qualified mod registries preserve colliding project IDs, legacy r
   const dependency = JSON.parse(fake.responses.get('https://api.bbsmc.net/v2/version/dep1')!)
   const params = new URLSearchParams({ loaders: '["fabric"]', game_versions: '["1.20.1"]' })
   fake.responses.set(`https://api.bbsmc.net/v2/project/dependency/version?${params}`, JSON.stringify([dependency]))
-  const core = new LauncherCore(directory, undefined, { fetch: fake.fetcher })
+  const core = fixtureCore(directory, undefined, { fetch: fake.fetcher })
   await core.init()
   const instance = await core.createInstance({ name: 'Multiple sources', version: '1.20.1', loader: 'fabric' })
   await core.install(instance.id)
@@ -906,7 +922,7 @@ test('BBSMC rejects permissions, untrusted redirects, and incorrect strong hashe
     if (url === artifactUrl) return new Response('body')
     return fake.fetcher(input, options)
   }
-  const core = new LauncherCore(directory, undefined, { fetch: fetcher })
+  const core = fixtureCore(directory, undefined, { fetch: fetcher })
   await core.init()
   const instance = await core.createInstance({ name: 'Verified BBSMC', version: '1.20.1', loader: 'fabric' })
   await core.install(instance.id)
@@ -962,7 +978,7 @@ test('BBSMC mrpack downloads can cancel by source-specific task ID and install v
     return new Response(new Uint8Array(contents))
   }
   const events: CoreEvent[] = []
-  const core = new LauncherCore(directory, event => events.push(event), { fetch: fetcher })
+  const core = fixtureCore(directory, event => events.push(event), { fetch: fetcher })
   await core.init()
   const pending = core.installModpack('pack1', { source: 'bbsmc' })
   const rejected = assert.rejects(pending, /安装已取消/)
@@ -989,7 +1005,7 @@ test('mod category filters combine with version and loader, mapping BBSMC native
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'lua-core-categories-'))
   t.after(() => fs.rm(directory, { recursive: true, force: true }))
   const urls: URL[] = []
-  const core = new LauncherCore(directory, undefined, { fetch: async input => {
+  const core = fixtureCore(directory, undefined, { fetch: async input => {
     urls.push(new URL(String(input)))
     return new Response(JSON.stringify({ hits: [], total_hits: 0, offset: 0, limit: 20 }))
   } })

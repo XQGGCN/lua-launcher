@@ -35,7 +35,7 @@ function networkFixture() {
     const client = `${game} client`
     const library = 'base-library'
     const version = JSON.stringify({
-      id: game, type: 'release', mainClass: 'test.Vanilla', javaVersion: { majorVersion: 17 },
+      id: game, type: 'release', mainClass: 'test.Vanilla', javaVersion: { majorVersion: 17, component: 'java-runtime-gamma' },
       assetIndex: { id: 'test', url: 'https://piston-meta.mojang.com/loader-test/assets.json', sha1: sha1(index), size: index.length },
       downloads: { client: { url: `https://piston-data.mojang.com/loader-test/${game}.jar`, sha1: sha1(client), size: client.length } },
       libraries: [{ name: 'test.shared:library:1.0', downloads: { artifact: {
@@ -241,4 +241,24 @@ test('invalid Forge installer hashes fail the core install without publishing a 
   assert.equal(f.core.snapshot().instances[0].status, 'error')
   await assert.rejects(fs.access(path.join(f.core.instanceDirectory(instance.id), 'installed.json')), { code: 'ENOENT' })
   assert.equal(f.processes.calls.length, 0)
+})
+
+test('a verified loader with a conflicting Java requirement is rejected before processors run', async t => {
+  const f = await fixture(t)
+  const target = coordinates.forge
+  const artifact = installerArtifact('forge', target.game, target.build)
+  const original = f.network.responses.get(artifact.url)
+  assert.ok(Buffer.isBuffer(original))
+  const installer = new AdmZip(original)
+  const profile = JSON.parse(installer.readAsText('version.json'))
+  profile.javaVersion = { majorVersion: 21 }
+  installer.updateFile('version.json', Buffer.from(JSON.stringify(profile)))
+  const bytes = installer.toBuffer()
+  f.network.responses.set(artifact.url, bytes)
+  f.network.responses.set(`${artifact.url}.sha1`, sha1(bytes))
+  await assert.rejects(f.install('forge'), /Java 21.*Java 17/)
+  assert.equal(f.processes.calls.length, 0)
+  const instance = f.core.snapshot().instances[0]
+  assert.equal(instance.status, 'error')
+  await assert.rejects(fs.access(path.join(f.core.instanceDirectory(instance.id), 'installed.json')))
 })

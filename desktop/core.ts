@@ -9,13 +9,15 @@ import AdmZip from 'adm-zip'
 import { MODPACK_LIMITS, PACK_REDIRECT_HOSTS, readModpack, validatePackPath, validatePackUrl, type PackPreview, type ParsedModpack } from './modpack'
 import { installForge, loaderMetadataUrl, parseLoaderVersions, type LoaderVersion } from './loader'
 import { effectiveMemory, type MemorySystem } from './memory'
+import { JavaRuntimeManager, type ManagedJavaRuntime, type JavaRuntimeProgress, type JavaRuntimeProbe } from './java-runtime'
+import metadata from '../package.json'
 export type { PackPreview } from './modpack'
 
 const execFileAsync = promisify(execFile)
 const MANIFEST_URL = 'https://piston-meta.mojang.com/mc/game/version_manifest_v2.json'
 const FABRIC_URL = 'https://meta.fabricmc.net/v2'
 const MODRINTH_URL = 'https://api.modrinth.com/v2'
-const USER_AGENT = 'LuaLauncher/0.3.0 (+https://github.com/XQGGCN/lua-launcher)'
+const USER_AGENT = `LuaLauncher/${metadata.version} (+https://github.com/XQGGCN/lua-launcher)`
 const NETWORK_HOSTS = new Set([
   'piston-meta.mojang.com', 'piston-data.mojang.com', 'launchermeta.mojang.com',
   'launcher.mojang.com', 'libraries.minecraft.net', 'resources.download.minecraft.net',
@@ -71,6 +73,8 @@ export interface LauncherSettings {
   memoryMode?: 'auto' | 'manual'
   memoryMb: number
   javaPath: string
+  /** Retain the explicit preference while automatic selection is enabled. */
+  manualJavaPath?: string
   concurrentDownloads: number
 }
 export interface LauncherSnapshot {
@@ -80,8 +84,9 @@ export interface LauncherSnapshot {
 }
 export type CoreEvent =
   | { type: 'state'; snapshot: LauncherSnapshot }
-  | { type: 'progress'; instanceId: string; phase: string; completed: number; total: number; bytesDownloaded: number }
+  | { type: 'progress'; instanceId: string; phase: string; completed: number; total: number; bytesDownloaded: number; unit?: 'bytes' }
   | { type: 'log'; instanceId: string; level: 'info' | 'warn' | 'error'; message: string }
+  | { type: 'javaTask'; task: JavaRuntimeTask }
 export interface LaunchAccount {
   mode: 'microsoft'
   username: string
@@ -91,6 +96,18 @@ export interface LaunchAccount {
   clientId?: string
 }
 export interface JavaRuntime { path: string; version: string; major: number; arch: string }
+export interface JavaRequirement { instanceName: string; major: number; component?: string }
+export interface JavaRuntimeTask {
+  id: string; major: number; component: string
+  status: 'queued' | 'active' | 'cancelling' | 'complete' | 'cancelled' | 'error'
+  phase: string; source: string; completedBytes: number; totalBytes: number
+  error?: string; path?: string
+}
+const JAVA_COMPONENTS: Record<number, string> = { 17: 'java-runtime-gamma', 21: 'java-runtime-delta', 25: 'java-runtime-epsilon' }
+const JAVA_PHASES: Record<JavaRuntimeProgress['phase'], string> = {
+  metadata: '正在读取官方运行时清单', download: '正在下载 Java', verify: '正在校验 Java 文件',
+  probe: '正在检测 Java 版本与架构', commit: '正在完成 Java 安装',
+}
 export interface VersionSummary { id: string; type: string; releaseTime: string }
 export interface FabricVersion { version: string; stable: boolean }
 export interface ModrinthProject {
@@ -152,7 +169,7 @@ interface VersionManifest {
   downloads: { client: Download; client_mappings?: Download }
   libraries: Library[]
   arguments: { game: GameArgument[]; jvm: GameArgument[] }
-  javaVersion?: { majorVersion: number }
+  javaVersion?: { majorVersion: number; component?: string }
   logging?: { client?: { argument: string; file: Download & { id: string } } }
 }
 interface InstalledManifest {
@@ -175,6 +192,8 @@ interface CoreOptions {
   platform?: NodeJS.Platform
   arch?: string
   memorySystem?: MemorySystem
+  javaRuntimeManager?: Pick<JavaRuntimeManager, 'ensure' | 'discover'>
+  javaRuntimeProbe?: JavaRuntimeProbe
 }
 interface DownloadJob { file: string; download: Download; allowedHosts?: ReadonlySet<string> }
 
@@ -265,13 +284,17 @@ async function hashFile(file: string, algorithm: 'sha1' | 'sha512'): Promise<str
 
 export class LauncherCore {
   private instances: Instance[] = []
-  private settings: LauncherSettings = { memoryMode: 'auto', memoryMb: 4096, javaPath: '', concurrentDownloads: 8 }
+  private settings: LauncherSettings = { memoryMode: 'auto', memoryMb: 4096, javaPath: '', manualJavaPath: '', concurrentDownloads: 8 }
   private readonly fetcher: typeof globalThis.fetch
   private readonly spawnProcess: typeof spawn
   private readonly renameFile: typeof fs.rename
   private readonly platform: NodeJS.Platform
   private readonly arch: string
   private readonly memorySystem: MemorySystem
+  private readonly javaRuntimeManager: Pick<JavaRuntimeManager, 'ensure' | 'discover'>
+  private javaTasks = new Map<string, JavaRuntimeTask>()
+  private javaDownloads = new Map<string, AbortController>()
+  private launchControllers = new Map<string, AbortController>()
   private installs = new Map<string, AbortController>()
   private processes = new Map<string, ChildProcess>()
   private launching = new Set<string>()
@@ -288,6 +311,7 @@ export class LauncherCore {
     this.platform = options.platform ?? process.platform
     this.arch = normalizeArch(options.arch ?? process.arch)
     this.memorySystem = options.memorySystem ?? {}
+    this.javaRuntimeManager = options.javaRuntimeManager ?? new JavaRuntimeManager(this.rootDir, { fetch: this.fetcher, probe: options.javaRuntimeProbe })
   }
 
   async init(): Promise<LauncherSnapshot> {
@@ -376,7 +400,14 @@ export class LauncherCore {
     if (!Number.isInteger(input.concurrentDownloads) || input.concurrentDownloads < 1 || input.concurrentDownloads > 16) {
       throw new Error('并发下载数需要在 1–16 之间')
     }
-    return { memoryMode: input.memoryMode ?? 'auto', memoryMb: input.memoryMb, javaPath: input.javaPath, concurrentDownloads: input.concurrentDownloads }
+    const manualJavaPath = input.manualJavaPath ?? input.javaPath
+    if (typeof manualJavaPath !== 'string' || manualJavaPath.includes('\0') ||
+        (manualJavaPath !== '' && manualJavaPath !== 'java' && !path.isAbsolute(manualJavaPath))) {
+      throw new Error('请选择 Java 可执行文件的绝对路径')
+    }
+    return { memoryMode: input.memoryMode ?? 'auto', memoryMb: input.memoryMb, javaPath: input.javaPath,
+      manualJavaPath: input.javaPath && input.javaPath !== 'java' ? input.javaPath : manualJavaPath,
+      concurrentDownloads: input.concurrentDownloads }
   }
 
   async updateSettings(settings: Partial<LauncherSettings>): Promise<LauncherSnapshot> {
@@ -594,6 +625,15 @@ export class LauncherCore {
       const version: VersionManifest = JSON.parse(await fs.readFile(versionFile, 'utf8'))
       if (!version.arguments?.game || !version.arguments?.jvm || !version.downloads?.client ||
           !version.assetIndex || !Array.isArray(version.libraries)) throw new Error('该版本的启动格式暂不支持')
+      const javaRequirement = this.javaRequirement(version, instance)
+      progress(`正在准备 Java ${javaRequirement.major}`, true)
+      const runtime = await this.selectJava(javaRequirement.major, javaRequirement.component, {
+        signal, onProgress: update => {
+          this.emit({ type: 'progress', instanceId: id, phase: `${JAVA_PHASES[update.phase]}（Java ${javaRequirement.major}）`,
+            completed: update.completedBytes, total: update.totalBytes, bytesDownloaded: update.completedBytes, unit: 'bytes' })
+        },
+      })
+      signal.throwIfAborted()
       let libraries = [...version.libraries]
       let mainClass = version.mainClass
       let fabricArguments: InstalledManifest['fabricArguments'] = { game: [], jvm: [] }
@@ -698,7 +738,6 @@ export class LauncherCore {
           ? available.find(item => item.version === instance.loaderVersion)
           : available.find(item => item.recommended) ?? available.find(item => item.stable) ?? available[0]
         if (!selected) throw new Error('所选加载器版本不可用')
-        const runtime = await this.selectJava(version.javaVersion?.majorVersion ?? 17)
         signal.throwIfAborted()
         const result = await installForge({
           loader: instance.loader, game: instance.version, build: selected.version,
@@ -707,6 +746,16 @@ export class LauncherCore {
           download: (file, download) => this.download({ file, download }, signal, bytes => { downloadedBytes += bytes }),
           text: url => this.text(url, signal),
           progress: message => progress(message, true), log: message => this.log(id, 'info', message),
+          prepareJava: async requirement => {
+            signal.throwIfAborted()
+            if (requirement && requirement.majorVersion !== javaRequirement.major) {
+              throw new Error(`加载器要求 Java ${requirement.majorVersion}，与游戏要求的 Java ${javaRequirement.major} 不一致，请选择兼容的加载器版本`)
+            }
+            if (requirement?.component && javaRequirement.component && requirement.component !== javaRequirement.component) {
+              throw new Error('加载器与游戏的 Java 运行时组件不一致，请选择兼容的加载器版本')
+            }
+            return runtime.path
+          },
         })
         const relative = (file: string) => path.relative(this.rootDir, file).split(path.sep).join('/')
         for (const library of result.classpath) libraryClasspath.set(libraryKey(library.name), relative(library.file))
@@ -714,7 +763,7 @@ export class LauncherCore {
         mainClass = result.profile.mainClass
         fabricArguments = result.profile.arguments
         loaderLibraryDirectory = relative(result.directory)
-        if (result.profile.javaVersion) version.javaVersion = result.profile.javaVersion
+        if (result.profile.javaVersion) version.javaVersion = { ...version.javaVersion, ...result.profile.javaVersion }
         instance.loaderVersion = selected.version
       }
       signal.throwIfAborted()
@@ -767,6 +816,105 @@ export class LauncherCore {
     }
   }
 
+  private javaRequirement(version: VersionManifest, instance: Instance): JavaRequirement {
+    const major = version.javaVersion?.majorVersion
+    const component = version.javaVersion?.component
+    if (!Number.isInteger(major) || major! < 8 || major! > 99 ||
+        (component !== undefined && (typeof component !== 'string' || !/^[a-z0-9-]{1,80}$/.test(component)))) {
+      throw new Error('官方版本清单缺少有效的 Java 要求，请重新安装修复实例')
+    }
+    return { instanceName: instance.name, major: major!, ...(component ? { component } : {}) }
+  }
+
+  async runtimeRequirement(id: string): Promise<JavaRequirement> {
+    const instance = this.instance(id)
+    let installed: InstalledManifest | undefined
+    try {
+      installed = JSON.parse(await fs.readFile(safeJoin(this.instanceDirectory(id), 'installed.json'), 'utf8')) as InstalledManifest
+      const requirement = this.javaRequirement(installed.version, instance)
+      if (installed.schema === 1 && requirement.component) return requirement
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+    const signal = AbortSignal.timeout(90_000)
+    const entry = (await this.manifest(signal)).versions.find(version => version.id === instance.version && version.type === 'release')
+    if (!entry) throw new Error('找不到该 Minecraft 正式版本')
+    const versionFile = safeJoin(this.rootDir, `versions/${sanitizeId(instance.version)}/${sanitizeId(instance.version)}.json`)
+    await this.download({ file: versionFile, download: entry }, signal)
+    const base = this.javaRequirement(JSON.parse(await fs.readFile(versionFile, 'utf8')) as VersionManifest, instance)
+    if (installed?.version.javaVersion && installed.version.javaVersion.majorVersion !== base.major) {
+      throw new Error('已安装加载器与官方游戏的 Java 要求不一致，请重新安装修复实例')
+    }
+    return base
+  }
+
+  managedJava(): Promise<ManagedJavaRuntime[]> { return this.javaRuntimeManager.discover() }
+  runtimeTasks(): JavaRuntimeTask[] { return structuredClone([...this.javaTasks.values()]) }
+
+  startJavaInstall(major: number): JavaRuntimeTask {
+    if (!Number.isInteger(major) || !JAVA_COMPONENTS[major]) throw new Error('请选择 Java 17、21 或 25')
+    const previous = [...this.javaTasks.values()].find(task => task.major === major && ['queued', 'active', 'cancelling'].includes(task.status))
+    if (previous) return structuredClone(previous)
+    // Keep a bounded, honest in-process history. Installed runtimes survive restarts.
+    for (const [id, task] of this.javaTasks) {
+      if (this.javaTasks.size < 30) break
+      if (['complete', 'cancelled', 'error'].includes(task.status)) this.javaTasks.delete(id)
+    }
+    const task: JavaRuntimeTask = { id: randomUUID(), major, component: JAVA_COMPONENTS[major], status: 'queued',
+      phase: '等待准备 Java', source: 'Mojang 官方', completedBytes: 0, totalBytes: 0 }
+    const controller = new AbortController()
+    this.javaTasks.set(task.id, task)
+    this.javaDownloads.set(task.id, controller)
+    const announce = () => this.emit({ type: 'javaTask', task: structuredClone(task) })
+    announce()
+    void (async () => {
+      try {
+        task.status = 'active'
+        announce()
+        const runtime = await this.javaRuntimeManager.ensure({ component: task.component, major, platform: this.platform, arch: this.arch }, {
+          signal: controller.signal, onProgress: progress => {
+            if (controller.signal.aborted) return
+            task.phase = JAVA_PHASES[progress.phase]
+            task.completedBytes = progress.completedBytes
+            task.totalBytes = progress.totalBytes
+            announce()
+          },
+        })
+        task.status = 'complete'; task.phase = 'Java 安装完成'; task.path = runtime.path
+      } catch (error) {
+        const cancelled = controller.signal.aborted
+        task.status = cancelled ? 'cancelled' : 'error'
+        task.phase = cancelled ? '安装已取消' : 'Java 安装失败'
+        if (!cancelled) task.error = errorMessage(error)
+      } finally {
+        this.javaDownloads.delete(task.id)
+        announce()
+      }
+    })()
+    return structuredClone(task)
+  }
+
+  cancelJavaInstall(id: string): void {
+    const task = this.javaTasks.get(id)
+    if (!task) throw new Error('Java 下载任务不存在')
+    const controller = this.javaDownloads.get(id)
+    if (!controller) return
+    task.status = 'cancelling'; task.phase = '正在取消 Java 安装'
+    controller.abort(new DOMException('Java 安装已取消', 'AbortError'))
+    this.emit({ type: 'javaTask', task: structuredClone(task) })
+  }
+
+  cancelLaunch(id: string): void {
+    this.instance(id)
+    this.launchControllers.get(id)?.abort(new DOMException('启动准备已取消', 'AbortError'))
+  }
+
+  cancelPendingOperations(): void {
+    for (const controller of [...this.installs.values(), ...this.javaDownloads.values(), ...this.launchControllers.values()]) {
+      controller.abort(new DOMException('启动器正在退出', 'AbortError'))
+    }
+  }
+
   async detectJava(): Promise<JavaRuntime[]> {
     const executable = this.platform === 'win32' ? 'java.exe' : 'java'
     const candidates = new Set<string>([this.settings.javaPath, 'java'].filter(Boolean))
@@ -813,7 +961,8 @@ export class LauncherCore {
         return { path: resolvedPath, version, major, arch }
       } catch { return undefined }
     }))
-    return [...new Map(runtimes.filter((runtime): runtime is JavaRuntime => Boolean(runtime)).map(runtime => [runtime.path, runtime])).values()]
+    const managed = await this.javaRuntimeManager.discover()
+    return [...new Map([...runtimes.filter((runtime): runtime is JavaRuntime => Boolean(runtime)), ...managed].map(runtime => [runtime.path, runtime])).values()]
       .sort((a, b) => b.major - a.major)
   }
 
@@ -821,25 +970,35 @@ export class LauncherCore {
     if (this.launching.has(id)) throw new Error('该实例正在启动')
     // Acquire synchronously: installed-manifest reads and Java detection both yield before spawn.
     this.launching.add(id)
+    const controller = new AbortController()
+    this.launchControllers.set(id, controller)
     try {
-      return await this.launchInstance(id, account, beforeSpawn)
+      return await this.launchInstance(id, account, () => { controller.signal.throwIfAborted(); beforeSpawn?.() }, controller.signal)
     } finally {
       this.launching.delete(id)
+      this.launchControllers.delete(id)
     }
   }
 
-  private async selectJava(required: number): Promise<JavaRuntime> {
+  private async selectJava(required: number, component?: string, options: { signal?: AbortSignal; onProgress?: (progress: JavaRuntimeProgress) => void } = {}): Promise<JavaRuntime> {
+    options.signal?.throwIfAborted()
+    const explicitPath = this.settings.javaPath && this.settings.javaPath !== 'java' ? this.settings.javaPath : ''
     const runtimes = await this.detectJava()
-    const runtime = this.settings.javaPath && this.settings.javaPath !== 'java'
-      ? runtimes.find(java => java.path === this.settings.javaPath)
+    options.signal?.throwIfAborted()
+    let runtime = explicitPath
+      ? runtimes.find(java => java.path === explicitPath)
       : runtimes.find(java => java.major === required && java.arch === this.arch)
-    if (!runtime) throw new Error(`需要 Java ${required}（${this.arch}）。请安装对应版本，并在设置中选择 Java 可执行文件。`)
+    if (!runtime && explicitPath) throw new Error(`指定的 Java 路径不可用，需要 Java ${required}（${this.arch}）。请在设置中修正路径或切换自动选择。`)
+    if (!runtime) {
+      if (!component) throw new Error(`需要 Java ${required}（${this.arch}），版本清单缺少官方运行时组件。请重新安装修复实例，或在设置中指定匹配的 Java。`)
+      runtime = await this.javaRuntimeManager.ensure({ component, major: required, platform: this.platform, arch: this.arch }, options)
+    }
     if (runtime.major !== required) throw new Error(`该版本需要 Java ${required}，当前选择的是 Java ${runtime.major}`)
     if (runtime.arch !== this.arch) throw new Error(`Java 架构 ${runtime.arch} 与启动器架构 ${this.arch} 不一致`)
     return runtime
   }
 
-  private async launchInstance(id: string, account: LaunchAccount, beforeSpawn?: () => void): Promise<{ pid: number | undefined }> {
+  private async launchInstance(id: string, account: LaunchAccount, beforeSpawn?: () => void, signal?: AbortSignal): Promise<{ pid: number | undefined }> {
     const instance = this.instance(id)
     if (this.installs.has(id)) throw new Error('请等待安装完成')
     if (this.processes.has(id)) throw new Error('该实例已经在运行')
@@ -864,8 +1023,12 @@ export class LauncherCore {
     if (installed.schema !== 1 || installed.platform !== this.platform || installed.arch !== this.arch) {
       throw new Error('此实例来自其他系统或架构，请重新安装以下载正确的原生库')
     }
-    const required = installed.version.javaVersion?.majorVersion ?? 17
-    const runtime = await this.selectJava(required)
+    const requirement = installed.version.javaVersion?.component
+      ? this.javaRequirement(installed.version, instance) : await this.runtimeRequirement(id)
+    const runtime = await this.selectJava(requirement.major, requirement.component, { signal, onProgress: update => {
+      this.emit({ type: 'progress', instanceId: id, phase: `${JAVA_PHASES[update.phase]}（Java ${requirement.major}）`,
+        completed: update.completedBytes, total: update.totalBytes, bytesDownloaded: update.completedBytes, unit: 'bytes' })
+    } })
     const classpath = installed.classpath.map(relative => safeJoin(this.rootDir, relative))
     for (const file of classpath) {
       try { await fs.access(file) } catch { throw new Error(`缺少游戏文件 ${path.basename(file)}，请重新安装修复`) }
@@ -886,7 +1049,7 @@ export class LauncherCore {
       assets_index_name: installed.version.assetIndex.id,
       natives_directory: safeJoin(directory, 'natives'),
       launcher_name: 'LuaLauncher',
-      launcher_version: '0.3.0',
+      launcher_version: metadata.version,
       classpath: classpath.join(this.platform === 'win32' ? ';' : ':'),
       classpath_separator: this.platform === 'win32' ? ';' : ':',
       library_directory: safeJoin(this.rootDir, installed.loaderLibraryDirectory ?? 'libraries'),

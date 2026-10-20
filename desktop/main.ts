@@ -7,6 +7,7 @@ import { AuthConfigStore } from './auth-config'
 import { PackSelections } from './pack-selection'
 import { AccountCoordinator } from './accounts'
 import { getMemoryInfo } from './memory'
+import { LaunchPreparations } from './launch-preparation'
 
 declare const __LUA_MICROSOFT_CLIENT_ID__: string
 
@@ -21,6 +22,7 @@ let authConfig: AuthConfigStore
 let packSelections: PackSelections<Awaited<ReturnType<LauncherCore['inspectModpack']>>>
 let choosingPack = false
 let accounts: AccountCoordinator
+const launches = new LaunchPreparations()
 let authState: {
   active: boolean
   status: { stage: string; message: string } | null
@@ -163,14 +165,23 @@ if (hasLock) app.whenReady().then(async () => {
       }
       case 'install': return core.install(text(args[0], 80))
       case 'cancelInstall': return core.cancelInstall(text(args[0], 80))
+      case 'cancelLaunch': {
+        const id = text(args[0], 80)
+        launches.cancel(id)
+        return core.cancelLaunch(id)
+      }
       case 'launch': {
         const id = text(args[0], 80)
-        const generation = accounts.generation
-        const credentials = await accounts.credentials()
-        return core.launch(id, credentials, () => {
-          // Java discovery and filesystem checks yield. A logout or newer login
-          // during preparation must prevent spawning with the old credentials.
-          if (generation !== accounts.generation) throw new AuthError('CANCELLED')
+        return launches.run(id, async signal => {
+          const generation = accounts.generation
+          const credentials = await accounts.credentials()
+          signal.throwIfAborted()
+          return core.launch(id, credentials, () => {
+            signal.throwIfAborted()
+            // Credential refresh and Java preparation must not outlive the
+            // user's cancellation, logout or request to quit the launcher.
+            if (generation !== accounts.generation) throw new AuthError('CANCELLED')
+          })
         })
       }
       case 'stop': return core.stop(text(args[0], 80))
@@ -183,6 +194,7 @@ if (hasLock) app.whenReady().then(async () => {
           memoryMode,
           memoryMb: input.memoryMb === undefined ? current.memoryMb : Number(input.memoryMb),
           javaPath: input.javaPath === undefined ? current.javaPath : text(input.javaPath, 2048),
+          manualJavaPath: input.manualJavaPath === undefined ? current.manualJavaPath : text(input.manualJavaPath, 2048),
           concurrentDownloads: input.concurrentDownloads === undefined ? current.concurrentDownloads : Number(input.concurrentDownloads),
         } as LauncherSettings)
       }
@@ -197,6 +209,21 @@ if (hasLock) app.whenReady().then(async () => {
         })
       }
       case 'detectJava': return core.detectJava()
+      case 'managedJava': return core.managedJava()
+      case 'runtimeRequirement': return core.runtimeRequirement(text(args[0], 80))
+      case 'runtimeTasks': return core.runtimeTasks()
+      case 'installJava': {
+        if (typeof args[0] !== 'number') throw new Error('Java 版本无效')
+        return core.startJavaInstall(args[0])
+      }
+      case 'cancelJavaInstall': return core.cancelJavaInstall(text(args[0], 80))
+      case 'chooseJava': {
+        const selected = await dialog.showOpenDialog(window, {
+          title: '选择 Java 可执行文件', properties: ['openFile'],
+          ...(process.platform === 'win32' ? { filters: [{ name: 'Java 可执行文件', extensions: ['exe'] }] } : {}),
+        })
+        return selected.canceled ? null : selected.filePaths[0] ?? null
+      }
       case 'searchMods': {
         const options = args[1] === undefined ? {} : object(args[1])
         return core.searchMods(text(args[0], 200), {
@@ -297,6 +324,8 @@ if (hasLock) app.whenReady().then(async () => {
 app.on('second-instance', () => { window?.show(); window?.focus() })
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
 app.on('before-quit', () => {
+  launches.close()
+  core?.cancelPendingOperations()
   accounts?.cancelLogin()
   void packSelections?.close().catch(() => {})
 })

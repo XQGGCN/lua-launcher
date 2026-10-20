@@ -21,7 +21,7 @@ interface InstallProfile {
 export interface LoaderProfile {
   id: string; inheritsFrom: string; mainClass: string; libraries: InstallerLibrary[]
   arguments: { game: GameArgument[]; jvm: GameArgument[] }
-  javaVersion?: { majorVersion: number }
+  javaVersion?: { majorVersion: number; component?: string }
 }
 export interface ParsedInstaller { zip: AdmZip; install: InstallProfile; version: LoaderProfile }
 const MAVEN = { forge: 'https://maven.minecraftforge.net/', neoforge: 'https://maven.neoforged.net/releases/' }
@@ -213,6 +213,8 @@ export interface ForgeInstallOptions {
   text: (url: string) => Promise<string>
   progress: (message: string) => void
   log: (message: string) => void
+  /** Validate the verified loader's requirement before running any processor. */
+  prepareJava?: (requirement: LoaderProfile['javaVersion']) => Promise<string>
   run?: (command: ProcessorCommand) => Promise<void>
   rename?: typeof fs.rename
 }
@@ -231,6 +233,8 @@ export async function installForge(options: ForgeInstallOptions): Promise<Instal
   if ((await fs.stat(installerFile)).size > 64 * 1024 * 1024) throw new Error('加载器安装器超过 64 MiB 限制')
   await verify(installerFile, checksum)
   const parsed = parseInstaller(await fs.readFile(installerFile), o.game)
+  const java = o.prepareJava ? await o.prepareJava(parsed.version.javaVersion) : o.java
+  o.signal.throwIfAborted()
   const staging = safeJoin(o.instanceDir, `.loader-staging-${randomUUID()}`)
   const final = safeJoin(o.instanceDir, 'loader')
   const backup = safeJoin(o.instanceDir, `.loader-backup-${randomUUID()}`)
@@ -332,7 +336,7 @@ export async function installForge(options: ForgeInstallOptions): Promise<Instal
         if (!main) throw new Error(`加载器处理器缺少 Main-Class：${processor.jar}`)
         for (const arg of args) if (arg.startsWith(staging + path.sep)) await fs.mkdir(path.dirname(insideStaging(arg)), { recursive: true })
         const command: ProcessorCommand = {
-          java: o.java, cwd: staging, signal: o.signal,
+          java, cwd: staging, signal: o.signal,
           args: ['-Xmx2048M', '-XX:ActiveProcessorCount=2', '-cp', classpath.join(path.delimiter), main, ...args],
         }
         await (o.run ? o.run(command) : runProcessor(command, o.log))
