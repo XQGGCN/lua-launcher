@@ -6,7 +6,17 @@
 
 项目品牌为 **Lua · 未央**。当前采用参考 PCL / HMCL 的实用、紧凑浅色桌面布局，以账户、版本列表、Java 设置和启动操作为中心，保持独立实现与原创品牌资产。
 
-当前为 0.2.2 Alpha 纯在线账户版，最新测试与功能状态见 [README](../README.md)。此前版本在 macOS ARM64 上曾用离线模式完成 Minecraft 1.20.1 原版及 Fabric 的游戏初始化；0.2.2 已移除该路径，历史结果不能作为当前正版启动验收。Microsoft / Xbox / XSTS 已实测通过，但 Minecraft 登录接口返回 `403`；真实账户完整登录、Windows / Linux 游戏运行，以及其他版本和架构的完整兼容性尚未验证。以下研究建议与路线图不应被解读为全部功能已完成。
+当前版本为 **0.3.0 Alpha 纯在线账户版**，最新测试与功能状态见 [README](../README.md)。本轮已实现 Forge / NeoForge 安装、自动内存、19 个模组功能分类及筛选界面。**本地 156 项确定性测试通过**；三平台测试和安装包构建结果以对应提交的 [GitHub Actions](https://github.com/XQGGCN/lua-launcher/actions) 为准，不据本地结果提前声称 CI 成功。
+
+真实安装验证范围为 macOS ARM64、本机 Java 17：Minecraft 1.20.1 + Forge 47.4.0、Minecraft 1.20.2 + NeoForge 20.2.93 均通过核心完整安装流程，官方安装器处理步骤执行完成，生成 JAR 校验通过；对应安装清单分别包含 88、103 个 classpath 条目。**这两个组合尚未验证完整游戏运行。**
+
+此前版本在 macOS ARM64 上曾用离线模式完成 Minecraft 1.20.1 原版及 Fabric 的游戏初始化；0.2.2 已移除该路径，历史结果不能作为当前正版启动验收。Microsoft / Xbox / XSTS 已实测通过，但 Minecraft 登录接口返回 `403`；服务接入申请已于 2026-10-21 提交，仍待批准。真实账户完整登录、Windows / Linux 游戏运行，以及其他版本和架构的完整兼容性尚未验证。以下研究建议与路线图不应被解读为全部功能已完成。
+
+## 0.3.0 实施补记
+
+- **加载器**：沿用独立安装内核，从官方来源取得 Forge / NeoForge 元数据和安装器，在本机 Java 下运行 processors、校验生成文件。安装验收与进入游戏的验收分别记录，不用前者代替后者。
+- **内存**：默认自动分配，优先读取 `process.availableMemory()`，在平台与运行时支持时计入可回收内存和进程限制；无此接口时使用 `os.freemem()` 回退值。结合总内存、游戏版本、加载器和 Java 位数，保留系统及 Java 非堆余量；手动模式也受安全上限约束，启动时重新采样。内存不足时拒绝分配，不能保证后续没有内存压力。[Node.js API](https://nodejs.org/api/process.html#processavailablememory)、[libuv 可用内存接口](https://docs.libuv.org/en/v1.x/misc.html#c.uv_get_available_memory)、[libuv macOS 实现](https://github.com/libuv/libuv/blob/v1.x/src/unix/darwin.c)。
+- **分类**：采用 19 个官方 Modrinth 模组分类键，并映射 BBSMC 对应中文 facet，例如 `optimization` 对应“优化”。分类与关键字、版本、加载器共同构成来源内的搜索条件，不跨站混用结果或声称自动理解模组行为。分类定义、请求映射和筛选界面已实现；两站“性能优化”真实查询各抽查前 20 项，分类标签均匹配。此验证不覆盖全部类别或模组组合。
 
 ## 结论
 
@@ -47,7 +57,7 @@
 3. 下载、安装和启动分离为可替换服务；以可观察任务状态驱动进度条，安装完成后才原子写入实例可用状态。
 4. 可评估 `@xmcl/core` 与 `@xmcl/installer`，其官方独立仓库标示 MIT，面向 Node/Electron；但该仓库 **2026-05-06 已归档**，应固定版本、保留许可、封装适配层，并先确认上游迁移/维护状态。[官方仓库](https://github.com/Voxelum/minecraft-launcher-core-node)、[官方 API 文档](https://xmcl.app/en/core/)
 5. Microsoft 桌面认证需要本项目自己的应用注册与重定向配置；不使用其他启动器的客户端标识冒充其应用。Microsoft 提供 Electron/MSAL 路线，但这不等于 Minecraft/Xbox 端到端接入已经完成。[Microsoft 桌面应用配置](https://learn.microsoft.com/en-us/entra/identity-platform/scenario-desktop-app-configuration)
-6. 官网可作为独立静态站点部署在 Render，展示产品、下载和文档；安装包放 GitHub Releases。普通启动器功能无需先购买服务器。
+6. 官网作为独立静态站点部署在 Render，展示产品、下载和文档；0.3.0 下载入口使用 [GitHub Release](https://github.com/XQGGCN/lua-launcher/releases/tag/v0.3.0)，附件由对应版本的 CI 完成后发布，签名与公证仍未完成。官网部署以安装包实际发布为前提，不能把待构建产物当作已可下载。普通启动器功能无需先购买服务器。
 
 ## 尚未验证
 
@@ -55,5 +65,5 @@
 - 本次查看的是官方主分支页面，不是永久固定的提交快照；发布前需再次记录实际引用版本和许可。
 - 未运行 PCL/HMCL 二进制，也未逐版本对照两者全部功能。
 - 未验证 XMCL 包目前发布版本、归档后的维护迁移，以及与本项目 Electron/Node 版本的运行兼容性。
-- Microsoft/Xbox/Minecraft 的应用接入资格、完整登录链路，以及 CurseForge 等第三方服务接入规则仍需在实现阶段单独核验。
+- Minecraft 服务接入申请已提交但未获批准，完整登录链路仍待打通；CurseForge 等第三方服务接入规则仍需单独核验。
 - 跨平台签名、公证、自动更新、完整加载器矩阵和实际游戏启动不能从 UI 构建成功推导为已通过。
