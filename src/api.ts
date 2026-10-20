@@ -9,12 +9,39 @@ export interface Instance {
   lastPlayed?: string
   playtimeMs: number
   error?: string
+  modpack?: {
+    name: string
+    versionId: string
+    source: 'local' | 'modrinth'
+    projectId?: string
+    modrinthVersionId?: string
+    archiveSha1: string
+    archiveSha512: string
+    applied: boolean
+  }
 }
 export interface Settings { memoryMb: number; javaPath: string; concurrentDownloads: number }
 export interface Snapshot { instances: Instance[]; settings: Settings; rootDir: string }
 export interface Version { id: string; type: string; releaseTime: string }
 export interface JavaRuntime { path: string; version: string; major: number; arch: string }
 export interface Account { mode: 'microsoft' | 'offline'; username: string; uuid: string }
+export interface AuthConfig { configured: boolean; clientId: string; source: 'built-in' | 'custom' | 'none' }
+export interface AuthStatus { stage: string; message: string }
+export interface AuthState { active: boolean; status: AuthStatus | null; deviceCode: DeviceCode | null }
+export interface PackPreview {
+  name: string
+  versionId: string
+  summary?: string
+  minecraftVersion: string
+  loader: 'vanilla' | 'fabric'
+  loaderVersion?: string
+  fileCount: number
+  totalBytes: number
+  optionalFileCount?: number
+  unsupportedReason?: string
+}
+export interface ChosenModpack { token: string; preview: PackPreview }
+export interface FabricVersion { version: string; stable: boolean }
 export interface Mod {
   project_id: string; slug: string; title: string; description: string
   icon_url: string | null; author: string; downloads: number
@@ -28,6 +55,8 @@ export interface LogEvent { type: 'log'; instanceId: string; level: string; mess
 export type LauncherEvent = Progress | DeviceCode | LogEvent
   | { type: 'state'; snapshot: Snapshot }
   | { type: 'account'; account: Account | null }
+  | ({ type: 'authStatus' } & AuthStatus)
+  | { type: 'authState'; state: AuthState }
 
 declare global {
   interface Window {
@@ -71,9 +100,16 @@ export async function call<T>(method: string, ...args: unknown[]): Promise<T> {
   switch (method) {
     case 'snapshot': result = structuredClone(preview); break
     case 'account': result = null; break
+    case 'authConfig': result = { configured: false, clientId: '', source: 'none' }; break
+    case 'authState': result = { active: false, status: null, deviceCode: null }; break
     case 'versions': {
       const manifest = await json('https://piston-meta.mojang.com/mc/game/version_manifest_v2.json') as { versions: Version[] }
       result = manifest.versions.filter(version => version.type === 'release' && isSupportedVersion(version.id))
+      break
+    }
+    case 'fabricVersions': {
+      const list = await json(`https://meta.fabricmc.net/v2/versions/loader/${encodeURIComponent(String(args[0]))}`) as { loader: FabricVersion }[]
+      result = list.map(item => item.loader)
       break
     }
     case 'createInstance': {
@@ -90,15 +126,19 @@ export async function call<T>(method: string, ...args: unknown[]): Promise<T> {
       savePreview()
       result = structuredClone(preview)
       break
-    case 'searchMods': {
+    case 'searchMods':
+    case 'searchModpacks': {
       const options = (args[1] || {}) as { loader?: string; gameVersion?: string; offset?: number }
-      const facets = [['project_type:mod']]
+      const facets = [[`project_type:${method === 'searchModpacks' ? 'modpack' : 'mod'}`]]
       if (options.loader) facets.push([`categories:${options.loader}`])
       if (options.gameVersion) facets.push([`versions:${options.gameVersion}`])
       const query = new URLSearchParams({ query: String(args[0] || ''), facets: JSON.stringify(facets), limit: '12', offset: String(options.offset || 0), index: 'relevance' })
       result = await json(`https://api.modrinth.com/v2/search?${query}`)
       break
     }
+    case 'modpackVersions':
+      result = await json(`https://api.modrinth.com/v2/project/${encodeURIComponent(String(args[0]))}/version`)
+      break
     case 'openExternal':
       window.open(String(args[0]), '_blank', 'noopener,noreferrer')
       break
