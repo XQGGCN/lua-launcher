@@ -2,9 +2,9 @@
 
 一个面向 Windows、macOS 和 Linux 的独立开源 Minecraft Java 启动器。夜色侧栏加「启动台」首页：选中实例、看一眼账户和 Java，按下月光色按钮就开始游戏。
 
-**当前版本：0.10.0 Alpha**（[下载](https://github.com/XQGGCN/lua-launcher/releases)）。
+**当前版本：0.10.1 Alpha**（[下载](https://github.com/XQGGCN/lua-launcher/releases)）。
 
-### 0.10.0 有什么
+### 0.10 有什么
 
 - **启动**：原版支持全部正式版、快照和远古版本；Fabric 支持 1.14 起的版本与快照；Forge、NeoForge 支持 1.20.1 起的正式版。游戏崩溃时自动分析原因。缺少 Java 时自动下载官方运行时，内存自动分配，每个实例可单独设置 Java、内存、JVM 参数和窗口。
 - **正版登录**：Microsoft 账户登录，校验 Java 版所有权与游戏档案，头像显示正版皮肤。Minecraft 官方 API 接入已于 2026-10 获批。

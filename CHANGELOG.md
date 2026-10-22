@@ -1,5 +1,11 @@
 # 更新日志
 
+## 0.10.1 Alpha — 2026-10-22
+
+- **修复 macOS 内存分配过低**：Node 的 `process.availableMemory()` / `os.freemem()` 在 macOS 上只统计完全空闲的页，通常只有几百 MB，导致自动分配被压到 1024 MB（实测 16 GB Mac 上 1.21.1 只拿到 1 GB）。现在 macOS 额外读取 `vm_stat`，把非活跃、推测和可清除页计为可用内存（与活动监视器一致），失败时退回原逻辑；仍保留系统与 Java 非堆余量。
+- 实测记录：0.10.0 正式安装包在 macOS ARM64 覆盖安装后保留登录，原版 1.21.1 正版启动成功，重启 Lua 后自动恢复会话并再次启动成功。
+- 测试 567 项（新增内存 2）。
+
 ## 0.10.0 Alpha — 2026-10-22
 
 - **下载源 / 国内镜像**（`desktop/download-mirror.ts`）：BMCLAPI 映射 Mojang 元数据与文件、资源、运行库、Fabric meta / maven、Forge 与 NeoForge maven。`auto` 官方优先，12 秒未返回响应头、网络错误、404/408/429/5xx 时切换镜像，并在 10 分钟内优先镜像；`mirror` 反之；`official` 不使用镜像。镜像节点重定向仅允许公网 HTTPS 域名。所有游戏文件仍按官方清单 SHA-1 校验。中国大陆时区默认镜像。

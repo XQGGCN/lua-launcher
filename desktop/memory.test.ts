@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
-  effectiveMemory, getMemoryInfo, MemoryAllocationError, recommendedMemory,
+  effectiveMemory, getMemoryInfo, MemoryAllocationError, parseVmStat, recommendedMemory,
   type MemorySettings, type MemorySystem,
 } from './memory'
 
@@ -171,4 +171,33 @@ test('OS available memory takes priority and includes reclaimable pages without 
   assert.equal(info.canLaunch, true)
   assert.equal(info.recommendedMb, 4096)
   assert.equal(getMemoryInfo({}, { ...system, availablemem: () => 32 * 1024 ** 3 }).availableMb, 16384)
+})
+
+const VM_STAT = `Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                5000.
+Pages active:                            300000.
+Pages inactive:                          440000.
+Pages speculative:                         8000.
+Pages throttled:                              0.
+Pages wired down:                        150000.
+Pages purgeable:                          12000.
+"Translation faults":                 123456789.
+`
+
+test('vm_stat output counts free, inactive, speculative and purgeable pages', () => {
+  assert.equal(parseVmStat(VM_STAT), (5000 + 440000 + 8000 + 12000) * 16384)
+  assert.equal(parseVmStat('garbage'), undefined)
+  assert.equal(parseVmStat('Mach Virtual Memory Statistics: (page size of 4096 bytes)\nPages active: 1.\n'), undefined)
+})
+
+test('macOS uses reclaimable memory from vm_stat instead of the tiny free-page count', () => {
+  const mac = { totalmem: () => 16 * 1024 ** 3, freemem: () => 80 * 1024 ** 2, platform: () => 'darwin' as const, vmStat: () => VM_STAT }
+  const info = getMemoryInfo({ gameVersion: '1.21.1' }, mac)
+  assert.equal(info.availableBasis, 'os-available')
+  assert.equal(info.availableMb, Math.floor((5000 + 440000 + 8000 + 12000) * 16384 / 1024 ** 2))
+  assert.equal(info.recommendedMb, 4096)
+  // Without vm_stat the free-page count alone would block or clamp the launch.
+  assert.equal(getMemoryInfo({ gameVersion: '1.21.1' }, { ...mac, vmStat: () => { throw new Error('missing') } }).canLaunch, false)
+  // Other platforms ignore vm_stat.
+  assert.equal(getMemoryInfo({}, { ...mac, platform: () => 'linux' as const }).availableMb, 80)
 })

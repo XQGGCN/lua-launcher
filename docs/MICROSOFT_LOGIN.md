@@ -4,7 +4,9 @@
 
 > **2026-10-22 更新**：维护者确认 Minecraft API 接入申请已通过审核，0.8.0 起正版登录对外开放。
 >
-> **2026-10-22 15:00 实测通过**：macOS ARM64 上使用内置 Client ID，设备代码在手机端 microsoft.com/link 完成授权，Lua 依次通过 Xbox、XSTS、Minecraft `login_with_xbox`、Java 所有权与档案检查，界面显示正版档案。此前的 403 已不再出现。游戏实际启动与刷新令牌恢复仍按第 4 节继续验证。下文保留审核前的历史记录。
+> **2026-10-22 15:00 实测通过**：macOS ARM64 上使用内置 Client ID，设备代码在手机端 microsoft.com/link 完成授权，Lua 依次通过 Xbox、XSTS、Minecraft `login_with_xbox`、Java 所有权与档案检查，界面显示正版档案。此前的 403 已不再出现。下文保留审核前的历史记录。
+
+> **2026-10-22 15:10 游戏启动实测通过**（Lua 0.10.0 正式安装包，macOS ARM64）：覆盖安装 0.7.1 后无需重新登录；安装原版 1.21.1（约 40 秒，Java 21.0.7），日志 `Setting user: XQGG`、会话主机为官方 `PROD` 环境，进入标题画面且「多人游戏」「Realms」可用（离线 / 试玩身份下二者不可用）；退出游戏无崩溃。完全退出 Lua 后重新打开，刷新令牌自动恢复会话，再次启动 1.21.1 成功。
 
 项目已为 `Lua Launcher` 注册仅面向个人 Microsoft 账户的公共客户端，并启用设备授权流。公开的 Application (client) ID 为 `8e83a566-71f8-4164-9040-5cf61bb12740`，构建默认提供该标识。
 
@@ -143,4 +145,4 @@ pnpm build
 node --import tsx --test desktop/auth.test.ts desktop/auth-config.test.ts
 ```
 
-另运行 `pnpm test` 检查账户并发、启动和安装流程；当前各平台结果见 [GitHub Actions](https://github.com/XQGGCN/lua-launcher/actions)。设备授权和 Xbox / XSTS 已实测；Minecraft 登录仍被 `403` 阻塞，完整登录及应用审核不能标记为已验证。
+另运行 `pnpm test` 检查账户并发、启动和安装流程；当前各平台结果见 [GitHub Actions](https://github.com/XQGGCN/lua-launcher/actions)。2026-10-22 起完整登录、所有权检查、游戏启动和重启后的会话恢复均已在 macOS 实测（见文首）；Windows / Linux 实机游玩待记录。

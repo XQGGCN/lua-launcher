@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { freemem, totalmem } from 'node:os'
 
 /** All "Mb" fields use MiB, matching Java's -Xmx...M unit. */
@@ -14,6 +15,8 @@ export interface MemorySystem {
   freemem?: () => number
   availablemem?: () => number
   platform?: () => NodeJS.Platform
+  /** macOS only: returns `vm_stat` output. Injected in tests. */
+  vmStat?: () => string
 }
 
 export interface MemoryInfo {
@@ -77,12 +80,50 @@ export function recommendedMemory(context: MemoryContext = {}): number {
   return context.modded ? 6144 : 4096
 }
 
+/**
+ * On macOS, Node's availableMemory()/freemem() only count completely free pages, which
+ * macOS keeps deliberately small (often a few hundred MB on a 16 GB Mac). Inactive,
+ * speculative and purgeable pages are reclaimed immediately on demand, so they count
+ * as available here, matching what Activity Monitor reports as memory not under pressure.
+ * Returns undefined when vm_stat is unavailable or its output is not recognised.
+ */
+export function parseVmStat(output: string): number | undefined {
+  const pageSize = Number(/page size of (\d+) bytes/.exec(output)?.[1])
+  if (!Number.isSafeInteger(pageSize) || pageSize <= 0) return undefined
+  const pages = (label: string) => {
+    const match = new RegExp(`^Pages ${label}:\\s+(\\d+)\\.?\\s*$`, 'm').exec(output)
+    return match ? Number(match[1]) : undefined
+  }
+  const free = pages('free')
+  if (free === undefined) return undefined
+  const total = [free, pages('inactive') ?? 0, pages('speculative') ?? 0, pages('purgeable') ?? 0]
+    .reduce((sum, value) => sum + value, 0) * pageSize
+  return Number.isSafeInteger(total) ? total : undefined
+}
+
+function darwinAvailable(system: MemorySystem): number | undefined {
+  try {
+    const output = system.vmStat ? system.vmStat() : execFileSync('/usr/bin/vm_stat', { encoding: 'utf8', timeout: 2000, windowsHide: true })
+    return parseVmStat(output)
+  } catch {
+    return undefined
+  }
+}
+
 function snapshot(system: MemorySystem): { totalMb: number; availableMb: number; basis: MemoryInfo['availableBasis'] } {
   try {
     const total = (system.totalmem ?? totalmem)()
     // Native availableMemory includes OS-reclaimable pages and process limits.
     // Keep freemem injection deterministic for existing platform-independent tests.
-    const available = system.availablemem ?? (system.freemem ? undefined : process.availableMemory?.bind(process))
+    let available = system.availablemem ?? (system.freemem ? undefined : process.availableMemory?.bind(process))
+    if (!system.availablemem && (system.platform?.() ?? process.platform) === 'darwin' && (!system.freemem || system.vmStat)) {
+      const reclaimable = darwinAvailable(system)
+      if (reclaimable !== undefined) {
+        const base = available ? available() : (system.freemem ?? freemem)()
+        const value = Math.max(reclaimable, Number.isSafeInteger(base) ? base : 0)
+        available = () => value
+      }
+    }
     const free = (available ?? system.freemem ?? freemem)()
     if (!Number.isSafeInteger(total) || total <= 0 || !Number.isSafeInteger(free) || free < 0) {
       throw new Error('invalid memory snapshot')
