@@ -359,7 +359,9 @@ test('same-inode writes during read, short reads and read faults close the descr
   }
 })
 
-test('world directory replacement after opening is rejected even if the same file inode survives', async t => {
+test('world directory replacement after opening is rejected even if the same file inode survives', {
+  skip: process.platform === 'win32' && 'Windows cannot rename a directory while a file inside it is open',
+}, async t => {
   const f = await fixture(t), original = fs.open
   hook(t, 'open', async (file, flags, permissions) => {
     const handle = await original(file, flags, permissions)

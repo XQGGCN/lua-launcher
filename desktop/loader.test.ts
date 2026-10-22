@@ -10,6 +10,10 @@ import test, { type TestContext } from 'node:test'
 import AdmZip from 'adm-zip'
 import { installForge, installerArtifact, loaderMetadataUrl, parseInstaller, parseLoaderVersions, runProcessor, type ForgeInstallOptions, type ProcessorCommand } from './loader'
 import { mavenPath } from './core'
+
+// Windows keeps the original casing of environment keys (usually `Path`).
+const pathOf = (env: Record<string, string | undefined> | NodeJS.ProcessEnv) => Object.entries(env).find(([key]) => key.toUpperCase() === 'PATH')?.[1]
+
 const hash = (bytes: Buffer | string) => createHash('sha1').update(bytes).digest('hex')
 function deferred() { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done }); return { promise, resolve } }
 function jar(contents = 'test') {
@@ -269,7 +273,7 @@ test('loader processors remove case-insensitive Java injection variables while p
   assert.equal(captured.cwd, requested.cwd)
   assert.deepEqual(Object.keys(captured.env).filter(name => blocked.has(name.toUpperCase())), [])
   assert.equal(captured.env[preservedName], process.env[preservedName])
-  assert.equal(captured.env.PATH, process.env.PATH)
+  assert.equal(pathOf(captured.env), pathOf(process.env))
   for (const name of variants) assert.equal(process.env[name], `must-not-reach-processor-${name}`)
   assert.deepEqual(fake.kills, [])
 })

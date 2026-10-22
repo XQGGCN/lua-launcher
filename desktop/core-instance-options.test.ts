@@ -10,6 +10,10 @@ import test, { type TestContext } from 'node:test'
 import { LauncherCore, type CoreEvent, type JavaRuntime, type LaunchAccount } from './core'
 import { InstanceOptionsError } from './instance-options'
 
+// Windows keeps the original casing of environment keys (usually `Path`).
+const pathOf = (env: Record<string, string | undefined> | NodeJS.ProcessEnv) => Object.entries(env).find(([key]) => key.toUpperCase() === 'PATH')?.[1]
+
+
 type CoreOptions = NonNullable<ConstructorParameters<typeof LauncherCore>[2]>
 const MIB = 1024 * 1024
 const MAIN_CLASS = 'net.minecraft.client.main.Main'
@@ -540,7 +544,7 @@ test('spawn environment strips Java option injection without altering the host e
     assert.equal(Object.hasOwn(environment, name), false)
     assert.equal(process.env[name], `must-not-reach-java-${name}`)
   }
-  assert.equal(environment.PATH, process.env.PATH)
+  assert.equal(pathOf(environment), pathOf(process.env))
   assert.equal(processes.calls[0].options.shell, false)
 })
 

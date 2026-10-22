@@ -13,6 +13,10 @@ import {
   type JavaRuntimeProbe, type JavaRuntimeProgress, type JavaRuntimeRequest,
 } from './java-runtime'
 
+// Windows keeps the original casing of environment keys (usually `Path`).
+const pathOf = (env: Record<string, string | undefined> | NodeJS.ProcessEnv) => Object.entries(env).find(([key]) => key.toUpperCase() === 'PATH')?.[1]
+
+
 const hash = (value: string | Buffer) => createHash('sha1').update(value).digest('hex')
 const COMPONENT = 'java-runtime-gamma'
 const JAVA = Buffer.from('verified fake Java executable')
@@ -484,7 +488,7 @@ test('the default runtime probe strips Java injection variables before accepting
     const environment = calls[0].options.env!
     assert.deepEqual(Object.keys(environment).filter(name => blocked.has(name.toUpperCase())), [])
     assert.equal(environment[preservedName], process.env[preservedName])
-    assert.equal(environment.PATH, process.env.PATH)
+    assert.equal(pathOf(environment), pathOf(process.env))
     for (const name of variants) assert.equal(process.env[name], `must-not-reach-probe-${name}`)
     assert.deepEqual(await fs.readFile(result.path), JAVA)
     assert.deepEqual(await f.staging(), [])
