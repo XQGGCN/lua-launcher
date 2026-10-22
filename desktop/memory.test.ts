@@ -182,10 +182,18 @@ Pages throttled:                              0.
 Pages wired down:                        150000.
 Pages purgeable:                          12000.
 "Translation faults":                 123456789.
+File-backed pages:                       260000.
+Anonymous pages:                         338000.
+Pages occupied by compressor:             60000.
 `
 
-test('vm_stat output counts free, inactive, speculative and purgeable pages', () => {
+test('vm_stat follows Activity Monitor: only wired, compressed and app memory are in use', () => {
+  // Without the total, fall back to free + inactive + speculative + purgeable pages.
   assert.equal(parseVmStat(VM_STAT), (5000 + 440000 + 8000 + 12000) * 16384)
+  const total = 16 * 1024 ** 3
+  assert.equal(parseVmStat(VM_STAT, total), total - (150000 + 60000 + (338000 - 12000)) * 16384)
+  // Heavy app memory: the reclaimable-page estimate is used when it is larger.
+  assert.equal(parseVmStat(VM_STAT.replace('338000', '900000'), total), (5000 + 440000 + 8000 + 12000) * 16384)
   assert.equal(parseVmStat('garbage'), undefined)
   assert.equal(parseVmStat('Mach Virtual Memory Statistics: (page size of 4096 bytes)\nPages active: 1.\n'), undefined)
 })
@@ -194,7 +202,7 @@ test('macOS uses reclaimable memory from vm_stat instead of the tiny free-page c
   const mac = { totalmem: () => 16 * 1024 ** 3, freemem: () => 80 * 1024 ** 2, platform: () => 'darwin' as const, vmStat: () => VM_STAT }
   const info = getMemoryInfo({ gameVersion: '1.21.1' }, mac)
   assert.equal(info.availableBasis, 'os-available')
-  assert.equal(info.availableMb, Math.floor((5000 + 440000 + 8000 + 12000) * 16384 / 1024 ** 2))
+  assert.equal(info.availableMb, Math.floor((16 * 1024 ** 3 - (150000 + 60000 + 326000) * 16384) / 1024 ** 2))
   assert.equal(info.recommendedMb, 4096)
   // Without vm_stat the free-page count alone would block or clamp the launch.
   assert.equal(getMemoryInfo({ gameVersion: '1.21.1' }, { ...mac, vmStat: () => { throw new Error('missing') } }).canLaunch, false)

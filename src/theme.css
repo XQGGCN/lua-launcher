@@ -449,5 +449,7 @@ progress::-moz-progress-bar { background: var(--accent); border-radius: 6px; }
 .update-pill small { display: block; font-size: 11px; color: #c9cde4; margin-top: 2px; }
 .update-notes { max-height: 280px; overflow: auto; margin: 0 0 14px; padding: 14px; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius-sm); font: 13px/1.7 var(--font); color: var(--ink-2); white-space: pre-wrap; }
 .update-progress { margin-bottom: 8px; }
+.update-opened { display: flex; gap: 8px; align-items: flex-start; margin: 0 0 8px; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--ok-soft); color: var(--ok); font-size: 13px; line-height: 1.6; }
+.update-opened svg { flex: none; margin-top: 3px; }
 .update-progress > div { display: flex; justify-content: space-between; font-size: 13px; color: var(--ink-2); margin-bottom: 6px; font-variant-numeric: tabular-nums; }
 @media (max-width: 800px) { .update-pill span { display: none; } .update-pill { justify-content: center; } }

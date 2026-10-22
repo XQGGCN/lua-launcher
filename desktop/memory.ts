@@ -82,29 +82,37 @@ export function recommendedMemory(context: MemoryContext = {}): number {
 
 /**
  * On macOS, Node's availableMemory()/freemem() only count completely free pages, which
- * macOS keeps deliberately small (often a few hundred MB on a 16 GB Mac). Inactive,
- * speculative and purgeable pages are reclaimed immediately on demand, so they count
- * as available here, matching what Activity Monitor reports as memory not under pressure.
- * Returns undefined when vm_stat is unavailable or its output is not recognised.
+ * macOS keeps deliberately small (often a few hundred MB on a 16 GB Mac) because it uses
+ * spare RAM as file cache. Activity Monitor counts memory as used only when it is wired,
+ * compressed or app (anonymous, non-purgeable) memory; cached files are dropped on demand.
+ * This follows the same accounting when `totalBytes` and those counters are present, and
+ * otherwise counts free, inactive, speculative and purgeable pages.
+ * Returns undefined when the output is not recognised.
  */
-export function parseVmStat(output: string): number | undefined {
+export function parseVmStat(output: string, totalBytes?: number): number | undefined {
   const pageSize = Number(/page size of (\d+) bytes/.exec(output)?.[1])
   if (!Number.isSafeInteger(pageSize) || pageSize <= 0) return undefined
   const pages = (label: string) => {
-    const match = new RegExp(`^Pages ${label}:\\s+(\\d+)\\.?\\s*$`, 'm').exec(output)
+    const match = new RegExp(`^${label}:\\s+(\\d+)\\.?\\s*$`, 'm').exec(output)
     return match ? Number(match[1]) : undefined
   }
-  const free = pages('free')
+  const free = pages('Pages free')
   if (free === undefined) return undefined
-  const total = [free, pages('inactive') ?? 0, pages('speculative') ?? 0, pages('purgeable') ?? 0]
-    .reduce((sum, value) => sum + value, 0) * pageSize
-  return Number.isSafeInteger(total) ? total : undefined
+  const purgeable = pages('Pages purgeable') ?? 0
+  const reclaimable = (free + (pages('Pages inactive') ?? 0) + (pages('Pages speculative') ?? 0) + purgeable) * pageSize
+  const wired = pages('Pages wired down'), compressed = pages('Pages occupied by compressor'), anonymous = pages('Anonymous pages')
+  let notInUse = 0
+  if (totalBytes && Number.isSafeInteger(totalBytes) && wired !== undefined && compressed !== undefined && anonymous !== undefined) {
+    notInUse = totalBytes - (wired + compressed + Math.max(0, anonymous - purgeable)) * pageSize
+  }
+  const value = Math.max(reclaimable, notInUse)
+  return Number.isSafeInteger(value) && value >= 0 ? value : undefined
 }
 
-function darwinAvailable(system: MemorySystem): number | undefined {
+function darwinAvailable(system: MemorySystem, totalBytes: number): number | undefined {
   try {
     const output = system.vmStat ? system.vmStat() : execFileSync('/usr/bin/vm_stat', { encoding: 'utf8', timeout: 2000, windowsHide: true })
-    return parseVmStat(output)
+    return parseVmStat(output, totalBytes)
   } catch {
     return undefined
   }
@@ -117,7 +125,7 @@ function snapshot(system: MemorySystem): { totalMb: number; availableMb: number;
     // Keep freemem injection deterministic for existing platform-independent tests.
     let available = system.availablemem ?? (system.freemem ? undefined : process.availableMemory?.bind(process))
     if (!system.availablemem && (system.platform?.() ?? process.platform) === 'darwin' && (!system.freemem || system.vmStat)) {
-      const reclaimable = darwinAvailable(system)
+      const reclaimable = darwinAvailable(system, total)
       if (reclaimable !== undefined) {
         const base = available ? available() : (system.freemem ?? freemem)()
         const value = Math.max(reclaimable, Number.isSafeInteger(base) ? base : 0)

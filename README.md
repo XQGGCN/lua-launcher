@@ -2,7 +2,7 @@
 
 一个面向 Windows、macOS 和 Linux 的独立开源 Minecraft Java 启动器。夜色侧栏加「启动台」首页：选中实例、看一眼账户和 Java，按下月光色按钮就开始游戏。
 
-**当前版本：0.10.1 Alpha**（[下载](https://github.com/XQGGCN/lua-launcher/releases)）。
+**当前版本：0.10.2 Alpha**（[下载](https://github.com/XQGGCN/lua-launcher/releases)）。
 
 ### 0.10 有什么
 

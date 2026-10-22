@@ -3,10 +3,11 @@ import {
   ArrowDownToLine, ArrowRight, ArrowUpRight, Boxes, Check,
   Download, FolderOpen, Gamepad2, Layers3, MemoryStick, Monitor, Moon, Palette, Puzzle,
   Play, Plus, RefreshCw, Search, Settings2, Sun, SunMoon,
-  Square, Terminal, UserRound, X, Package, Cpu, HardDrive, LogIn, MoreHorizontal, Copy, Trash2, FileWarning, AppWindow, Sparkles,
+  Square, Terminal, UserRound, X, Package, Cpu, HardDrive, LogIn, MoreHorizontal, Copy, Trash2, FileWarning, AppWindow, Sparkles, CheckCircle2,
 } from 'lucide-react'
 import { call, errorText, isDesktop, loaderNames, onEvent, platform, type CrashAnalysis, type UpdateInfo, type Account, type AuthState, type Instance, type JavaRuntime, type JavaRequirement, type JavaRuntimeTask, type Mod, type ModVersion, type Progress, type ResourceSource, type SearchResult, type Settings, type Snapshot, type Version } from './api'
 
+import { plainNotes } from './release-notes'
 import AccountView from './components/AccountView'
 import DownloadsView, { type DownloadInput, type PackTask } from './components/DownloadsView'
 import ModpacksView from './components/ModpacksView'
@@ -110,6 +111,7 @@ export default function App() {
   const [update, setUpdate] = useState<UpdateInfo | null>(null)
   const [updateOpen, setUpdateOpen] = useState(false)
   const [updateProgress, setUpdateProgress] = useState<{ received: number; total: number }>()
+  const [updateOpened, setUpdateOpened] = useState(false)
   const [autoUpdate, setAutoUpdate] = useState(() => { try { return localStorage.getItem('lua-auto-update') !== '0' } catch { return true } })
   useEffect(() => { try { localStorage.setItem('lua-auto-update', autoUpdate ? '1' : '0') } catch { /* preference only */ } }, [autoUpdate])
   const checkUpdate = useCallback(async (manual = false) => {
@@ -599,16 +601,18 @@ export default function App() {
     </main>
     {updateOpen && update && <Dialog title={`更新到 ${update.version}`} close={() => { if (!updateProgress) setUpdateOpen(false) }} wide>
       <p className="modal-description">当前版本 {update.current}{update.publishedAt ? ` · 发布于 ${new Date(update.publishedAt).toLocaleDateString('zh-CN')}` : ''}。{update.action === 'installer' ? '下载后会打开安装程序，启动器自动退出，你的实例和存档不受影响。' : update.action === 'appimage' ? '下载后替换当前 AppImage 并重新启动。' : update.action === 'open-dmg' ? '下载后会打开安装包，把 Lua 拖进「应用程序」替换旧版即可。' : '将打开下载页面。'}</p>
-      <pre className="update-notes">{update.notes.replace(/^#+\s*/gm, '').trim() || '暂无更新说明。'}</pre>
+      <pre className="update-notes">{plainNotes(update.notes) || '暂无更新说明。'}</pre>
+      {updateOpened && <p className="update-opened"><CheckCircle2 size={16} />安装包已打开。请退出 Lua，在打开的窗口中把 Lua 拖进「应用程序」并选择「替换」，再重新打开。</p>}
       {updateProgress && <div className="update-progress"><div><span>正在下载并校验</span><span>{Math.round(updateProgress.received / Math.max(1, updateProgress.total) * 100)}%</span></div><progress value={updateProgress.received} max={updateProgress.total} /></div>}
-      <div className="modal-actions"><button type="button" className="button secondary" disabled={Boolean(updateProgress)} onClick={() => setUpdateOpen(false)}>稍后</button><button type="button" className="button primary" disabled={Boolean(updateProgress)} onClick={async () => {
+      <div className="modal-actions">{updateOpened ? <button type="button" className="button primary" onClick={() => setUpdateOpen(false)}>知道了</button> : <><button type="button" className="button secondary" disabled={Boolean(updateProgress)} onClick={() => setUpdateOpen(false)}>稍后</button><button type="button" className="button primary" disabled={Boolean(updateProgress)} onClick={async () => {
         try {
           setUpdateProgress(update.asset ? { received: 0, total: update.asset.size } : undefined)
           const result = await call<string>('installUpdate')
-          if (result === 'opened-installer') setToast('安装包已打开，请按提示替换旧版本。')
+          setUpdateProgress(undefined)
+          if (result === 'opened-installer') setUpdateOpened(true)
           if (result === 'opened-page') setUpdateOpen(false)
         } catch (error) { setToast(errorText(error)); setUpdateProgress(undefined) }
-      }}>{updateProgress ? <Spinner size={16} /> : <Download size={16} />}{update.action === 'page' ? '打开下载页' : '下载并更新'}</button></div>
+      }}>{updateProgress ? <Spinner size={16} /> : <Download size={16} />}{update.action === 'page' ? '打开下载页' : '下载并更新'}</button></>}</div>
     </Dialog>}
     {crash && <Dialog title={crash.analysis.title} close={() => setCrash(undefined)}>
       <div className="crash-summary"><FileWarning size={22} /><div><strong>{instances.find(item => item.id === crash.instanceId)?.name || '游戏'} 意外退出</strong>{crash.analysis.description && <p>崩溃报告：{crash.analysis.description}</p>}</div></div>
