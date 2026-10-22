@@ -1,5 +1,16 @@
 # 更新日志
 
+## 0.9.0 Alpha — 2026-10-22
+
+- **地图预览**：原创 NBT 解析与 Anvil 区域读取（`desktop/nbt.ts`、`desktop/world-map.ts`），每个 512×512 区域渲染为 PNG 瓦片，支持 1.18+ `sections`、1.13–1.17（含 1.16 前跨 long 打包）与 1.13 前数字 ID；水深与高度阴影；主世界 / 下界（洞穴视图）/ 末地；26.1 新目录布局。主进程同时最多渲染两个区域并缓存 64 个瓦片。
+- **世界恢复与导入**（`desktop/world-restore.ts`）：目录备份逐文件 SHA-256 校验后恢复为新世界；Lua ZIP 与普通地图 ZIP 流式解压，CRC-32 / 大小 / 压缩比 / 路径穿越 / 大小写冲突检查；暂存目录在同卷，完成后改名发布，同名自动编号，不覆盖。
+- **旧版本与快照**（`desktop/legacy-version.ts`）：版本列表返回全部频道；`minecraftArguments` 转换、默认 JVM 参数、缺失 Java 元数据回退 Java 8、`virtual` / `map_to_resources` 资源布局、Apple 芯片旧版本使用 x64 Java（Rosetta 2）。Fabric 放开到所有官方版本，Forge / NeoForge 保持 1.20.1+。
+- **崩溃分析**（`desktop/crash-analysis.ts`）：保留最近 400 行输出，读取本次启动后的 crash-reports / hs_err 日志，匹配 14 类常见原因；界面弹窗 + 后台系统通知。
+- **实例管理**：复制实例（排除恢复暂存与模组事务标记）、删除实例（系统回收站，失败时移到 `deleted-instances`）、打开崩溃报告。
+- **界面**：下载页版本浏览器；设置页「启动器」分区（外观、启动后最小化）；账户页切换账户；实例行「更多」菜单；macOS hiddenInset 标题栏、Windows titleBarOverlay 并随主题切换。
+- **Windows**：NSIS 可选安装目录、桌面 / 开始菜单快捷方式、中文界面、`Lua-Setup-<版本>.exe`；注册表与更多厂商目录及官方启动器运行时的 Java 识别；AppUserModelId。
+- 测试 553 项（新增地图 5、恢复 7、旧版本 6、崩溃 2、Core 4 等）。
+
 ## 0.8.0 Alpha — 2026-10-22
 
 - **界面重设计**：夜色侧栏 + 「启动台」首页，当前实例、账户皮肤头像、Java 与内存集中展示，月光色启动按钮；实例列表加载器色标、双击启动、空状态引导。新增浅色 / 深色 / 跟随系统外观，所有页面改用统一的颜色变量。
