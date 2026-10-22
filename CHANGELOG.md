@@ -1,5 +1,12 @@
 # 更新日志
 
+## 0.10.0 Alpha — 2026-10-22
+
+- **下载源 / 国内镜像**（`desktop/download-mirror.ts`）：BMCLAPI 映射 Mojang 元数据与文件、资源、运行库、Fabric meta / maven、Forge 与 NeoForge maven。`auto` 官方优先，12 秒未返回响应头、网络错误、404/408/429/5xx 时切换镜像，并在 10 分钟内优先镜像；`mirror` 反之；`official` 不使用镜像。镜像节点重定向仅允许公网 HTTPS 域名。所有游戏文件仍按官方清单 SHA-1 校验。中国大陆时区默认镜像。
+- **自动更新**（`desktop/updater.ts`）：读取 GitHub Releases，选最新非草稿版本；Windows 下载安装程序、Linux 原子替换 AppImage 并重启、macOS 打开 DMG；只从 GitHub 域名下载并核对 GitHub 公布的 SHA-256；游戏运行时不更新。启动 4 秒后检查，可在设置关闭。
+- 新增隐私政策与 Windows 代码签名说明；CI 预留 SignPath（需 `SIGNPATH_API_TOKEN`）与 Microsoft Store MSIX（需 `MSSTORE_*` 变量）步骤，未配置时跳过。
+- 测试 565 项（新增镜像 7、更新 5）。
+
 ## 0.9.0 Alpha — 2026-10-22
 
 - **地图预览**：原创 NBT 解析与 Anvil 区域读取（`desktop/nbt.ts`、`desktop/world-map.ts`），每个 512×512 区域渲染为 PNG 瓦片，支持 1.18+ `sections`、1.13–1.17（含 1.16 前跨 long 打包）与 1.13 前数字 ID；水深与高度阴影；主世界 / 下界（洞穴视图）/ 末地；26.1 新目录布局。主进程同时最多渲染两个区域并缓存 64 个瓦片。

@@ -22,6 +22,12 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      # Optional Windows signing through the SignPath Foundation open source program (docs/CODE_SIGNING.md).
+      SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -40,6 +46,53 @@ jobs:
       - run: pnpm exec electron-builder --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - name: Upload unsigned Windows installer for signing
+        id: unsigned-windows
+        if: runner.os == 'Windows' && env.SIGNPATH_API_TOKEN != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-windows-installer
+          path: release/*.exe
+          if-no-files-found: error
+          retention-days: 1
+      - name: Sign Windows installer (SignPath)
+        if: runner.os == 'Windows' && env.SIGNPATH_API_TOKEN != ''
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'lua-launcher' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG || 'release-signing' }}
+          github-artifact-id: ${{ steps.unsigned-windows.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: release-signed
+      - name: Use the signed Windows installer
+        if: runner.os == 'Windows' && env.SIGNPATH_API_TOKEN != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls release-signed/*.exe
+          cp -f release-signed/*.exe release/
+      - name: Build Microsoft Store package (MSIX)
+        if: runner.os == 'Windows' && vars.MSSTORE_IDENTITY_NAME != ''
+        shell: bash
+        run: >-
+          pnpm exec electron-builder --win appx --publish never
+          -c.appx.identityName="${{ vars.MSSTORE_IDENTITY_NAME }}"
+          -c.appx.publisher="${{ vars.MSSTORE_PUBLISHER }}"
+          -c.appx.publisherDisplayName="${{ vars.MSSTORE_PUBLISHER_DISPLAY_NAME }}"
+          -c.appx.displayName="Lua 未央"
+          -c.appx.languages=zh-CN
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - name: Upload Microsoft Store package
+        if: runner.os == 'Windows' && vars.MSSTORE_IDENTITY_NAME != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: msstore-appx
+          path: release/*.appx
+          if-no-files-found: error
+          retention-days: 30
       - uses: actions/upload-artifact@v4
         with:
           name: lua-${{ runner.os }}-${{ runner.arch }}
