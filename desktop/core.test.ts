@@ -202,7 +202,7 @@ test('installer downloads verified files, persists ready state, and reuses its c
   const events: CoreEvent[] = []
   const core = fixtureCore(directory, event => events.push(event), { fetch: fake.fetcher, platform: 'darwin', arch: 'arm64' })
   await core.init()
-  assert.deepEqual((await core.versions()).map(v => v.id), ['1.20.1'])
+  assert.deepEqual((await core.versions()).map(v => `${v.id}:${v.type}`), ['1.20.1:release', '1.19.4:release', '25w41a:snapshot'])
   const instance = await core.createInstance({ name: 'Test world', version: '1.20.1', loader: 'vanilla' })
   await core.install(instance.id)
   assert.equal(core.snapshot().instances[0].status, 'ready')
@@ -477,6 +477,61 @@ test('unexpected crash signals are reported instead of being treated as normal s
     await core.updateSettings({})
     assert.match(core.snapshot().instances[0].error ?? '', new RegExp(signal))
   }
+})
+
+test('instances can be duplicated with their files and removed only when idle', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'lua-core-duplicate-'))
+  t.after(() => fs.rm(directory, { recursive: true, force: true }))
+  const fake = fixture()
+  const processes = processHarness()
+  const core = fixtureCore(directory, undefined, { fetch: fake.fetcher, spawn: processes.spawn, memorySystem: { totalmem: () => 16 * 1024 ** 3, freemem: () => 12 * 1024 ** 3 }, platform: 'linux', arch: 'x64' })
+  await core.init()
+  const instance = await core.createInstance({ name: 'Original', version: '1.20.1', loader: 'vanilla' })
+  await core.install(instance.id)
+  await fs.mkdir(path.join(directory, 'instances', instance.id, 'game', 'saves', 'World'), { recursive: true })
+  await fs.writeFile(path.join(directory, 'instances', instance.id, 'game', 'saves', 'World', 'level.dat'), 'level')
+  await fs.mkdir(path.join(directory, 'instances', instance.id, '.restore-staging', 'junk'), { recursive: true })
+  const copy = await core.duplicateInstance(instance.id, 'Copy of original')
+  assert.notEqual(copy.id, instance.id); assert.equal(copy.status, 'ready'); assert.equal(copy.playtimeMs, 0)
+  assert.equal(await fs.readFile(path.join(directory, 'instances', copy.id, 'game', 'saves', 'World', 'level.dat'), 'utf8'), 'level')
+  await assert.rejects(fs.access(path.join(directory, 'instances', copy.id, '.restore-staging')))
+  await assert.rejects(core.duplicateInstance(instance.id, ''), /1–64/)
+  core.detectJava = async () => [testRuntime]
+  await core.launch(copy.id, microsoftAccount)
+  assert.throws(() => core.removableInstancePath(copy.id), /关闭游戏/)
+  processes.children.at(-1)!.emit('close', 0, null)
+  await core.updateSettings({})
+  const archived = await core.archiveInstanceFolder(copy.id)
+  assert.ok(archived.includes('deleted-instances'))
+  await core.forgetInstance(copy.id)
+  assert.deepEqual(core.snapshot().instances.map(item => item.id), [instance.id])
+})
+
+test('a crashed game is analysed from its output and crash report', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'lua-core-crash-analysis-'))
+  t.after(() => fs.rm(directory, { recursive: true, force: true }))
+  const fake = fixture()
+  const processes = processHarness()
+  const events: CoreEvent[] = []
+  const core = fixtureCore(directory, event => events.push(event), { fetch: fake.fetcher, spawn: processes.spawn, memorySystem: { totalmem: () => 16 * 1024 ** 3, freemem: () => 12 * 1024 ** 3 }, platform: 'linux', arch: 'x64' })
+  await core.init()
+  const instance = await core.createInstance({ name: 'Crash analysis', version: '1.20.1', loader: 'vanilla' })
+  await core.install(instance.id)
+  core.detectJava = async () => [testRuntime]
+  await core.launch(instance.id, microsoftAccount)
+  const child = processes.children.at(-1)!
+  ;(child.stdout as PassThrough).write('[main/INFO] Loading\nException in thread "Render thread" java.lang.OutOfMemoryError: Java heap space\n')
+  const reports = path.join(directory, 'instances', instance.id, 'game', 'crash-reports')
+  await fs.mkdir(reports, { recursive: true })
+  await fs.writeFile(path.join(reports, 'crash-2026-10-22_10.00.00-client.txt'), 'Description: Rendering screen\n')
+  await new Promise(resolve => setImmediate(resolve))
+  child.emit('close', 1, null)
+  for (let i = 0; i < 50 && !events.some(event => event.type === 'crash'); i++) await new Promise(resolve => setTimeout(resolve, 10))
+  const crash = events.find(event => event.type === 'crash')
+  assert.ok(crash && crash.type === 'crash')
+  assert.equal(crash.analysis.title, '游戏内存不足')
+  assert.equal(crash.analysis.report, 'crash-2026-10-22_10.00.00-client.txt')
+  assert.match(core.snapshot().instances[0].error ?? '', /内存不足.*退出码 1/)
 })
 
 test('a failed dependency download leaves installed mods and their registry unchanged', async t => {

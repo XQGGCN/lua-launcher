@@ -3,9 +3,9 @@ import {
   ArrowDownToLine, ArrowRight, ArrowUpRight, Boxes, Check,
   Download, FolderOpen, Gamepad2, Layers3, MemoryStick, Monitor, Moon, Palette, Puzzle,
   Play, Plus, RefreshCw, Search, Settings2, Sun, SunMoon,
-  Square, Terminal, UserRound, X, Package, Cpu, HardDrive, LogIn,
+  Square, Terminal, UserRound, X, Package, Cpu, HardDrive, LogIn, MoreHorizontal, Copy, Trash2, FileWarning, AppWindow,
 } from 'lucide-react'
-import { call, errorText, isDesktop, loaderNames, onEvent, type Account, type AuthState, type Instance, type JavaRuntime, type JavaRequirement, type JavaRuntimeTask, type Mod, type ModVersion, type Progress, type ResourceSource, type SearchResult, type Settings, type Snapshot, type Version } from './api'
+import { call, errorText, isDesktop, loaderNames, onEvent, platform, type CrashAnalysis, type Account, type AuthState, type Instance, type JavaRuntime, type JavaRequirement, type JavaRuntimeTask, type Mod, type ModVersion, type Progress, type ResourceSource, type SearchResult, type Settings, type Snapshot, type Version } from './api'
 
 import AccountView from './components/AccountView'
 import DownloadsView, { type DownloadInput, type PackTask } from './components/DownloadsView'
@@ -74,7 +74,14 @@ function Logo({ small = false }: { small?: boolean }) {
 export default function App() {
   const [view, setView] = useState<View>('library')
   const [theme, setTheme] = useState<ThemeMode>(readTheme)
-  useEffect(() => { applyTheme(theme) }, [theme])
+  useEffect(() => {
+    applyTheme(theme)
+    if (platform !== 'win32') return
+    const media = window.matchMedia('(prefers-color-scheme: dark)')
+    const sync = () => { void call('setTitleBarTheme', theme === 'system' ? (media.matches ? 'dark' : 'light') : theme).catch(() => {}) }
+    sync(); media.addEventListener('change', sync)
+    return () => media.removeEventListener('change', sync)
+  }, [theme])
   const [settingsOpened, setSettingsOpened] = useState(false)
   const [resourcesOpened, setResourcesOpened] = useState(false)
   const [resourceTasks, setResourceTasks] = useState<ResourceInstallTask[]>([])
@@ -98,6 +105,18 @@ export default function App() {
   const accountRequest = useRef(0)
   const [error, setError] = useState('')
   const [toast, setToast] = useState('')
+  const [crash, setCrash] = useState<{ instanceId: string; analysis: CrashAnalysis }>()
+  const [menuFor, setMenuFor] = useState('')
+  const [removing, setRemoving] = useState<Instance>()
+  const [duplicating, setDuplicating] = useState<Instance>()
+  const [minimizeOnLaunch, setMinimizeOnLaunch] = useState(() => { try { return localStorage.getItem('lua-minimize-on-launch') === '1' } catch { return false } })
+  useEffect(() => { try { localStorage.setItem('lua-minimize-on-launch', minimizeOnLaunch ? '1' : '0') } catch { /* preference only */ } }, [minimizeOnLaunch])
+  useEffect(() => {
+    if (!menuFor) return
+    const close = (event: MouseEvent) => { if (!(event.target as HTMLElement).closest('.row-menu')) setMenuFor('') }
+    window.addEventListener('mousedown', close)
+    return () => window.removeEventListener('mousedown', close)
+  }, [menuFor])
   const [downloadTab, setDownloadTab] = useState<'game' | 'tasks'>('game')
   const [taskErrors, setTaskErrors] = useState<Record<string, string>>({})
   const [packTasks, setPackTasks] = useState<PackTask[]>([])
@@ -181,6 +200,7 @@ export default function App() {
         ++authStateRevision.current
         setAuthState(current => ({ ...current, status: { stage: event.stage, message: event.message } }))
       }
+      if (event.type === 'crash') setCrash({ instanceId: event.instanceId, analysis: event.analysis })
       if (event.type === 'authState') {
         ++authStateRevision.current
         setAuthState(event.state)
@@ -195,7 +215,10 @@ export default function App() {
     if (method === 'launch' && (backupLocks.current.has(key) || backupTasks.some(task => task.instanceId === key && ['active', 'cancelling'].includes(task.status)))) { setToast('世界正在备份，请等待完成或取消后再启动。'); return }
     setBusy(current => ({ ...current, [key]: true }))
     if (method === 'launch') setProgress(current => ({ ...current, [key]: { type: 'progress', instanceId: key, phase: '正在验证账户并准备启动', completed: 0, total: 0, bytesDownloaded: 0 } }))
-    try { await call(method, ...args); await refresh() } catch (error) { setToast(errorText(error)) }
+    try {
+      await call(method, ...args); await refresh()
+      if (method === 'launch' && minimizeOnLaunch) void call('minimizeWindow').catch(() => {})
+    } catch (error) { setToast(errorText(error)) }
     finally { setBusy(current => ({ ...current, [key]: false })) }
   }
   const instances = snapshot?.instances || []
@@ -478,6 +501,7 @@ export default function App() {
         <div className="sidebar-note">{isDesktop ? `版本 ${APP_VERSION}` : '浏览器预览'}</div>
       </div>
     </aside>
+    {(platform === 'win32' || platform === 'darwin') && <div className="window-drag" aria-hidden="true" />}
     <main className={`main-panel view-${view}`}>
       <div className="page-content">
         {!isDesktop && <div className="preview-notice"><Monitor size={15} /><span>这是浏览器预览：可以浏览模组和整合包，安装与启动游戏需要使用桌面版。</span></div>}
@@ -516,7 +540,12 @@ export default function App() {
                 <button className="version-name" onClick={() => setSelectedId(instance.id)} aria-pressed={selectedInstance?.id === instance.id} title="单击选择，双击启动"><span className={`version-symbol loader-${instance.loader}`}>{instance.loader === 'vanilla' ? <Gamepad2 size={20} /> : <Layers3 size={20} />}</span><span><strong>{instance.name}</strong><small>{!isDesktop ? '预览实例' : instance.lastPlayed ? `上次游玩 ${new Date(instance.lastPlayed).toLocaleDateString('zh-CN')}` : '还没玩过'}</small></span></button>
                 <button className="version-meta" onClick={() => setSelectedId(instance.id)} tabIndex={-1}><strong>{instance.version}</strong><small><span className={`loader-dot loader-${instance.loader}`} />{loaderNames[instance.loader]}{instance.loaderVersion ? ` ${instance.loaderVersion}` : ''}</small></button>
                 <div className={`instance-status status-${instance.status}`}><span>{statusLabels[instance.status]}{instance.status === 'installing' && ` ${percent(progress[instance.id])}%`}</span>{instance.status === 'installing' && <progress value={percent(progress[instance.id])} max="100" aria-label={`${instance.name} 安装进度`} />}</div>
-                <div className="version-actions"><button type="button" className="icon-button" title="实例内容" aria-label={`查看 ${instance.name} 的内容`} onClick={() => showInstanceContent(instance.id)}><Package size={17} /></button><button type="button" className="icon-button" title="实例设置" aria-label={`设置 ${instance.name}`} onClick={() => openInstanceSettings(instance)}><Settings2 size={17} /></button><button className="icon-button" aria-label={`打开 ${instance.name} 的文件夹`} title="打开游戏文件夹" onClick={() => void run(`folder-${instance.id}`, 'openInstance', instance.id)} disabled={!isDesktop}><FolderOpen size={17} /></button><button className="icon-button" title="运行日志" aria-label={`查看 ${instance.name} 的日志`} onClick={() => { setSelectedId(instance.id); changeView('logs') }}><Terminal size={17} /></button></div>
+                <div className="version-actions"><button type="button" className="icon-button" title="实例内容" aria-label={`查看 ${instance.name} 的内容`} onClick={() => showInstanceContent(instance.id)}><Package size={17} /></button><button type="button" className="icon-button" title="实例设置" aria-label={`设置 ${instance.name}`} onClick={() => openInstanceSettings(instance)}><Settings2 size={17} /></button><button className="icon-button" aria-label={`打开 ${instance.name} 的文件夹`} title="打开游戏文件夹" onClick={() => void run(`folder-${instance.id}`, 'openInstance', instance.id)} disabled={!isDesktop}><FolderOpen size={17} /></button><div className="row-menu"><button className="icon-button" title="更多" aria-label={`${instance.name} 的更多操作`} aria-expanded={menuFor === instance.id} onClick={() => setMenuFor(current => current === instance.id ? '' : instance.id)}><MoreHorizontal size={17} /></button>{menuFor === instance.id && <div className="menu-popover" role="menu">
+                  <button role="menuitem" onClick={() => { setMenuFor(''); setSelectedId(instance.id); changeView('logs') }}><Terminal size={15} />运行日志</button>
+                  <button role="menuitem" disabled={!isDesktop} onClick={() => { setMenuFor(''); setDuplicating(instance) }}><Copy size={15} />复制实例</button>
+                  <button role="menuitem" disabled={!isDesktop} onClick={() => { setMenuFor(''); void call('openCrashReports', instance.id).catch(error => setToast(errorText(error))) }}><FileWarning size={15} />崩溃报告</button>
+                  <button role="menuitem" className="danger" disabled={!isDesktop || instance.status === 'running' || instance.status === 'installing'} onClick={() => { setMenuFor(''); setRemoving(instance) }}><Trash2 size={15} />删除实例</button>
+                </div>}</div></div>
                 {instance.error && <p className="version-error">{instance.error}</p>}
               </div>)}
             </div>
@@ -537,7 +566,7 @@ export default function App() {
         {view === 'discover' && <Discover source={resourceSource} setSource={setResourceSource} openUrl={openUrl} instances={instances} installed={async name => { await refresh(); setToast(`${name} 已安装，必需依赖已一并处理。`) }} />}
         {view === 'downloads' && <DownloadsView tab={downloadTab} setTab={setDownloadTab} instances={instances} progress={progress} busy={busy} taskErrors={taskErrors} packTasks={packTasks} javaTasks={javaTasks} resourceTasks={resourceTasks} cancelResource={cancelResource} backupTasks={backupTasks} cancelBackup={cancelWorldBackup} openBackup={openWorldBackup} showContent={showInstanceContent} cancelJava={async id => { await call('cancelJavaInstall', id) }} retryJava={async major => { await call('installJava', major) }} download={downloadGame} install={installInstance} cancel={cancelDownload} showGame={id => { setSelectedId(id); changeView('library') }} showLogs={id => { setSelectedId(id); changeView('logs') }} showPacks={source => { if (source && source !== 'local') setResourceSource(source); changeView('modpacks') }} />}
         {view === 'modpacks' && <ModpacksView source={resourceSource} setSource={setResourceSource} tasks={packTasks} progress={progress} installOnline={(versionId, name, source) => installPack('installModpack', versionId, name, source)} importLocal={(token, name) => installPack('importModpack', token, name)} cancel={cancelDownload} showTasks={showTasks} openUrl={openUrl} />}
-        {settingsOpened && snapshot && <div hidden={view !== 'settings'}><SettingsView instance={selectedInstance} settings={snapshot.settings} rootDir={snapshot.rootDir} javaTasks={javaTasks} save={async settings => {
+        {settingsOpened && snapshot && <div hidden={view !== 'settings'}><SettingsView theme={theme} setTheme={setTheme} minimizeOnLaunch={minimizeOnLaunch} setMinimizeOnLaunch={setMinimizeOnLaunch} instance={selectedInstance} settings={snapshot.settings} rootDir={snapshot.rootDir} javaTasks={javaTasks} save={async settings => {
           const next = await call<Snapshot>('updateSettings', settings)
           // This response owns global settings only. Instance state may have
           // advanced through an event while this request was in flight.
@@ -548,6 +577,14 @@ export default function App() {
         {view === 'logs' && <LogsView instances={instances} initialId={selectedInstance?.id} />}
       </div>
     </main>
+    {crash && <Dialog title={crash.analysis.title} close={() => setCrash(undefined)}>
+      <div className="crash-summary"><FileWarning size={22} /><div><strong>{instances.find(item => item.id === crash.instanceId)?.name || '游戏'} 意外退出</strong>{crash.analysis.description && <p>崩溃报告：{crash.analysis.description}</p>}</div></div>
+      <h3 className="crash-heading">可以这样解决</h3>
+      <ul className="crash-hints">{crash.analysis.hints.map((hint, index) => <li key={index}>{hint}</li>)}</ul>
+      <div className="modal-actions">{crash.analysis.report && <button type="button" className="button secondary" onClick={() => void call('openCrashReports', crash.instanceId).catch(error => setToast(errorText(error)))}><FolderOpen size={16} />打开崩溃报告</button>}<button type="button" className="button secondary" onClick={() => { setSelectedId(crash.instanceId); setCrash(undefined); changeView('logs') }}><Terminal size={16} />查看日志</button><button type="button" className="button primary" onClick={() => setCrash(undefined)}>知道了</button></div>
+    </Dialog>}
+    {removing && <RemoveInstanceDialog instance={removing} close={() => setRemoving(undefined)} removed={async trashed => { setRemoving(undefined); await refresh(); setToast(trashed ? `已把「${removing.name}」移到${platform === 'win32' ? '回收站' : '废纸篓'}，需要时可以从那里找回。` : `已移除「${removing.name}」，文件保存在启动器数据目录的 deleted-instances 中。`) }} />}
+    {duplicating && <DuplicateInstanceDialog instance={duplicating} close={() => setDuplicating(undefined)} done={async copy => { setDuplicating(undefined); await refresh(); setSelectedId(copy.id); setToast(`已复制为「${copy.name}」。`) }} />}
     {toast && <div className="toast" role="status"><span>{toast}</span><button className="icon-button" aria-label="关闭通知" onClick={() => setToast('')}><X size={16} /></button></div>}
   </div>
 }
@@ -672,7 +709,7 @@ function globalWindowSize(text: string, min: number, max: number, label: string)
   if (!text.trim() || !Number.isInteger(value) || value < min || value > max) throw new Error(`${label}需要填写 ${min}–${max} 之间的整数。`)
   return value
 }
-function SettingsView({ settings, rootDir, save, instance, javaTasks }: { settings: Settings; rootDir: string; save: (settings: Settings) => Promise<void>; instance?: Instance; javaTasks: JavaRuntimeTask[] }) {
+function SettingsView({ settings, rootDir, save, instance, javaTasks, theme, setTheme, minimizeOnLaunch, setMinimizeOnLaunch }: { settings: Settings; rootDir: string; save: (settings: Settings) => Promise<void>; instance?: Instance; javaTasks: JavaRuntimeTask[]; theme: ThemeMode; setTheme: (theme: ThemeMode) => void; minimizeOnLaunch: boolean; setMinimizeOnLaunch: (value: boolean) => void }) {
   const initialDraft = () => ({ ...settings, memoryMode: settings.memoryMode || 'auto', manualJavaPath: settings.manualJavaPath || settings.javaPath || '' })
   const [draft, setDraft] = useState(initialDraft)
   const [advancedDraft, setAdvancedDraft] = useState(() => advancedSettingsDraft(settings))
@@ -741,7 +778,12 @@ function SettingsView({ settings, rootDir, save, instance, javaTasks }: { settin
       .finally(() => { if (current) setRequirementLoading(false) })
     return () => { current = false }
   }, [instance?.id, requirementRetry])
-  return <><PageHeading title="启动器设置" subtitle="配置全局 Java、内存、JVM 参数、游戏窗口和下载选项。实例设置可单独覆盖。" /><form className="settings-form" noValidate onSubmit={event => { event.preventDefault(); void submit() }}>
+  return <><PageHeading title="设置" subtitle="外观、启动行为，以及所有实例默认使用的 Java、内存和窗口。实例设置可以单独覆盖。" />
+    <section className="settings-card launcher-preferences"><div className="settings-card-heading"><AppWindow size={20} /><div><h2>启动器</h2><p>这些选项立即生效，只保存在这台电脑上。</p></div></div>
+      <div className="setting-row"><div><h3>外观</h3><p>跟随系统会在系统切换深色模式时自动变化。</p></div><div className="segmented" role="group" aria-label="外观">{(['system', 'light', 'dark'] as const).map(mode => <button type="button" key={mode} className={theme === mode ? 'selected' : ''} aria-pressed={theme === mode} onClick={() => setTheme(mode)}>{themeLabels[mode]}</button>)}</div></div>
+      <label className="setting-row toggle-row"><div><h3>启动游戏后最小化启动器</h3><p>游戏窗口出现后把启动器收起，不影响运行日志记录。</p></div><input type="checkbox" className="switch" checked={minimizeOnLaunch} onChange={event => setMinimizeOnLaunch(event.target.checked)} /></label>
+    </section>
+    <form className="settings-form" noValidate onSubmit={event => { event.preventDefault(); void submit() }}>
     <fieldset className="settings-fieldset" disabled={saving}>
     <section className="settings-card"><div className="settings-card-heading"><Cpu size={20} /><div><h2>全局游戏运行</h2><p>更改后将在下一次安装或启动游戏时生效；实例已覆盖的项目保持实例设置。</p></div></div><MemorySettings settings={draft} change={next => { if (!savingRef.current) setDraft({ ...next, manualJavaPath: next.manualJavaPath || '' }) }} instanceId={instance?.id} instanceName={instance?.name} /><JavaSettings javaPath={draft.javaPath} manualJavaPath={draft.manualJavaPath} onChangeJavaPath={(javaPath, manualJavaPath) => { if (!savingRef.current) setDraft(current => ({ ...current, javaPath, manualJavaPath })) }} desktop={isDesktop} resetKey={resetKey} requirement={requirement} requirementLoading={requirementLoading} requirementError={requirementError} onRetryRequirement={() => setRequirementRetry(value => value + 1)} runtimes={runtimes} detecting={detecting} detectError={detectError} onDetect={detect} tasks={javaTasks} onInstall={async major => { await call('installJava', major) }} onCancelTask={async id => { await call('cancelJavaInstall', id) }} onPickJava={() => call<string | null>('chooseJava')} onRefresh={detect} /></section>
     <section className="settings-card global-advanced-settings"><div className="settings-card-heading"><Settings2 size={20} /><div><h2>JVM 与游戏窗口</h2><p>适用于未单独覆盖的实例。所有参数在保存后生效。</p></div></div>
@@ -782,4 +824,40 @@ function LogsView({ instances, initialId }: { instances: Instance[]; initialId?:
     return () => { active = false; unsubscribe() }
   }, [selected, retry])
   return <><PageHeading title="运行日志" subtitle="查看安装过程、Java 输出与错误信息。" /><div className="logs-toolbar"><label className="field"><span className="sr-only">选择游戏实例</span><select value={selected} onChange={event => setSelected(event.target.value)}><option value="">选择游戏实例</option>{instances.map(instance => <option key={instance.id} value={instance.id}>{instance.name}</option>)}</select></label><button className="button secondary" disabled={!selected || loading} onClick={() => setRetry(value => value + 1)}><RefreshCw size={16} />刷新</button></div>{error && <ErrorBox message={error} />}<div className="log-console"><div className="console-header"><span><Terminal size={15} />游戏输出</span><span>{lines.length} 行</span></div>{loading ? <div className="loading-state"><Spinner />正在读取日志…</div> : lines.length ? <pre>{lines.join('\n')}</pre> : <EmptyState icon={<Terminal size={26} />} title={selected ? '还没有运行记录' : '选择一个游戏实例'}>{selected ? '安装或启动游戏后，运行输出会显示在这里。' : '这里会记录安装过程、Java 输出与错误信息。'}</EmptyState>}</div></>
+}
+
+function RemoveInstanceDialog({ instance, close, removed }: { instance: Instance; close: () => void; removed: (trashed: boolean) => Promise<void> }) {
+  const [working, setWorking] = useState(false)
+  const [error, setError] = useState('')
+  const trash = platform === 'win32' ? '回收站' : '废纸篓'
+  return <Dialog title={`删除「${instance.name}」？`} close={working ? () => {} : close}>
+    <p className="modal-description">实例文件夹（包括存档、模组、截图和设置）会被移到{trash}，之后仍可以从{trash}找回。共享的游戏本体和资源文件会保留，供其他实例使用。</p>
+    {error && <ErrorBox message={error} />}
+    <div className="modal-actions"><button type="button" className="button secondary" disabled={working} onClick={close}>取消</button><button type="button" className="button danger" disabled={working} onClick={async () => {
+      setWorking(true); setError('')
+      try { const result = await call<{ trashed: boolean }>('deleteInstance', instance.id); await removed(result.trashed) }
+      catch (error) { setError(errorText(error)); setWorking(false) }
+    }}>{working ? <Spinner size={16} /> : <Trash2 size={16} />}移到{trash}</button></div>
+  </Dialog>
+}
+
+function DuplicateInstanceDialog({ instance, close, done }: { instance: Instance; close: () => void; done: (copy: Instance) => Promise<void> }) {
+  const [name, setName] = useState(`${instance.name} 副本`.slice(0, 64))
+  const [working, setWorking] = useState(false)
+  const [error, setError] = useState('')
+  async function submit(event: FormEvent) {
+    event.preventDefault()
+    if (working || !name.trim()) return
+    setWorking(true); setError('')
+    try { await done(await call<Instance>('duplicateInstance', instance.id, name.trim())) }
+    catch (error) { setError(errorText(error)); setWorking(false) }
+  }
+  return <Dialog title="复制实例" close={working ? () => {} : close}>
+    <p className="modal-description">完整复制「{instance.name}」的存档、模组、资源包和实例设置，适合在尝试新模组前留一份原样。</p>
+    <form onSubmit={event => void submit(event)}>
+      <label className="field"><span>新实例名称</span><input value={name} maxLength={64} disabled={working} onChange={event => setName(event.target.value)} autoFocus /></label>
+      {error && <ErrorBox message={error} />}
+      <div className="modal-actions"><button type="button" className="button secondary" disabled={working} onClick={close}>取消</button><button className="button primary" disabled={working || !name.trim()}>{working ? <Spinner size={16} /> : <Copy size={16} />}{working ? '正在复制…' : '复制'}</button></div>
+    </form>
+  </Dialog>
 }

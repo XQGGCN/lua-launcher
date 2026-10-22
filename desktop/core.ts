@@ -19,6 +19,10 @@ import { readWorldDetails, type WorldRead } from './world-details'
 import type { WorldSelection, WorldSource, WorldDetails, WorldSeed, WorldMetadata } from './world-types'
 import { createWorldDirectoryBackup, listWorldDirectoryBackups, worldBackupDirectory, WorldBackupError } from './world-backup'
 import type { WorldBackupTask, WorldBackupResult, WorldBackupList } from './world-backup-types'
+import { analyzeCrash, type CrashAnalysis } from './crash-analysis'
+import { readWorldMapInfo, renderRegionTile, type MapDimension, type WorldMapInfo } from './world-map'
+import { inspectWorldZip, restoreWorldFromBackup, restoreWorldFromZip, safeWorldFolderName, type WorldRestoreResult, type WorldZipInspection } from './world-restore'
+import { isGameVersionId, javaRequirementOf, launchArguments, legacyAssetCopies, needsRosetta, type AssetIndex } from './legacy-version'
 import { exportWorldBackupZip, listWorldBackupZips, verifyWorldBackupZip, worldBackupZipPath, WorldZipError } from './world-zip'
 import type { WorldZipList, WorldZipResult, WorldZipSummary, WorldZipTask } from './world-zip-types'
 import { installResourceZip, ResourceInstallRecoveryError, type ResourceInstallResult } from './resource-install'
@@ -115,6 +119,7 @@ export type CoreEvent =
   | { type: 'javaTask'; task: JavaRuntimeTask }
   | { type: 'worldBackupTask'; task: WorldBackupTask }
   | { type: 'worldExportTask'; task: WorldZipTask }
+  | { type: 'crash'; instanceId: string; analysis: CrashAnalysis }
 export interface LaunchAccount {
   mode: 'microsoft'
   username: string
@@ -197,6 +202,7 @@ interface VersionManifest {
   downloads: { client: Download; client_mappings?: Download }
   libraries: Library[]
   arguments: { game: GameArgument[]; jvm: GameArgument[] }
+  minecraftArguments?: string
   javaVersion?: { majorVersion: number; component?: string }
   logging?: { client?: { argument: string; file: Download & { id: string } } }
 }
@@ -210,6 +216,10 @@ interface InstalledManifest {
   fabricArguments: { game: GameArgument[]; jvm: GameArgument[] }
   loggingFile?: string
   loaderLibraryDirectory?: string
+  /** Architecture of the Java used for this version (x64 under Rosetta for old versions on Apple silicon). */
+  javaArch?: string
+  /** Legacy asset layout: assets copied to assets/virtual/<id> or game/resources. */
+  legacyAssets?: 'virtual' | 'resources'
 }
 interface ManifestIndex { versions: Array<VersionSummary & Download> }
 interface CoreOptions {
@@ -360,6 +370,10 @@ export class LauncherCore {
   private readonly worldZipExporter: typeof exportWorldBackupZip
   private worldExportOperation?: { instanceId: string; operationId: string; controller: AbortController }
   private worldExportHistory = new Map<string, WorldZipTask>()
+  private worldRestores = new Map<string, AbortController>()
+  private worldMapTiles = new Map<string, Uint8Array>()
+  private worldMapActive = 0
+  private worldMapQueue: Array<() => void> = []
   private resourceDownloads = new Map<string, { operationId: string; controller: AbortController }>()
   private inventoryScans = new Map<string, { instanceId: string; controller: AbortController; promise: Promise<InstanceInventory> }>()
   private javaTasks = new Map<string, JavaRuntimeTask>()
@@ -404,7 +418,7 @@ export class LauncherCore {
       const state = JSON.parse(await fs.readFile(path.join(this.rootDir, 'launcher.json'), 'utf8'))
       if (state.schema !== 1 || !Array.isArray(state.instances)) throw new Error('不支持的启动器数据格式')
       this.instances = state.instances.map((item: Instance) => {
-        if (!/^[a-f0-9-]{36}$/.test(item.id) || !isSupportedVersion(item.version) ||
+        if (!/^[a-f0-9-]{36}$/.test(item.id) || !isGameVersionId(item.version) ||
             !['vanilla', 'fabric', 'forge', 'neoforge'].includes(item.loader) || typeof item.name !== 'string') {
           throw new Error('实例数据损坏，请检查 launcher.json')
         }
@@ -715,6 +729,95 @@ export class LauncherCore {
     catch (error) { throw new Error(error instanceof WorldZipError ? error.message : '无法重新校验此 ZIP，请检查文件是否仍在原位置') }
   }
 
+  private worldFolder(id: string, input: unknown): string {
+    this.instance(id)
+    const selection = this.worldSelection(input)
+    return safeJoin(this.instanceDirectory(id), `game/saves/${selection.name}`)
+  }
+
+  /** Spawn point, player position and region lists for the read-only map preview. */
+  async worldMap(id: string, input: unknown): Promise<WorldMapInfo> {
+    const folder = this.worldFolder(id, input)
+    try { if (!(await fs.lstat(folder)).isDirectory()) throw new Error() } catch { throw new Error('找不到这个世界，请刷新列表') }
+    return readWorldMapInfo(folder)
+  }
+
+  /** One 512×512 PNG tile. At most two regions render at a time; recent tiles are cached. */
+  async worldMapTile(id: string, input: unknown, dimension: unknown, x: unknown, z: unknown): Promise<Uint8Array> {
+    if (dimension !== 'overworld' && dimension !== 'nether' && dimension !== 'end') throw new Error('维度无效')
+    if (!Number.isInteger(x) || !Number.isInteger(z)) throw new Error('区域坐标无效')
+    const folder = this.worldFolder(id, input)
+    const regionFile = await (async () => {
+      for (const relative of dimension === 'overworld' ? ['region', 'dimensions/minecraft/overworld/region'] : dimension === 'nether' ? ['DIM-1/region', 'dimensions/minecraft/the_nether/region'] : ['DIM1/region', 'dimensions/minecraft/the_end/region']) {
+        try { const info = await fs.stat(path.join(folder, ...relative.split('/'), `r.${x}.${z}.mca`)); return `${relative}:${info.size}:${info.mtimeMs}` } catch { /* next */ }
+      }
+      return 'missing'
+    })()
+    const key = JSON.stringify([folder, dimension, x, z, regionFile])
+    const cached = this.worldMapTiles.get(key)
+    if (cached) { this.worldMapTiles.delete(key); this.worldMapTiles.set(key, cached); return cached }
+    if (this.worldMapActive >= 2) await new Promise<void>(resolve => this.worldMapQueue.push(resolve))
+    this.worldMapActive++
+    try {
+      const tile = await renderRegionTile(folder, dimension as MapDimension, x as number, z as number)
+      this.worldMapTiles.set(key, tile.png)
+      while (this.worldMapTiles.size > 64) this.worldMapTiles.delete(this.worldMapTiles.keys().next().value!)
+      return tile.png
+    } finally {
+      this.worldMapActive--
+      this.worldMapQueue.shift()?.()
+    }
+  }
+
+  private async runWorldRestore(id: string, operation: (options: { saves: string; staging: string; signal: AbortSignal; onProgress: (progress: { phase: string; filesDone: number; filesTotal?: number; bytesDone: number; bytesTotal?: number }) => void }) => Promise<WorldRestoreResult>): Promise<WorldRestoreResult> {
+    const instance = this.instance(id)
+    if (this.installs.has(id)) throw new Error('此实例正在安装、备份或恢复，请稍后再试')
+    if (this.processes.has(id) || this.launching.has(id) || instance.status === 'running') throw new Error('请先关闭此实例的游戏，再恢复或导入世界')
+    if (this.instanceSettingsSaving.has(id)) throw new Error('请等待此实例的设置保存完成')
+    const controller = new AbortController()
+    this.installs.set(id, controller)
+    this.worldRestores.set(id, controller)
+    this.invalidateInventory(id)
+    const phases: Record<string, string> = { scan: '正在检查世界文件', copy: '正在恢复世界文件', commit: '正在完成恢复' }
+    try {
+      const result = await operation({
+        saves: safeJoin(this.instanceDirectory(id), 'game/saves'), staging: safeJoin(this.instanceDirectory(id), '.restore-staging'), signal: controller.signal,
+        onProgress: progress => this.emit({ type: 'progress', instanceId: id, phase: phases[progress.phase] ?? '正在恢复世界', completed: progress.bytesDone, total: progress.bytesTotal ?? 0, bytesDownloaded: progress.bytesDone, unit: 'bytes' }),
+      })
+      this.log(id, 'info', `世界已恢复为 saves/${result.folderName}（${result.fileCount} 个文件）`)
+      return result
+    } catch (error) {
+      if (controller.signal.aborted) throw new Error('世界恢复已取消，没有创建新世界')
+      throw new Error(errorMessage(error))
+    } finally {
+      if (this.installs.get(id) === controller) this.installs.delete(id)
+      this.worldRestores.delete(id)
+      this.invalidateInventory(id)
+      this.emit({ type: 'state', snapshot: this.snapshot() })
+    }
+  }
+
+  /** Restores a completed backup (from any instance) as a new world in `targetId`. Never overwrites. */
+  async restoreWorldBackup(targetId: string, sourceInstanceId: string, backupId: string, folderName?: string): Promise<WorldRestoreResult> {
+    this.instance(sourceInstanceId)
+    if (folderName !== undefined && !safeWorldFolderName(folderName)) throw new Error('世界名称不能包含特殊字符，也不能以点开头')
+    const directory = await this.worldBackupPath(sourceInstanceId, backupId)
+    return this.runWorldRestore(targetId, options => restoreWorldFromBackup(directory, { ...options, folderName }))
+  }
+
+  /** Main-process only: `file` comes from a native file dialog, never from the renderer. */
+  async inspectWorldZip(file: string): Promise<WorldZipInspection> { return inspectWorldZip(file) }
+
+  async importWorldZip(targetId: string, file: string, folderName?: string): Promise<WorldRestoreResult> {
+    if (folderName !== undefined && !safeWorldFolderName(folderName)) throw new Error('世界名称不能包含特殊字符，也不能以点开头')
+    return this.runWorldRestore(targetId, options => restoreWorldFromZip(file, { ...options, folderName }))
+  }
+
+  cancelWorldRestore(id: string): void {
+    this.instance(id)
+    this.worldRestores.get(id)?.abort(new DOMException('世界恢复已取消', 'AbortError'))
+  }
+
   private async readSelectedWorld(id: string, selection: WorldSelection, source: WorldSource, includeSeed: boolean): Promise<WorldRead> {
     this.assertWorldReadable(id)
     const key = JSON.stringify([id, selection.itemId, source, includeSeed])
@@ -949,10 +1052,67 @@ export class LauncherCore {
     } finally { this.invalidateModTokens(id); this.instanceSettingsSaving.delete(id) }
   }
 
+  private assertInstanceIdle(id: string): Instance {
+    const instance = this.instance(id)
+    if (this.installs.has(id) || this.launching.has(id) || this.processes.has(id) || instance.status === 'running' || instance.status === 'installing') {
+      throw new Error('请先关闭游戏并等待安装、备份等操作完成')
+    }
+    if (this.instanceSettingsSaving.has(id)) throw new Error('请等待此实例的设置保存完成')
+    return instance
+  }
+
+  /** Main-only: directory to move to the system trash before `forgetInstance`. */
+  removableInstancePath(id: string): string {
+    this.assertInstanceIdle(id)
+    return this.instanceDirectory(id)
+  }
+
+  /** Removes the instance record. The caller has already trashed or archived its folder. */
+  async forgetInstance(id: string): Promise<LauncherSnapshot> {
+    this.assertInstanceIdle(id)
+    this.instances = this.instances.filter(item => item.id !== id)
+    this.invalidateInventory(id)
+    await this.save()
+    return this.snapshot()
+  }
+
+  /** Fallback when the system trash is unavailable: move the folder aside instead of deleting it. */
+  async archiveInstanceFolder(id: string): Promise<string> {
+    const source = this.removableInstancePath(id)
+    const target = safeJoin(this.rootDir, `deleted-instances/${id}-${Date.now()}`)
+    await fs.mkdir(path.dirname(target), { recursive: true })
+    await fs.rename(source, target)
+    return target
+  }
+
+  /** Copies an idle instance (game files, settings and installed state) under a new name. */
+  async duplicateInstance(id: string, name: string): Promise<Instance> {
+    const source = this.assertInstanceIdle(id)
+    const trimmed = String(name ?? '').trim()
+    if (!trimmed || trimmed.length > 64 || /[\u0000-\u001f\u007f]/u.test(trimmed)) throw new Error('实例名称需要 1–64 个字符')
+    const copy: Instance = { ...structuredClone(source), id: randomUUID(), name: trimmed, createdAt: new Date().toISOString(), playtimeMs: 0 }
+    delete copy.lastPlayed; delete copy.error
+    if (copy.status !== 'ready') copy.status = 'not-installed'
+    const from = this.instanceDirectory(id), to = safeJoin(this.rootDir, `instances/${copy.id}`)
+    this.installs.set(id, new AbortController())
+    try {
+      await fs.cp(from, to, {
+        recursive: true, errorOnExist: true, force: false, verbatimSymlinks: true,
+        filter: file => !/(^|[\\/])(\.restore-staging|\.mod-staging-[^\\/]*|\.mod-toggle-[^\\/]*)$/.test(path.relative(from, file)),
+      })
+    } catch (error) {
+      await fs.rm(to, { recursive: true, force: true }).catch(() => {})
+      throw new Error(`复制实例失败：${errorMessage(error)}`)
+    } finally { this.installs.delete(id) }
+    this.instances.push(copy)
+    await this.save()
+    return structuredClone(copy)
+  }
+
   async createInstance(input: { name: string; version: string; loader: Loader; loaderVersion?: string }): Promise<Instance> {
     const name = String(input.name ?? '').trim()
     if (!name || name.length > 64) throw new Error('实例名称需要 1–64 个字符')
-    if (!isSupportedVersion(input.version)) throw new Error('首版支持 Minecraft 1.20.1 及之后的正式版本')
+    if (!isGameVersionId(input.version)) throw new Error('无效的 Minecraft 版本')
     if (!['vanilla', 'fabric', 'forge', 'neoforge'].includes(input.loader)) throw new Error('无效的模组加载器')
     if (input.loaderVersion && input.loader === 'vanilla') throw new Error('原版实例不能指定加载器版本')
     if (input.loader !== 'vanilla') {
@@ -962,7 +1122,7 @@ export class LauncherCore {
       }
     }
     const versions = await this.versions()
-    if (!versions.some(item => item.id === input.version)) throw new Error('该 Minecraft 正式版本不存在')
+    if (!versions.some(item => item.id === input.version)) throw new Error('官方版本列表中没有这个 Minecraft 版本')
     const instance: Instance = {
       id: randomUUID(), name, version: input.version, loader: input.loader, loaderVersion: input.loaderVersion,
       status: 'not-installed', createdAt: new Date().toISOString(), playtimeMs: 0,
@@ -1083,13 +1243,14 @@ export class LauncherCore {
     return value
   }
   async versions(signal?: AbortSignal): Promise<VersionSummary[]> {
-    return (await this.manifest(signal)).versions.filter(v => v.type === 'release' && isSupportedVersion(v.id))
+    // Every channel is returned; the interface decides which ones to show.
+    return (await this.manifest(signal)).versions.filter(v => isGameVersionId(v.id) && ['release', 'snapshot', 'old_beta', 'old_alpha'].includes(v.type))
       .map(({ id, type, releaseTime }) => ({ id, type, releaseTime }))
   }
 
   async fabricVersions(version: string, signal?: AbortSignal): Promise<FabricVersion[]> {
     signal?.throwIfAborted()
-    if (!isSupportedVersion(version)) throw new Error('当前仅支持 Minecraft 1.20.1 及之后的正式版本')
+    if (!isGameVersionId(version)) throw new Error('无效的 Minecraft 版本')
     const loaders = await this.json<Array<{ loader: FabricVersion }>>(`${FABRIC_URL}/versions/loader/${encodeURIComponent(version)}`, signal)
     return loaders.map(item => ({ version: sanitizeId(item.loader.version), stable: Boolean(item.loader.stable) }))
   }
@@ -1099,8 +1260,8 @@ export class LauncherCore {
   }
 
   async loaderVersions(version: string, loader: Exclude<Loader, 'vanilla'>, signal?: AbortSignal): Promise<LoaderVersion[]> {
-    if (!isSupportedVersion(version)) throw new Error('当前仅支持 Minecraft 1.20.1 及之后的正式版本')
     if (loader === 'fabric') return this.fabricVersions(version, signal)
+    if (!isSupportedVersion(version)) throw new Error('Forge 与 NeoForge 目前支持 Minecraft 1.20.1 及之后的正式版本')
     if (loader !== 'forge' && loader !== 'neoforge') throw new Error('无效的模组加载器')
     const xml = await this.text(loaderMetadataUrl(loader, version), signal)
     return parseLoaderVersions(xml, loader, version)
@@ -1223,17 +1384,21 @@ export class LauncherCore {
           throw new Error('整合包与实例的游戏或加载器版本不一致')
         }
       }
-      const entry = (await this.manifest(signal)).versions.find(v => v.id === instance.version && v.type === 'release')
-      if (!entry) throw new Error('找不到该 Minecraft 正式版本')
+      const entry = (await this.manifest(signal)).versions.find(v => v.id === instance.version)
+      if (!entry || !isGameVersionId(entry.id)) throw new Error('官方版本列表中找不到该 Minecraft 版本')
       const versionFile = safeJoin(this.rootDir, `versions/${sanitizeId(instance.version)}/${sanitizeId(instance.version)}.json`)
       await this.download({ file: versionFile, download: entry }, signal)
       const version: VersionManifest = JSON.parse(await fs.readFile(versionFile, 'utf8'))
-      if (!version.arguments?.game || !version.arguments?.jvm || !version.downloads?.client ||
-          !version.assetIndex || !Array.isArray(version.libraries)) throw new Error('该版本的启动格式暂不支持')
+      if (!version.downloads?.client || !version.assetIndex || !Array.isArray(version.libraries)) throw new Error('该版本的启动格式暂不支持')
+      // Normalise legacy manifests (minecraftArguments, missing Java metadata) to the modern shape.
+      version.arguments = launchArguments(version) as VersionManifest['arguments']
+      version.javaVersion = javaRequirementOf(version)
+      const javaArch = needsRosetta(this.platform, this.arch, version.libraries) ? 'x64' : this.arch
+      if (javaArch !== this.arch) this.log(id, 'info', '此版本没有 Apple 芯片原生库，将通过 Rosetta 2 使用 x86-64 Java 运行。')
       const javaRequirement = this.javaRequirement(version, instance)
       progress(`正在准备 Java ${javaRequirement.major}`, true)
       const runtime = await this.selectJava(javaRequirement.major, javaRequirement.component, {
-        signal, javaPath: preferences.javaPath, onProgress: update => {
+        signal, javaPath: preferences.javaPath, arch: javaArch, onProgress: update => {
           this.emit({ type: 'progress', instanceId: id, phase: `${JAVA_PHASES[update.phase]}（Java ${javaRequirement.major}）`,
             completed: update.completedBytes, total: update.totalBytes, bytesDownloaded: update.completedBytes, unit: 'bytes' })
         },
@@ -1275,7 +1440,7 @@ export class LauncherCore {
       const natives: Array<{ file: string; exclude: string[] }> = []
       for (const library of libraries) {
         signal.throwIfAborted()
-        if (!rulesAllow(library.rules, this.platform, this.arch)) continue
+        if (!rulesAllow(library.rules, this.platform, javaArch)) continue
         if (library.downloads?.artifact || !library.downloads) {
           const download = await this.libraryDownload(library, signal)
           const relative = `libraries/${download.path ?? mavenPath(library.name)}`
@@ -1284,7 +1449,7 @@ export class LauncherCore {
           classpath.push(relative)
           libraryClasspath.set(libraryKey(library.name), relative)
         }
-        const nativeKey = library.natives?.[platformName(this.platform)]?.replace('${arch}', this.arch === 'ia32' ? '32' : '64')
+        const nativeKey = library.natives?.[platformName(this.platform)]?.replace('${arch}', javaArch === 'ia32' ? '32' : '64')
         if (nativeKey) {
           const native = library.downloads?.classifiers?.[nativeKey]
           if (!native?.path) throw new Error(`缺少平台原生库：${library.name}`)
@@ -1297,9 +1462,9 @@ export class LauncherCore {
       const assetId = sanitizeId(version.assetIndex.id)
       const assetIndexFile = safeJoin(this.rootDir, `assets/indexes/${assetId}.json`)
       await this.download({ file: assetIndexFile, download: version.assetIndex }, signal)
-      const assets: { objects: Record<string, { hash: string; size: number }>; virtual?: boolean; map_to_resources?: boolean } =
-        JSON.parse(await fs.readFile(assetIndexFile, 'utf8'))
-      if (assets.virtual || assets.map_to_resources) throw new Error('该版本使用旧版资源布局，首版暂不支持')
+      const assets: AssetIndex = JSON.parse(await fs.readFile(assetIndexFile, 'utf8'))
+      if (!assets.objects || typeof assets.objects !== 'object') throw new Error('资源索引格式无效')
+      const legacyAssets = legacyAssetCopies(assets)
       for (const asset of Object.values(assets.objects)) {
         if (!validHash(asset.hash)) throw new Error('资源索引包含无效的 SHA-1')
         const suffix = `${asset.hash.slice(0, 2)}/${asset.hash}`
@@ -1336,6 +1501,17 @@ export class LauncherCore {
       await fs.mkdir(nativeDir, { recursive: true })
       progress('正在准备原生库', true)
       for (const native of natives) await this.extractNatives(native.file, nativeDir, native.exclude, signal)
+      if (legacyAssets.mode !== 'none') {
+        progress('正在整理旧版资源文件', true)
+        const target = legacyAssets.mode === 'virtual' ? safeJoin(this.rootDir, `assets/virtual/${assetId}`) : safeJoin(this.instanceDirectory(id), 'game/resources')
+        for (const file of legacyAssets.files) {
+          signal.throwIfAborted()
+          const destination = safeJoin(target, file.name)
+          const source = safeJoin(this.rootDir, `assets/objects/${file.hash.slice(0, 2)}/${file.hash}`)
+          await fs.mkdir(path.dirname(destination), { recursive: true })
+          await fs.copyFile(source, destination)
+        }
+      }
       let loaderLibraryDirectory: string | undefined
       if (instance.loader === 'forge' || instance.loader === 'neoforge') {
         const available = await this.loaderVersions(instance.version, instance.loader, signal)
@@ -1375,6 +1551,8 @@ export class LauncherCore {
       const installed: InstalledManifest = {
         schema: 1, version, platform: this.platform, arch: this.arch,
         classpath, mainClass, fabricArguments, loggingFile, loaderLibraryDirectory,
+        ...(javaArch !== this.arch ? { javaArch } : {}),
+        ...(legacyAssets.mode !== 'none' ? { legacyAssets: legacyAssets.mode } : {}),
       }
       await fs.writeFile(safeJoin(this.instanceDirectory(id), 'installed.json'), JSON.stringify(installed, null, 2), { mode: 0o600 })
       if (pack) {
@@ -1548,12 +1726,34 @@ export class LauncherCore {
     } else if (this.platform === 'linux') {
       try { for (const folder of await fs.readdir('/usr/lib/jvm')) candidates.add(`/usr/lib/jvm/${folder}/bin/java`) } catch {}
     } else if (this.platform === 'win32') {
-      for (const root of [process.env.ProgramFiles, process.env['ProgramFiles(x86)']].filter(Boolean) as string[]) {
-        for (const vendor of ['Java', 'Eclipse Adoptium', 'Microsoft', 'Zulu', 'BellSoft']) {
+      const roots = [process.env.ProgramFiles, process.env['ProgramFiles(x86)'], process.env.ProgramW6432,
+        process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Programs')].filter(Boolean) as string[]
+      for (const root of [...new Set(roots)]) {
+        for (const vendor of ['Java', 'Eclipse Adoptium', 'Eclipse Foundation', 'Microsoft', 'Zulu', 'BellSoft', 'Amazon Corretto', 'Semeru', 'IBM', 'Liberica', 'Oracle', 'GraalVM']) {
           try {
-            for (const folder of await fs.readdir(path.join(root, vendor))) candidates.add(path.join(root, vendor, folder, 'bin/java.exe'))
+            for (const folder of await fs.readdir(path.join(root, vendor))) candidates.add(path.join(root, vendor, folder, 'bin', 'java.exe'))
           } catch {}
         }
+      }
+      // Registry entries written by Oracle, Adoptium, Zulu and Microsoft installers.
+      for (const key of ['HKLM\\SOFTWARE\\JavaSoft', 'HKLM\\SOFTWARE\\Eclipse Adoptium', 'HKLM\\SOFTWARE\\Eclipse Foundation', 'HKLM\\SOFTWARE\\Azul Systems\\Zulu', 'HKLM\\SOFTWARE\\Microsoft\\JDK']) {
+        try {
+          const { stdout } = await execFileAsync('reg', ['query', key, '/s'], { timeout: 5000, windowsHide: true, maxBuffer: 512 * 1024 })
+          for (const match of stdout.matchAll(/(?:JavaHome|InstallationPath|Path)\s+REG_SZ\s+(.+)/g)) {
+            const home = match[1].trim()
+            if (path.isAbsolute(home)) candidates.add(path.join(home, 'bin', 'java.exe'))
+          }
+        } catch {}
+      }
+      // Runtimes bundled with the official Minecraft Launcher.
+      for (const runtime of [process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Packages', 'Microsoft.4297127D64EC6_8wekyb3d8bbwe', 'LocalCache', 'Local', 'runtime'),
+        process.env['ProgramFiles(x86)'] && path.join(process.env['ProgramFiles(x86)'], 'Minecraft Launcher', 'runtime'),
+        process.env.APPDATA && path.join(process.env.APPDATA, '.minecraft', 'runtime')].filter(Boolean) as string[]) {
+        try {
+          for (const component of await fs.readdir(runtime)) {
+            for (const platformFolder of ['windows-x64', 'windows-arm64', 'windows-x86']) candidates.add(path.join(runtime, component, platformFolder, component, 'bin', 'java.exe'))
+          }
+        } catch {}
       }
     }
     const runtimes = await Promise.all([...candidates].map(async candidate => {
@@ -1597,7 +1797,8 @@ export class LauncherCore {
     }
   }
 
-  private async selectJava(required: number, component?: string, options: { signal?: AbortSignal; javaPath?: string; onProgress?: (progress: JavaRuntimeProgress) => void } = {}): Promise<JavaRuntime> {
+  private async selectJava(required: number, component?: string, options: { signal?: AbortSignal; javaPath?: string; arch?: string; onProgress?: (progress: JavaRuntimeProgress) => void } = {}): Promise<JavaRuntime> {
+    const arch = options.arch ?? this.arch
     options.signal?.throwIfAborted()
     const configured = options.javaPath ?? this.settings.javaPath
     const explicitPath = configured && configured !== 'java' ? configured : ''
@@ -1605,14 +1806,20 @@ export class LauncherCore {
     options.signal?.throwIfAborted()
     let runtime = explicitPath
       ? runtimes.find(java => java.path === explicitPath)
-      : runtimes.find(java => java.major === required && java.arch === this.arch)
-    if (!runtime && explicitPath) throw new Error(`指定的 Java 路径不可用，需要 Java ${required}（${this.arch}）。请在设置中修正路径或切换自动选择。`)
+      : runtimes.find(java => java.major === required && java.arch === arch)
+    if (!runtime && explicitPath) throw new Error(`指定的 Java 路径不可用，需要 Java ${required}（${arch}）。请在设置中修正路径或切换自动选择。`)
     if (!runtime) {
-      if (!component) throw new Error(`需要 Java ${required}（${this.arch}），版本清单缺少官方运行时组件。请重新安装修复实例，或在设置中指定匹配的 Java。`)
-      runtime = await this.javaRuntimeManager.ensure({ component, major: required, platform: this.platform, arch: this.arch }, options)
+      if (!component) throw new Error(`需要 Java ${required}（${arch}），版本清单缺少官方运行时组件。请重新安装修复实例，或在设置中指定匹配的 Java。`)
+      try { runtime = await this.javaRuntimeManager.ensure({ component, major: required, platform: this.platform, arch }, options) }
+      catch (error) {
+        if (arch !== this.arch && this.platform === 'darwin' && !(error instanceof DOMException)) {
+          throw new Error(`${errorMessage(error)}。旧版本需要 Rosetta 2，可在终端运行 softwareupdate --install-rosetta 安装后重试。`)
+        }
+        throw error
+      }
     }
     if (runtime.major !== required) throw new Error(`该版本需要 Java ${required}，当前选择的是 Java ${runtime.major}`)
-    if (runtime.arch !== this.arch) throw new Error(`Java 架构 ${runtime.arch} 与启动器架构 ${this.arch} 不一致`)
+    if (runtime.arch !== arch) throw new Error(arch !== this.arch ? `此旧版本需要 ${arch} 架构的 Java ${required}（通过 Rosetta 2 运行），当前选择的是 ${runtime.arch}` : `Java 架构 ${runtime.arch} 与启动器架构 ${this.arch} 不一致`)
     return runtime
   }
 
@@ -1645,7 +1852,8 @@ export class LauncherCore {
     }
     const requirement = installed.version.javaVersion?.component
       ? this.javaRequirement(installed.version, instance) : await this.runtimeRequirement(id)
-    const runtime = await this.selectJava(requirement.major, requirement.component, { signal, javaPath: preferences.javaPath, onProgress: update => {
+    const javaArch = installed.javaArch === 'x64' && this.platform === 'darwin' ? 'x64' : this.arch
+    const runtime = await this.selectJava(requirement.major, requirement.component, { signal, javaPath: preferences.javaPath, arch: javaArch, onProgress: update => {
       this.emit({ type: 'progress', instanceId: id, phase: `${JAVA_PHASES[update.phase]}（Java ${requirement.major}）`,
         completed: update.completedBytes, total: update.totalBytes, bytesDownloaded: update.completedBytes, unit: 'bytes' })
     } })
@@ -1668,6 +1876,8 @@ export class LauncherCore {
       assets_root: safeJoin(this.rootDir, 'assets'),
       assets_index_name: installed.version.assetIndex.id,
       natives_directory: safeJoin(directory, 'natives'),
+      game_assets: installed.legacyAssets === 'virtual' ? safeJoin(this.rootDir, `assets/virtual/${sanitizeId(installed.version.assetIndex.id)}`)
+        : installed.legacyAssets === 'resources' ? safeJoin(gameDir, 'resources') : safeJoin(this.rootDir, 'assets'),
       launcher_name: 'LuaLauncher',
       launcher_version: metadata.version,
       classpath: classpath.join(this.platform === 'win32' ? ';' : ':'),
@@ -1679,8 +1889,9 @@ export class LauncherCore {
       resolution_height: String(preferences.windowHeight),
     }
     const features = { has_custom_resolution: true }
-    const jvm = resolveArguments([...installed.version.arguments.jvm, ...installed.fabricArguments.jvm], variables, this.platform, this.arch, features)
-    const game = resolveArguments([...installed.version.arguments.game, ...installed.fabricArguments.game], variables, this.platform, this.arch, features)
+    const launchArgs = launchArguments(installed.version) as VersionManifest['arguments']
+    const jvm = resolveArguments([...launchArgs.jvm, ...installed.fabricArguments.jvm], variables, this.platform, javaArch, features)
+    const game = resolveArguments([...launchArgs.game, ...installed.fabricArguments.game], variables, this.platform, javaArch, features)
     const allocation = effectiveMemory(preferences, {
       gameVersion: instance.version, modded: instance.loader !== 'vanilla', javaArch: runtime.arch,
     }, this.memorySystem)
@@ -1709,6 +1920,7 @@ export class LauncherCore {
     this.processes.set(id, child)
     const started = Date.now()
     const scrub = (text: string) => text.split(token).join('[REDACTED]')
+    const recent: string[] = []
     for (const [stream, level] of [[child.stdout, 'info'], [child.stderr, 'warn']] as const) {
       let pending = ''
       let xmlLevel: 'info' | 'warn' | 'error' = level
@@ -1721,7 +1933,11 @@ export class LauncherCore {
         if (/^\s*<\/log4j:Event>\s*$/.test(raw)) return
         const line = raw.replace(/^\s*<log4j:(?:Message|Throwable)><!\[CDATA\[/, '')
           .replace(/\]\]><\/log4j:(?:Message|Throwable)>\s*$/, '')
-        if (line.trim()) this.log(id, xmlLevel, scrub(line).slice(0, 8192))
+        if (line.trim()) {
+          const clean = scrub(line).slice(0, 8192)
+          recent.push(clean); if (recent.length > 400) recent.shift()
+          this.log(id, xmlLevel, clean)
+        }
       }
       stream?.setEncoding('utf8')
       stream?.on('data', (chunk: string) => {
@@ -1745,6 +1961,13 @@ export class LauncherCore {
           ? `游戏异常退出，信号 ${signal}；请查看游戏日志。`
           : `游戏已退出，退出码 ${code ?? '未知'}；请查看游戏日志。`
         this.log(id, 'error', instance.error)
+        void this.crashReport(gameDir, started).then(report => {
+          const analysis = analyzeCrash(recent, report)
+          instance.error = `${analysis.title}（${signal ? `信号 ${signal}` : `退出码 ${code ?? '未知'}`}）。${analysis.hints[0]}`
+          this.log(id, 'error', `崩溃分析：${analysis.title}`)
+          this.emit({ type: 'crash', instanceId: id, analysis })
+          this.emit({ type: 'state', snapshot: this.snapshot() })
+        }).catch(() => {})
       } else { delete instance.error; this.log(id, 'info', '游戏已关闭') }
       void this.save().catch(error => this.log(id, 'error', errorMessage(error)))
     })
@@ -1761,6 +1984,34 @@ export class LauncherCore {
     delete instance.error
     await this.save()
     return { pid: child.pid }
+  }
+
+  /** Newest crash report (or JVM hs_err log) written since the game started; bounded read. */
+  private async crashReport(gameDir: string, since: number): Promise<{ name: string; text: string } | undefined> {
+    const candidates: Array<{ file: string; name: string; time: number }> = []
+    for (const [directory, pattern] of [[path.join(gameDir, 'crash-reports'), /^crash-.*\.txt$/], [gameDir, /^hs_err_pid\d+\.log$/]] as const) {
+      try {
+        for (const name of await fs.readdir(directory)) {
+          if (!pattern.test(name)) continue
+          const info = await fs.stat(path.join(directory, name))
+          if (info.isFile() && info.mtimeMs >= since - 2000) candidates.push({ file: path.join(directory, name), name, time: info.mtimeMs })
+        }
+      } catch { /* folder absent */ }
+    }
+    const newest = candidates.sort((a, b) => b.time - a.time)[0]
+    if (!newest) return undefined
+    const handle = await fs.open(newest.file, 'r')
+    try {
+      const buffer = Buffer.alloc(256 * 1024)
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0)
+      return { name: newest.name, text: buffer.subarray(0, bytesRead).toString('utf8') }
+    } finally { await handle.close() }
+  }
+
+  /** Main-only: folder that holds crash reports for shell.openPath. */
+  crashReportsPath(id: string): string {
+    this.instance(id)
+    return safeJoin(this.instanceDirectory(id), 'game/crash-reports')
   }
 
   stop(id: string): void {

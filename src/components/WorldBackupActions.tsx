@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, type MutableRefObject } from 'react'
-import { Archive, FileArchive, FolderOpen, RefreshCw, ShieldCheck, Square } from 'lucide-react'
+import { Archive, ArchiveRestore, FileArchive, FolderOpen, RefreshCw, ShieldCheck, Square } from 'lucide-react'
+import { WorldRestoreDialog } from './WorldRestore'
 import type { WorldBackupList, WorldBackupProgress, WorldBackupResult, WorldBackupSummary, WorldBackupTask } from '../../desktop/world-backup-types'
 import type { WorldZipList, WorldZipProgress, WorldZipResult, WorldZipSummary, WorldZipTask } from '../../desktop/world-zip-types'
 import { errorText, isDesktop, type Instance, type InventoryItem } from '../api'
@@ -21,6 +22,8 @@ export interface WorldBackupActionsProps {
   exportZip?: (backupId: string) => Promise<WorldZipResult>
   cancelExport?: (task: WorldZipTask) => Promise<void>
   openExport?: (exportId: string) => Promise<void>
+  instances?: Instance[]
+  restored?: () => void
 }
 export interface WorldBackupTaskListProps {
   tasks: WorldBackupTask[]
@@ -74,11 +77,13 @@ export default function WorldBackupActions(props: WorldBackupActionsProps) {
   return <WorldBackupContext key={identity} {...props} identity={identity} currentIdentity={currentIdentity} />
 }
 
-function WorldBackupContext({ instance, item, busy, tasks, list, create, cancel, open, exportTasks = [], listExports, exportZip, cancelExport, openExport, identity, currentIdentity }: WorldBackupActionsProps & { identity: string; currentIdentity: MutableRefObject<string> }) {
+function WorldBackupContext({ instance, item, busy, tasks, list, create, cancel, open, exportTasks = [], listExports, exportZip, cancelExport, openExport, instances = [], restored, identity, currentIdentity }: WorldBackupActionsProps & { identity: string; currentIdentity: MutableRefObject<string> }) {
   const id = useId()
   const callbacks = useRef({ list, create, cancel, open, listExports, exportZip, cancelExport, openExport })
   callbacks.current = { list, create, cancel, open, listExports, exportZip, cancelExport, openExport }
   const [exports, setExports] = useState<WorldZipList>()
+  const [restoring, setRestoring] = useState<WorldBackupSummary>()
+  const [restoredMessage, setRestoredMessage] = useState('')
   const mounted = useRef(true)
   const listRequest = useRef(0)
   const createRequest = useRef(0)
@@ -149,7 +154,7 @@ function WorldBackupContext({ instance, item, busy, tasks, list, create, cancel,
 
   return <section className="world-backup-actions" aria-labelledby={`${id}-title`}>
     <div className="world-backup-heading"><h3 id={`${id}-title`}>备份世界</h3><span className="world-backup-local"><ShieldCheck size={13} />仅保存在本机</span></div>
-    <p className="world-backup-note">把「{escapeWorldText(item.name)}」完整复制一份到启动器的备份目录，逐个文件校验。备份完成后可以导出为 ZIP，方便转移或分享。</p>
+    <p className="world-backup-note">把「{escapeWorldText(item.name)}」完整复制一份到启动器的备份目录，逐个文件校验。之后可以随时恢复成新世界，或导出为 ZIP 方便转移、分享。</p>
     <label className="world-backup-confirm" htmlFor={`${id}-closed`}><input id={`${id}-closed`} type="checkbox" checked={confirmed} disabled={Boolean(createReason) || creating} onChange={event => setConfirmed(event.target.checked)} /><span>我已关闭正在使用这个世界的游戏和服务器<small>Lua 无法检测其他启动器或命令行打开的游戏，备份中途世界被改动会导致备份失败。</small></span></label>
     <div className="world-backup-start"><button type="button" className="button primary" disabled={!confirmed || Boolean(createReason) || creating} onClick={() => void beginBackup()}>{creating ? <Spinner size={15} /> : <Archive size={15} />}{creating ? '正在备份…' : '开始备份'}</button></div>
     {createReason && <p className="world-backup-notice" role="status">{createReason}</p>}
@@ -167,8 +172,12 @@ function WorldBackupContext({ instance, item, busy, tasks, list, create, cancel,
         exportBusy={exportTasks.some(task => task.status === 'active' || task.status === 'cancelling')}
         exportZip={callbacks.current.exportZip ? () => callbacks.current.exportZip!(value.backupId) : undefined}
         cancelExport={task => callbacks.current.cancelExport ? callbacks.current.cancelExport(task) : Promise.resolve()}
-        openExport={exportId => callbacks.current.openExport ? callbacks.current.openExport(exportId) : Promise.resolve()} />)}</ul> : <p className="world-backup-empty">{listed.truncated || listed.warnings.length ? '没有读到这个世界的备份记录，请查看上方提示。' : '这个世界还没有备份。'}</p>}
+        openExport={exportId => callbacks.current.openExport ? callbacks.current.openExport(exportId) : Promise.resolve()}
+        restore={instances.length ? () => setRestoring(value) : undefined} />)}</ul> : <p className="world-backup-empty">{listed.truncated || listed.warnings.length ? '没有读到这个世界的备份记录，请查看上方提示。' : '这个世界还没有备份。'}</p>}
     </>}
+    {restoredMessage && <p className="world-backup-result" role="status">{restoredMessage}</p>}
+    {restoring && <WorldRestoreDialog backupId={restoring.backupId} sourceInstanceId={instance.id} worldName={restoring.worldFolderName} instances={instances} close={() => setRestoring(undefined)}
+      done={(result, targetId) => { setRestoring(undefined); setRestoredMessage(`已恢复为「${escapeWorldText(result.folderName)}」${targetId === instance.id ? '' : `（在 ${escapeWorldText(instances.find(item => item.id === targetId)?.name || '其他实例')}）`}，共 ${result.fileCount.toLocaleString('zh-CN')} 个文件。`); restored?.() }} />}
     <p className="world-backup-footnote">备份不会修改原世界。失败或取消时留下的未完成文件夹会保留在备份目录中，可手动删除。</p>
   </section>
 }
@@ -182,8 +191,9 @@ interface HistoryRowProps {
   exportZip?: () => Promise<WorldZipResult>
   cancelExport: (task: WorldZipTask) => Promise<void>
   openExport: (exportId: string) => Promise<void>
+  restore?: () => void
 }
-function WorldBackupHistoryRow({ backup, open, exports, exportTask, exportBusy, exportZip, cancelExport, openExport }: HistoryRowProps) {
+function WorldBackupHistoryRow({ backup, open, exports, exportTask, exportBusy, exportZip, cancelExport, openExport, restore }: HistoryRowProps) {
   const [exportError, setExportError] = useState('')
   const [starting, setStarting] = useState(false)
   async function startExport() {
@@ -215,6 +225,7 @@ function WorldBackupHistoryRow({ backup, open, exports, exportTask, exportBusy, 
   }
   return <li><div className="world-backup-history-heading"><time dateTime={backup.completedAt}>{timeLabel(backup.completedAt)}</time><div className="world-backup-row-actions">
       <button type="button" className="button secondary" disabled={!isDesktop || opening} onClick={() => void openFolder()}>{opening ? <Spinner size={14} /> : <FolderOpen size={14} />}打开文件夹</button>
+      {restore && <button type="button" className="button secondary" disabled={!isDesktop} onClick={restore}><ArchiveRestore size={14} />恢复</button>}
       {exportZip && <button type="button" className="button secondary" disabled={!isDesktop || starting || Boolean(running) || exportBusy} onClick={() => void startExport()}>{starting || running ? <Spinner size={14} /> : <FileArchive size={14} />}导出 ZIP</button>}
     </div></div>
     <p>{backup.fileCount.toLocaleString('zh-CN')} 个文件 · {backup.directoryCount.toLocaleString('zh-CN')} 个文件夹 · {backupBytes(backup.totalBytes)} · 完成时已校验</p>

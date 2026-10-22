@@ -24,6 +24,7 @@ export default function AccountView({ account, auth, authError, login, cancelLog
   const [copied, setCopied] = useState(false)
   const [now, setNow] = useState(Date.now())
   const [retry, setRetry] = useState(0)
+  const [switching, setSwitching] = useState(false)
   useEffect(() => {
     let current = true
     setConfigLoading(true)
@@ -58,8 +59,8 @@ export default function AccountView({ account, auth, authError, login, cancelLog
   }
   return <>
     <PageHeading title="账户" subtitle="用购买了 Minecraft Java 版的 Microsoft 账户登录，登录后即可启动游戏。" />
-    {account && <div className="account-current"><SkinHead account={account} size={52} /><div><h2>{account.username}</h2><p>正版 Minecraft Java 版 · 已验证游戏所有权</p></div><button className="button secondary" disabled={Boolean(busy) || auth.active} onClick={() => void perform('logout', logout)}>{busy === 'logout' ? <Spinner size={16} /> : <LogOut size={16} />}退出账户</button></div>}
-    <section className="account-card account-login-card">
+    {account && <div className="account-current"><SkinHead account={account} size={52} /><div><h2>{account.username}</h2><p>正版 Minecraft Java 版 · 已验证游戏所有权</p></div><div className="account-current-actions">{!switching && !auth.active && <button className="button secondary" onClick={() => setSwitching(true)}><LogIn size={16} />切换账户</button>}<button className="button secondary" disabled={Boolean(busy) || auth.active} onClick={() => void perform('logout', logout)}>{busy === 'logout' ? <Spinner size={16} /> : <LogOut size={16} />}退出</button></div></div>}
+    {(!account || switching || auth.active) && <section className="account-card account-login-card">
       <div className="account-section-heading"><div className="account-card-icon"><div className="microsoft-mark"><i /><i /><i /><i /></div></div><div><h2>Microsoft 登录</h2><p>在 Microsoft 官方网页完成授权，无需在启动器输入密码。</p></div></div>
       <div className="security-note"><ShieldCheck size={16} /><span>登录后会验证 Minecraft Java 游戏所有权。</span></div>
       {configLoading ? <div className="auth-config-loading"><Spinner size={15} />正在读取登录配置…</div> : !config?.configured && <div className="auth-config-notice"><p>这个版本没有内置 Microsoft 登录配置。请使用官方发布版，或在下方高级设置中填写你自己的应用 ID。</p><button className="text-button" onClick={() => setAdvanced(true)}><Settings2 size={15} />查看高级设置</button></div>}
@@ -75,7 +76,7 @@ export default function AccountView({ account, auth, authError, login, cancelLog
       </div> : <div className="auth-login-actions"><button className="button primary" disabled={!isDesktop || configLoading || !config?.configured || Boolean(busy)} onClick={() => { setError(''); void login() }}><LogIn size={17} />使用 Microsoft 登录</button><span>{!isDesktop ? '账户授权需要在桌面版完成。' : config?.configured ? config.source === 'built-in' ? '使用启动器内置登录配置' : '使用已保存的登录配置' : '请先完成下方高级配置'}</span></div>}
       {(authError || (auth.status?.stage === 'error' ? auth.status.message : '')) && <ErrorBox message={authError || auth.status!.message} />}
       {!auth.active && auth.status?.stage === 'cancelled' && <p className="auth-cancelled" role="status">已取消登录，当前账户保持不变。</p>}
-    </section>
+    </section>}
     <details className="account-disclosure auth-advanced" open={advanced} onToggle={event => setAdvanced(event.currentTarget.open)}>
       <summary><Settings2 size={17} /><span>高级：Microsoft 登录应用</span><ChevronDown size={16} /></summary>
       <p>仅在当前构建没有可用登录配置，或需要使用自有应用时修改。Client ID 是应用标识，不是账户密码。</p>

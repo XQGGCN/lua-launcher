@@ -6,6 +6,8 @@ export type { InstanceInventory } from '../desktop/core'
 export type { ModTogglePreview } from '../desktop/core'
 export type { ModToggleSelection, ModToggleResult } from '../desktop/mod-toggle'
 export type { WorldSelection, WorldSource, WorldDetails, WorldSeed, WorldMetadata } from '../desktop/world-types'
+export type { WorldMapInfo, MapDimension, MapRegion } from '../desktop/world-map'
+export type { WorldRestoreResult, WorldZipInspection } from '../desktop/world-restore'
 export type { WorldZipProgress, WorldZipSummary, WorldZipResult, WorldZipList, WorldZipTask } from '../desktop/world-zip-types'
 export type { WorldBackupProgress, WorldBackupSummary, WorldBackupResult, WorldBackupList, WorldBackupTask } from '../desktop/world-backup-types'
 export type { ResourceKind, ResourceVersion, ResourceInstallInput, ResourceDependency, ResourceSearchResult } from '../desktop/resource-catalog'
@@ -99,16 +101,20 @@ export type LauncherEvent = Progress | DeviceCode | LogEvent
   | { type: 'javaTask'; task: import('../desktop/core').JavaRuntimeTask }
   | { type: 'worldBackupTask'; task: import('../desktop/world-backup-types').WorldBackupTask }
   | { type: 'worldExportTask'; task: import('../desktop/world-zip-types').WorldZipTask }
+  | { type: 'crash'; instanceId: string; analysis: import('../desktop/crash-analysis').CrashAnalysis }
 
 declare global {
   interface Window {
     launcher?: {
+      platform?: string
       call: (method: string, ...args: unknown[]) => Promise<unknown>
       onEvent: (callback: (event: LauncherEvent) => void) => () => void
     }
   }
 }
 export const isDesktop = Boolean(window.launcher)
+export const platform = window.launcher?.platform ?? 'web'
+export type { CrashAnalysis } from '../desktop/crash-analysis'
 const defaultSnapshot: Snapshot = {
   instances: [],
   settings: { memoryMode: 'auto', memoryMb: 4096, javaPath: '', manualJavaPath: '', concurrentDownloads: 6 },
@@ -176,7 +182,7 @@ export async function call<T>(method: string, ...args: unknown[]): Promise<T> {
     case 'authState': result = { active: false, status: null, deviceCode: null }; break
     case 'versions': {
       const manifest = await json('https://piston-meta.mojang.com/mc/game/version_manifest_v2.json') as { versions: Version[] }
-      result = manifest.versions.filter(version => version.type === 'release' && isSupportedVersion(version.id))
+      result = manifest.versions.filter(version => ['release', 'snapshot', 'old_beta', 'old_alpha'].includes(version.type) && /^[A-Za-z0-9][A-Za-z0-9_.+-]{0,63}$/.test(version.id))
       break
     }
     case 'fabricVersions': {
@@ -192,7 +198,7 @@ export async function call<T>(method: string, ...args: unknown[]): Promise<T> {
     }
     case 'createInstance': {
       const options = args[0] as Pick<Instance, 'name' | 'version' | 'loader' | 'loaderVersion'>
-      if (!isSupportedVersion(options.version)) throw new Error('首版支持 Minecraft 1.20.1 及之后的正式版本。')
+      if (!/^[A-Za-z0-9][A-Za-z0-9_.+-]{0,63}$/.test(options.version)) throw new Error('无效的 Minecraft 版本。')
       const instance: Instance = { ...options, id: crypto.randomUUID(), createdAt: new Date().toISOString(), playtimeMs: 0, status: 'not-installed' }
       preview.instances.push(instance)
       savePreview()

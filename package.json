@@ -1,6 +1,6 @@
 {
   "name": "lua-launcher",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "private": true,
   "description": "An independent Minecraft Java launcher with a simple, traditional desktop interface.",
   "type": "module",
@@ -16,11 +16,11 @@
     "build": "tsc --noEmit && vite build && node scripts/build-desktop.mjs",
     "desktop": "node scripts/dev.mjs",
     "start": "electron .",
-    "test": "node --import tsx --test desktop/world-zip.test.ts desktop/core-world-zip.test.ts desktop/world-backup-manifest.test.ts desktop/world-backup.test.ts desktop/core-world-backup.test.ts desktop/nbt-reader.test.ts desktop/world-details.test.ts desktop/core-world-details.test.ts desktop/mod-toggle.test.ts desktop/core-mod-toggle.test.ts desktop/resource-catalog.test.ts desktop/resource-install.test.ts desktop/core-resources.test.ts desktop/core-inventory.test.ts desktop/resource-inventory.test.ts desktop/core-instance-options.test.ts desktop/instance-options.test.ts desktop/game-window.test.ts desktop/java-runtime.test.ts desktop/core-java.test.ts desktop/launch-preparation.test.ts desktop/auth.test.ts desktop/auth-config.test.ts desktop/accounts.test.ts desktop/core.test.ts desktop/core-memory.test.ts desktop/core-loader.test.ts desktop/loader.test.ts desktop/memory.test.ts desktop/modpack.test.ts desktop/pack-selection.test.ts",
+    "test": "node --import tsx --test desktop/crash-analysis.test.ts desktop/world-map.test.ts desktop/legacy-version.test.ts desktop/world-restore.test.ts desktop/world-zip.test.ts desktop/core-world-zip.test.ts desktop/world-backup-manifest.test.ts desktop/world-backup.test.ts desktop/core-world-backup.test.ts desktop/nbt-reader.test.ts desktop/world-details.test.ts desktop/core-world-details.test.ts desktop/mod-toggle.test.ts desktop/core-mod-toggle.test.ts desktop/resource-catalog.test.ts desktop/resource-install.test.ts desktop/core-resources.test.ts desktop/core-inventory.test.ts desktop/resource-inventory.test.ts desktop/core-instance-options.test.ts desktop/instance-options.test.ts desktop/game-window.test.ts desktop/java-runtime.test.ts desktop/core-java.test.ts desktop/launch-preparation.test.ts desktop/auth.test.ts desktop/auth-config.test.ts desktop/accounts.test.ts desktop/core.test.ts desktop/core-memory.test.ts desktop/core-loader.test.ts desktop/loader.test.ts desktop/memory.test.ts desktop/modpack.test.ts desktop/pack-selection.test.ts",
     "package": "pnpm build && electron-builder --dir",
     "dist": "pnpm build && electron-builder",
     "check": "tsc --noEmit",
-    "test:ci": "node --import tsx --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./scripts/github-test-reporter.mjs --test-reporter-destination=stdout desktop/world-zip.test.ts desktop/core-world-zip.test.ts desktop/world-backup-manifest.test.ts desktop/world-backup.test.ts desktop/core-world-backup.test.ts desktop/nbt-reader.test.ts desktop/world-details.test.ts desktop/core-world-details.test.ts desktop/mod-toggle.test.ts desktop/core-mod-toggle.test.ts desktop/resource-catalog.test.ts desktop/resource-install.test.ts desktop/core-resources.test.ts desktop/core-inventory.test.ts desktop/resource-inventory.test.ts desktop/core-instance-options.test.ts desktop/instance-options.test.ts desktop/game-window.test.ts desktop/java-runtime.test.ts desktop/core-java.test.ts desktop/launch-preparation.test.ts desktop/auth.test.ts desktop/auth-config.test.ts desktop/accounts.test.ts desktop/core.test.ts desktop/core-memory.test.ts desktop/core-loader.test.ts desktop/loader.test.ts desktop/memory.test.ts desktop/modpack.test.ts desktop/pack-selection.test.ts"
+    "test:ci": "node --import tsx --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./scripts/github-test-reporter.mjs --test-reporter-destination=stdout desktop/crash-analysis.test.ts desktop/world-map.test.ts desktop/legacy-version.test.ts desktop/world-restore.test.ts desktop/world-zip.test.ts desktop/core-world-zip.test.ts desktop/world-backup-manifest.test.ts desktop/world-backup.test.ts desktop/core-world-backup.test.ts desktop/nbt-reader.test.ts desktop/world-details.test.ts desktop/core-world-details.test.ts desktop/mod-toggle.test.ts desktop/core-mod-toggle.test.ts desktop/resource-catalog.test.ts desktop/resource-install.test.ts desktop/core-resources.test.ts desktop/core-inventory.test.ts desktop/resource-inventory.test.ts desktop/core-instance-options.test.ts desktop/instance-options.test.ts desktop/game-window.test.ts desktop/java-runtime.test.ts desktop/core-java.test.ts desktop/launch-preparation.test.ts desktop/auth.test.ts desktop/auth-config.test.ts desktop/accounts.test.ts desktop/core.test.ts desktop/core-memory.test.ts desktop/core-loader.test.ts desktop/loader.test.ts desktop/memory.test.ts desktop/modpack.test.ts desktop/pack-selection.test.ts"
   },
   "dependencies": {
     "adm-zip": "0.6.1",
@@ -63,7 +63,24 @@
       "icon": "build/icon.ico",
       "target": [
         "nsis"
-      ]
+      ],
+      "artifactName": "Lua-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Lua 未央",
+      "uninstallDisplayName": "Lua 未央",
+      "installerLanguages": [
+        "zh_CN",
+        "en_US"
+      ],
+      "language": "2052",
+      "deleteAppDataOnUninstall": false
     },
     "linux": {
       "icon": "build/icon.png",

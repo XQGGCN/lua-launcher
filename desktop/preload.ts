@@ -15,9 +15,12 @@ const methods = new Set([
   'prepareModToggle', 'setModEnabled',
   'worldDetails', 'worldDetailsWithSeed',
   'worldBackupTasks', 'worldBackups', 'backupWorld', 'cancelWorldBackup', 'openWorldBackup',
+  'deleteInstance', 'duplicateInstance', 'openCrashReports', 'minimizeWindow', 'setTitleBarTheme',
+  'worldMap', 'worldMapTile', 'chooseWorldZip', 'importWorldZip', 'restoreWorldBackup', 'cancelWorldRestore',
   'worldExportTasks', 'worldExports', 'exportWorldBackup', 'cancelWorldExport', 'verifyWorldExport', 'openWorldExport',
 ])
 contextBridge.exposeInMainWorld('launcher', {
+  platform: process.platform,
   call(method: string, ...args: unknown[]) {
     if (!methods.has(method)) return Promise.reject(new Error('不支持的操作'))
     return ipcRenderer.invoke('launcher:call', method, ...args)

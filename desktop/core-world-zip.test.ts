@@ -99,3 +99,17 @@ test('real exporter refuses a backup id that belongs to a different instance', a
   await assert.rejects(f.core.exportWorldBackup(f.id(1), completed.backupId, randomUUID()), /备份不完整或记录无效/)
   assert.deepEqual((await f.core.worldExports(f.id(1))).items, [])
 })
+
+test('core restores a backup into another instance as a new world and refreshes nothing else', async t => {
+  const f = await fixture(t)
+  const completed = await f.backup(0)
+  const result = await f.core.restoreWorldBackup(f.id(1), f.id(0), completed.backupId)
+  assert.equal(result.folderName, `${selection().name} (2)`)
+  const restored = path.join(f.root, 'instances', f.id(1), 'game', 'saves', result.folderName)
+  assert.equal(await fs.readFile(path.join(restored, 'level.dat'), 'utf8'), `fixture ${f.id(0)}`)
+  assert.deepEqual(await fs.readFile(path.join(restored, 'region', 'r.0.0.mca')), Buffer.alloc(200_003, 9))
+  await assert.rejects(f.core.restoreWorldBackup(f.id(1), f.id(0), completed.backupId, '../escape'), /特殊字符/)
+  const named = await f.core.restoreWorldBackup(f.id(0), f.id(0), completed.backupId, '恢复的世界')
+  assert.equal(named.folderName, '恢复的世界')
+  assert.deepEqual(f.requests, [])
+})

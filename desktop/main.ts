@@ -1,4 +1,5 @@
-import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from 'electron'
+import { randomUUID } from 'node:crypto'
+import { app, BrowserWindow, dialog, ipcMain, Notification, safeStorage, shell } from 'electron'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { LauncherCore, type CoreEvent, type LauncherSettings } from './core'
@@ -23,6 +24,7 @@ let auth: AuthManager
 let authConfig: AuthConfigStore
 let packSelections: PackSelections<Awaited<ReturnType<LauncherCore['inspectModpack']>>>
 let choosingPack = false
+const worldZipSelections = new Map<string, { file: string; expires: number }>()
 let accounts: AccountCoordinator
 const launches = new LaunchPreparations()
 let authState: {
@@ -45,7 +47,17 @@ function event(event: CoreEvent) {
     if (history.length > 1000) history.splice(0, history.length - 1000)
     logs.set(event.instanceId, history)
   }
+  if (event.type === 'crash') notify('游戏崩溃了', `${event.analysis.title}。在启动器里查看原因和解决办法。`)
   send(event)
+}
+/** System notification only while the launcher is in the background. */
+function notify(title: string, body: string) {
+  try {
+    if (!Notification.isSupported() || (window && !window.isDestroyed() && window.isFocused())) return
+    const notification = new Notification({ title, body, silent: false })
+    notification.on('click', () => { if (window && !window.isDestroyed()) { if (window.isMinimized()) window.restore(); window.focus() } })
+    notification.show()
+  } catch { /* notifications are optional */ }
 }
 function text(value: unknown, max = 1024): string {
   if (typeof value !== 'string' || value.length > max) throw new Error('输入参数无效')
@@ -77,9 +89,16 @@ function openExternal(input: unknown) {
 }
 
 async function createWindow() {
+  // Frameless chrome that matches the night sidebar: macOS keeps its traffic lights inset,
+  // Windows draws native caption buttons over the content area.
+  const chrome: Electron.BrowserWindowConstructorOptions = process.platform === 'darwin'
+    ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 18, y: 18 } }
+    : process.platform === 'win32'
+      ? { titleBarStyle: 'hidden', titleBarOverlay: { color: '#f3f4f8', symbolColor: '#1d2233', height: 36 } }
+      : {}
   window = new BrowserWindow({
     width: 1240, height: 840, minWidth: 880, minHeight: 640,
-    backgroundColor: '#f3f4f8', title: 'Lua · 未央',
+    backgroundColor: '#f3f4f8', title: 'Lua · 未央', ...chrome,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       nodeIntegration: false, contextIsolation: true, sandbox: true,
@@ -100,6 +119,7 @@ async function createWindow() {
   } else await window.loadFile(entryFile)
 }
 
+if (process.platform === 'win32') app.setAppUserModelId('io.lua.launcher')
 if (hasLock) app.whenReady().then(async () => {
   core = new LauncherCore(root, event)
   await core.init()
@@ -200,6 +220,56 @@ if (hasLock) app.whenReady().then(async () => {
         shell.showItemInFolder(await core.worldExportPath(text(args[0], 80), text(args[1], 80)))
         return
       }
+      case 'deleteInstance': {
+        const id = text(args[0], 80)
+        if (launches.has(id)) throw new Error('请先完成或取消此实例的启动准备')
+        const directory = core.removableInstancePath(id)
+        let archived = ''
+        try { await shell.trashItem(directory) }
+        catch { archived = await core.archiveInstanceFolder(id) }
+        await core.forgetInstance(id)
+        return { trashed: !archived }
+      }
+      case 'duplicateInstance': return core.duplicateInstance(text(args[0], 80), text(args[1], 80))
+      case 'openCrashReports': {
+        const directory = core.crashReportsPath(text(args[0], 80))
+        const error = await shell.openPath(directory)
+        if (error) throw new Error('还没有崩溃报告文件夹')
+        return
+      }
+      case 'minimizeWindow': { window?.minimize(); return }
+      case 'setTitleBarTheme': {
+        const dark = args[0] === 'dark'
+        if (process.platform === 'win32' && window) {
+          try { window.setTitleBarOverlay({ color: dark ? '#12152a' : '#f3f4f8', symbolColor: dark ? '#e8eaf4' : '#1d2233' }) } catch { /* overlay not enabled */ }
+        }
+        return
+      }
+      case 'worldMap': return core.worldMap(text(args[0], 80), object(args[1]))
+      case 'worldMapTile': return core.worldMapTile(text(args[0], 80), object(args[1]), args[2], args[3], args[4])
+      case 'chooseWorldZip': {
+        const selected = await dialog.showOpenDialog(window, { title: '选择世界或地图 ZIP', properties: ['openFile'], filters: [{ name: 'ZIP 压缩包', extensions: ['zip'] }] })
+        if (selected.canceled || !selected.filePaths[0]) return null
+        const file = selected.filePaths[0]
+        const preview = await core.inspectWorldZip(file)
+        const token = randomUUID()
+        for (const [key, entry] of worldZipSelections) if (entry.expires < Date.now()) worldZipSelections.delete(key)
+        worldZipSelections.set(token, { file, expires: Date.now() + 60 * 60 * 1000 })
+        return { token, preview }
+      }
+      case 'importWorldZip': {
+        const id = text(args[0], 80)
+        const selection = worldZipSelections.get(text(args[1], 80))
+        if (!selection || selection.expires < Date.now()) throw new Error('文件选择已过期，请重新选择 ZIP')
+        if (launches.has(id)) throw new Error('请先完成或取消此实例的启动准备')
+        return core.importWorldZip(id, selection.file, args[2] === undefined ? undefined : text(args[2], 120))
+      }
+      case 'restoreWorldBackup': {
+        const id = text(args[0], 80)
+        if (launches.has(id)) throw new Error('请先完成或取消此实例的启动准备')
+        return core.restoreWorldBackup(id, text(args[1], 80), text(args[2], 80), args[3] === undefined ? undefined : text(args[3], 120))
+      }
+      case 'cancelWorldRestore': return core.cancelWorldRestore(text(args[0], 80))
       case 'prepareModToggle': {
         const id = text(args[0], 80)
         if (launches.has(id)) throw new Error('请先完成或取消此实例的启动准备')
