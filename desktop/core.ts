@@ -19,6 +19,8 @@ import { readWorldDetails, type WorldRead } from './world-details'
 import type { WorldSelection, WorldSource, WorldDetails, WorldSeed, WorldMetadata } from './world-types'
 import { createWorldDirectoryBackup, listWorldDirectoryBackups, worldBackupDirectory, WorldBackupError } from './world-backup'
 import type { WorldBackupTask, WorldBackupResult, WorldBackupList } from './world-backup-types'
+import { exportWorldBackupZip, listWorldBackupZips, verifyWorldBackupZip, worldBackupZipPath, WorldZipError } from './world-zip'
+import type { WorldZipList, WorldZipResult, WorldZipSummary, WorldZipTask } from './world-zip-types'
 import { installResourceZip, ResourceInstallRecoveryError, type ResourceInstallResult } from './resource-install'
 import { prepareModToggle, commitModToggle, inspectModToggleRecovery, assertNoDisabledModPartners,
   ModToggleRecoveryError, ModToggleBusyError, type ModTogglePrepared, type ModToggleSelection, type ModToggleResult } from './mod-toggle'
@@ -112,6 +114,7 @@ export type CoreEvent =
   | { type: 'log'; instanceId: string; level: 'info' | 'warn' | 'error'; message: string }
   | { type: 'javaTask'; task: JavaRuntimeTask }
   | { type: 'worldBackupTask'; task: WorldBackupTask }
+  | { type: 'worldExportTask'; task: WorldZipTask }
 export interface LaunchAccount {
   mode: 'microsoft'
   username: string
@@ -231,6 +234,7 @@ interface CoreOptions {
   worldBackupCreator?: typeof createWorldDirectoryBackup
   worldBackupLister?: typeof listWorldDirectoryBackups
   worldBackupResolver?: typeof worldBackupDirectory
+  worldZipExporter?: typeof exportWorldBackupZip
 }
 interface DownloadJob { file: string; download: Download; allowedHosts?: ReadonlySet<string> }
 
@@ -353,6 +357,9 @@ export class LauncherCore {
   private worldBackupOperations = new Map<string, { operationId: string; controller: AbortController }>()
   private worldBackupHistory = new Map<string, WorldBackupTask>()
   private worldBackupOperationIds = new Set<string>()
+  private readonly worldZipExporter: typeof exportWorldBackupZip
+  private worldExportOperation?: { instanceId: string; operationId: string; controller: AbortController }
+  private worldExportHistory = new Map<string, WorldZipTask>()
   private resourceDownloads = new Map<string, { operationId: string; controller: AbortController }>()
   private inventoryScans = new Map<string, { instanceId: string; controller: AbortController; promise: Promise<InstanceInventory> }>()
   private javaTasks = new Map<string, JavaRuntimeTask>()
@@ -388,6 +395,7 @@ export class LauncherCore {
     this.worldBackupCreator = options.worldBackupCreator ?? createWorldDirectoryBackup
     this.worldBackupLister = options.worldBackupLister ?? listWorldDirectoryBackups
     this.worldBackupResolver = options.worldBackupResolver ?? worldBackupDirectory
+    this.worldZipExporter = options.worldZipExporter ?? exportWorldBackupZip
   }
 
   async init(): Promise<LauncherSnapshot> {
@@ -621,6 +629,90 @@ export class LauncherCore {
     if (typeof backupId !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(backupId)) throw new Error('备份标识无效')
     try { return await this.worldBackupResolver(this.worldBackupRoot(), id, backupId) }
     catch { throw new Error('该备份尚未完成、记录已变化或目录无法安全打开，请刷新备份列表') }
+  }
+
+  private worldExportRoot(): string { return safeJoin(this.rootDir, 'world-exports') }
+
+  worldExportTasks(): WorldZipTask[] { return structuredClone([...this.worldExportHistory.values()]) }
+
+  private publishWorldExportTask(task: WorldZipTask): void {
+    try { this.emit({ type: 'worldExportTask', task: structuredClone(task) }) } catch { /* Task history remains queryable. */ }
+  }
+
+  /** Exports a completed directory backup as a verified ZIP. Reads only the backup, never the live world. */
+  async exportWorldBackup(id: string, backupId: string, operationId: string): Promise<WorldZipResult> {
+    this.instance(id)
+    const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/
+    if (typeof backupId !== 'string' || !uuid.test(backupId)) throw new Error('备份标识无效')
+    if (typeof operationId !== 'string' || !uuid.test(operationId)) throw new Error('导出任务标识无效')
+    if (this.worldExportHistory.has(operationId)) throw new Error('此导出任务已提交，请查看原任务')
+    if (this.worldExportOperation) throw new Error('已有 ZIP 导出正在进行，请等待完成或取消后再试')
+    const controller = new AbortController()
+    const task: WorldZipTask = { id: operationId, instanceId: id, backupId, worldFolderName: '', startedAt: new Date().toISOString(),
+      status: 'active', progress: { phase: 'validate-backup', filesDone: 0, bytesDone: 0 } }
+    // Reserve the single export slot before the first await.
+    this.worldExportOperation = { instanceId: id, operationId, controller }
+    while (this.worldExportHistory.size >= 30) {
+      const oldest = [...this.worldExportHistory].find(([, item]) => !['active', 'cancelling'].includes(item.status))
+      if (!oldest) break
+      this.worldExportHistory.delete(oldest[0])
+    }
+    this.worldExportHistory.set(operationId, task)
+    this.publishWorldExportTask(task)
+    try {
+      try { task.worldFolderName = (await this.worldBackupLister(this.worldBackupRoot(), id)).items.find(item => item.backupId === backupId)?.worldFolderName || '' }
+      catch { /* The exporter validates the backup itself. */ }
+      const result = await this.worldZipExporter(this.worldBackupRoot(), id, backupId, {
+        exportRoot: this.worldExportRoot(), operationId, signal: controller.signal,
+        onProgress: progress => {
+          if (this.worldExportOperation?.operationId !== operationId) return
+          task.progress = structuredClone(progress)
+          this.publishWorldExportTask(task)
+        },
+      })
+      task.status = 'complete'; task.result = structuredClone(result); task.worldFolderName = result.worldFolderName
+      return structuredClone(result)
+    } catch (error) {
+      if (controller.signal.aborted) {
+        task.status = 'cancelled'; task.error = '导出已取消，未完成的 ZIP 已移除，备份不变'
+      } else {
+        task.status = 'error'
+        task.error = error instanceof WorldZipError ? `${error.message}。原备份不受影响` : 'ZIP 导出未完成，原备份不受影响，请检查磁盘空间和权限后重试'
+      }
+      throw new Error(task.error)
+    } finally {
+      task.finishedAt = new Date().toISOString()
+      if (this.worldExportOperation?.operationId === operationId) this.worldExportOperation = undefined
+      this.publishWorldExportTask(task)
+    }
+  }
+
+  cancelWorldExport(id: string, operationId: string): void {
+    this.instance(id)
+    const active = this.worldExportOperation
+    if (!active || active.instanceId !== id || active.operationId !== operationId) return
+    const task = this.worldExportHistory.get(operationId)
+    if (task && task.status === 'active') { task.status = 'cancelling'; this.publishWorldExportTask(task) }
+    active.controller.abort(new DOMException('ZIP 导出已取消', 'AbortError'))
+  }
+
+  async worldExports(id: string): Promise<WorldZipList> {
+    this.instance(id)
+    try { return structuredClone(await listWorldBackupZips(this.worldExportRoot(), id)) }
+    catch { throw new Error('无法读取此实例的 ZIP 导出记录，请检查目录权限') }
+  }
+
+  /** Main-only path for shell.showItemInFolder; never exposed to the renderer. */
+  async worldExportPath(id: string, exportId: string): Promise<string> {
+    this.instance(id)
+    try { return await worldBackupZipPath(this.worldExportRoot(), id, exportId) }
+    catch { throw new Error('此 ZIP 导出记录无效或文件已被移动，请刷新列表') }
+  }
+
+  async verifyWorldExport(id: string, exportId: string): Promise<WorldZipSummary> {
+    this.instance(id)
+    try { return await verifyWorldBackupZip(this.worldExportRoot(), id, exportId) }
+    catch (error) { throw new Error(error instanceof WorldZipError ? error.message : '无法重新校验此 ZIP，请检查文件是否仍在原位置') }
   }
 
   private async readSelectedWorld(id: string, selection: WorldSelection, source: WorldSource, includeSeed: boolean): Promise<WorldRead> {
@@ -1430,7 +1522,7 @@ export class LauncherCore {
     this.worldRevisions.clear()
     this.worldViews.clear()
     for (const controller of [...this.installs.values(), ...this.javaDownloads.values(), ...this.launchControllers.values(),
-      ...[...this.inventoryScans.values()].map(scan => scan.controller), ...[...this.worldReads.values()].map(read => read.controller)]) {
+      ...[...this.inventoryScans.values()].map(scan => scan.controller), ...[...this.worldReads.values()].map(read => read.controller), ...(this.worldExportOperation ? [this.worldExportOperation.controller] : [])]) {
       controller.abort(new DOMException('启动器正在退出', 'AbortError'))
     }
   }

@@ -79,7 +79,7 @@ function openExternal(input: unknown) {
 async function createWindow() {
   window = new BrowserWindow({
     width: 1240, height: 840, minWidth: 880, minHeight: 640,
-    backgroundColor: '#f4f6f8', title: 'Lua · 未央',
+    backgroundColor: '#f3f4f8', title: 'Lua · 未央',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       nodeIntegration: false, contextIsolation: true, sandbox: true,
@@ -189,6 +189,15 @@ if (hasLock) app.whenReady().then(async () => {
         const directory = await core.worldBackupPath(text(args[0], 80), text(args[1], 80))
         const error = await shell.openPath(directory)
         if (error) throw new Error('无法打开备份目录，请检查系统文件管理器与访问权限')
+        return
+      }
+      case 'worldExportTasks': return core.worldExportTasks()
+      case 'worldExports': return core.worldExports(text(args[0], 80))
+      case 'exportWorldBackup': return core.exportWorldBackup(text(args[0], 80), text(args[1], 80), text(args[2], 80))
+      case 'cancelWorldExport': return core.cancelWorldExport(text(args[0], 80), text(args[1], 80))
+      case 'verifyWorldExport': return core.verifyWorldExport(text(args[0], 80), text(args[1], 80))
+      case 'openWorldExport': {
+        shell.showItemInFolder(await core.worldExportPath(text(args[0], 80), text(args[1], 80)))
         return
       }
       case 'prepareModToggle': {
