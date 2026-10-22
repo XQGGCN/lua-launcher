@@ -1,9 +1,8 @@
 name: Build and test
 on:
   push:
-    branches: [main]
-    # Pushing publish/v<package version> runs every platform build, then publishes v<version>.
-    tags: ['publish/v*']
+    # Pushing branch release/v<package version> runs every platform build, then publishes v<version>.
+    branches: [main, 'release/v*']
   pull_request:
   workflow_dispatch:
     inputs:
@@ -54,7 +53,7 @@ jobs:
 
   release:
     needs: build
-    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish_release) || startsWith(github.ref, 'refs/tags/publish/v') }}
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish_release) || startsWith(github.ref, 'refs/heads/release/v') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -86,8 +85,8 @@ jobs:
             exit 1
           fi
           release_tag="v${version}"
-          if [[ "$GITHUB_REF" == refs/tags/* && "$GITHUB_REF_NAME" != "publish/$release_tag" ]]; then
-            echo "::error::Trigger tag $GITHUB_REF_NAME does not match package version $version"
+          if [[ "$GITHUB_REF" == refs/heads/release/* && "$GITHUB_REF_NAME" != "release/$release_tag" ]]; then
+            echo "::error::Release branch $GITHUB_REF_NAME does not match package version $version"
             exit 1
           fi
           test -s docs/RELEASE_NOTES.md
