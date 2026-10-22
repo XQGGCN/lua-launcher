@@ -17,6 +17,8 @@ export interface PublicAccount {
   username: string
   uuid: string
   mode: 'microsoft'
+  /** Official Mojang texture URL of the active skin, used only to draw the avatar. */
+  skinUrl?: string
 }
 
 export interface DeviceCode {
@@ -208,7 +210,21 @@ function publicAccount(value: unknown): PublicAccount {
     profile.mode !== 'microsoft'
   ) throw new AuthError('INVALID_RESPONSE')
   // Always whitelist fields, including when reading a stored account.
-  return { username: profile.username, uuid: profile.uuid.toLowerCase(), mode: 'microsoft' }
+  const skinUrl = typeof profile.skinUrl === 'string' && SKIN_URL.test(profile.skinUrl) ? profile.skinUrl : undefined
+  return { username: profile.username, uuid: profile.uuid.toLowerCase(), mode: 'microsoft', ...(skinUrl ? { skinUrl } : {}) }
+}
+
+const SKIN_URL = /^https:\/\/textures\.minecraft\.net\/texture\/[0-9a-f]{16,128}$/
+/** Picks the active skin from a Minecraft profile response; anything unexpected is ignored. */
+export function activeSkinUrl(skins: unknown): string | undefined {
+  if (!Array.isArray(skins)) return undefined
+  for (const skin of skins.slice(0, 16)) {
+    if (!skin || typeof skin !== 'object') continue
+    const value = skin as JsonObject
+    const url = typeof value.url === 'string' ? value.url.replace(/^http:\/\//, 'https://') : ''
+    if (value.state === 'ACTIVE' && SKIN_URL.test(url)) return url
+  }
+  return undefined
 }
 
 function checkCancelled(signal: AbortSignal): void {
@@ -479,14 +495,15 @@ export class AuthManager {
     const profile = await this.#getAuthorized(
       'https://api.minecraftservices.com/minecraft/profile', accessToken, 'profile', signal,
     )
-    const account = publicAccount({ username: profile.name, uuid: profile.id, mode: 'microsoft' })
+    const skinUrl = activeSkinUrl(profile.skins)
+    const account = publicAccount({ username: profile.name, uuid: profile.id, mode: 'microsoft', ...(skinUrl ? { skinUrl } : {}) })
     checkCancelled(signal)
     return { account, access: { accessToken, expiresAt, ...(xuid ? { xuid } : {}) } }
   }
 
   #credentials(session: StoredSession, access: AccessSession): MinecraftCredentials {
     return {
-      ...publicAccount(session.account), accessToken: access.accessToken,
+      username: session.account.username, uuid: session.account.uuid, mode: 'microsoft', accessToken: access.accessToken,
       clientId: session.clientId, ...(access.xuid ? { xuid: access.xuid } : {}),
     }
   }

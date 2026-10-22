@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import {
-  ArrowDownToLine, ArrowRight, ArrowUpRight, Check, ChevronDown,
-  CircleHelp, Download, FolderOpen, Gamepad2, Layers3, Monitor, Moon,
-  Play, Plus, RefreshCw, Search, Settings2,
-  Square, Terminal, UserRound, X, Package, Cpu, HardDrive,
+  ArrowDownToLine, ArrowRight, ArrowUpRight, Boxes, Check,
+  Download, FolderOpen, Gamepad2, Layers3, MemoryStick, Monitor, Moon, Palette, Puzzle,
+  Play, Plus, RefreshCw, Search, Settings2, Sun, SunMoon,
+  Square, Terminal, UserRound, X, Package, Cpu, HardDrive, LogIn,
 } from 'lucide-react'
 import { call, errorText, isDesktop, loaderNames, onEvent, type Account, type AuthState, type Instance, type JavaRuntime, type JavaRequirement, type JavaRuntimeTask, type Mod, type ModVersion, type Progress, type ResourceSource, type SearchResult, type Settings, type Snapshot, type Version } from './api'
 
@@ -15,10 +15,10 @@ import JavaSettings from './components/JavaSettings'
 import InstanceSettings, { createInstanceSettingsDraft, parseInstanceJvmArgs, type InstanceSettingsDraft } from './components/InstanceSettings'
 import InstanceContent from './components/InstanceContent'
 import ResourcesView, { type ResourceInstallTask } from './components/ResourcesView'
-import type { InventoryKind, ResourceInstallInput, ResourceInstallReceipt, ResourceKind, ModTogglePreview, ModToggleResult, ModToggleSelection, WorldSelection, WorldBackupTask, WorldBackupResult } from './api'
+import type { InventoryKind, ResourceInstallInput, ResourceInstallReceipt, ResourceKind, ModTogglePreview, ModToggleResult, ModToggleSelection, WorldSelection, WorldBackupTask, WorldBackupResult, WorldZipTask, WorldZipResult } from './api'
 import type { InstanceOptions, ResolvedInstanceOptions } from './api'
 import './App.css'
-import { Dialog, EmptyState, ErrorBox, PageHeading, Spinner } from './components/ui'
+import { Dialog, EmptyState, ErrorBox, PageHeading, SkinHead, Spinner } from './components/ui'
 import ResourceSourcePicker, { resourceProjectUrl, resourceSources } from './components/ResourceSourcePicker'
 import ModCategoryPicker from './components/ModCategoryPicker'
 import { categoryLabel, type ModCategory } from './mod-categories'
@@ -26,12 +26,35 @@ import { APP_VERSION } from './version'
 
 type View = 'library' | 'discover' | 'downloads' | 'modpacks' | 'settings' | 'account' | 'logs' | 'instance-settings' | 'instance-content' | 'resources'
 const navigation = [
-  { id: 'library' as const, label: '启动游戏', icon: Play },
-  { id: 'downloads' as const, label: '游戏下载', icon: ArrowDownToLine },
-  { id: 'discover' as const, label: '模组下载', icon: Package },
-  { id: 'resources' as const, label: '资源包与光影', icon: Layers3 },
-  { id: 'modpacks' as const, label: '整合包', icon: Layers3 },
+  { id: 'library' as const, label: '启动', icon: Play },
+  { id: 'downloads' as const, label: '下载游戏', icon: ArrowDownToLine },
+  { id: 'discover' as const, label: '模组', icon: Puzzle },
+  { id: 'resources' as const, label: '资源包与光影', icon: Palette },
+  { id: 'modpacks' as const, label: '整合包', icon: Boxes },
 ]
+type ThemeMode = 'system' | 'light' | 'dark'
+const themeLabels: Record<ThemeMode, string> = { system: '跟随系统', light: '浅色', dark: '深色' }
+function readTheme(): ThemeMode {
+  try { const value = localStorage.getItem('lua-theme'); return value === 'light' || value === 'dark' ? value : 'system' } catch { return 'system' }
+}
+function applyTheme(mode: ThemeMode) {
+  if (mode === 'system') delete document.documentElement.dataset.theme
+  else document.documentElement.dataset.theme = mode
+  try { if (mode === 'system') localStorage.removeItem('lua-theme'); else localStorage.setItem('lua-theme', mode) } catch { /* Preference only. */ }
+}
+function greeting(hour = new Date().getHours()) {
+  return hour < 5 ? '夜深了' : hour < 11 ? '早上好' : hour < 13 ? '中午好' : hour < 18 ? '下午好' : '晚上好'
+}
+// Deterministic block skyline for the launch panel: [x, height] columns.
+const skyline = [3, 4, 4, 5, 6, 6, 5, 4, 4, 3, 3, 4, 5, 7, 8, 8, 7, 6, 5, 5, 4, 4, 5, 6, 6, 5, 3, 3, 2, 3, 4, 4, 5, 6, 7, 7, 6, 4, 3, 3]
+const farline = [6, 7, 8, 8, 9, 10, 10, 9, 8, 7, 7, 8, 9, 9, 10, 11, 11, 10, 9, 8, 8, 9, 10, 10, 9, 8, 7, 7, 8, 9, 10, 11, 12, 12, 11, 10, 9, 8, 8, 7]
+function Horizon() {
+  const width = skyline.length
+  const path = (heights: number[]) => `M0 16 ${heights.map((h, x) => `L${x} ${16 - h} L${x + 1} ${16 - h}`).join(' ')} L${width} 16 Z`
+  return <svg className="deck-horizon" viewBox={`0 0 ${width} 16`} preserveAspectRatio="none" shapeRendering="crispEdges" aria-hidden="true">
+    <path d={path(farline)} className="far" /><path d={path(skyline)} className="near" />
+  </svg>
+}
 const statusLabels: Record<Instance['status'], string> = { 'not-installed': '等待安装', installing: '正在安装', ready: '准备就绪', running: '游戏运行中', error: '需要处理' }
 const count = (value: number) => new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 }).format(value)
 const percent = (progress?: Progress) => progress && progress.total > 0 ? Math.min(100, Math.round(progress.completed / progress.total * 100)) : 0
@@ -46,16 +69,24 @@ function retainBackupTasks(tasks: WorldBackupTask[]): WorldBackupTask[] {
 }
 
 function Logo({ small = false }: { small?: boolean }) {
-  return <span className={`logo-mark ${small ? 'small' : ''}`} aria-hidden="true"><Moon size={small ? 16 : 29} strokeWidth={1.7} /></span>
+  return <span className={`logo-mark ${small ? 'small' : ''}`} aria-hidden="true"><Moon size={small ? 16 : 24} strokeWidth={1.8} /></span>
 }
 export default function App() {
   const [view, setView] = useState<View>('library')
+  const [theme, setTheme] = useState<ThemeMode>(readTheme)
+  useEffect(() => { applyTheme(theme) }, [theme])
   const [settingsOpened, setSettingsOpened] = useState(false)
   const [resourcesOpened, setResourcesOpened] = useState(false)
   const [resourceTasks, setResourceTasks] = useState<ResourceInstallTask[]>([])
   const resourceLocks = useRef(new Set<string>())
   const backupLocks = useRef(new Set<string>())
   const [backupTasks, setBackupTasks] = useState<WorldBackupTask[]>([])
+  const [exportTasks, setExportTasks] = useState<WorldZipTask[]>([])
+  const mergeExportTask = useCallback((task: WorldZipTask) => setExportTasks(current => {
+    const previous = current.find(item => item.id === task.id)
+    if (previous && !['active', 'cancelling'].includes(previous.status) && ['active', 'cancelling'].includes(task.status)) return current
+    return [...current.filter(item => item.id !== task.id), task].slice(-30)
+  }), [])
   const modFileLocks = useRef(new Set<string>())
   const [modFileBusy, setModFileBusy] = useState<Record<string, boolean>>({})
   const [contentKind, setContentKind] = useState<InventoryKind>('mods')
@@ -125,6 +156,7 @@ export default function App() {
     if (isDesktop) void call<WorldBackupTask[]>('worldBackupTasks').then(tasks => {
       setBackupTasks(current => retainBackupTasks([...new Map([...tasks, ...current].map(task => [task.id, task])).values()]))
     }).catch(error => setError(errorText(error)))
+    if (isDesktop) void call<WorldZipTask[]>('worldExportTasks').then(tasks => tasks.forEach(mergeExportTask)).catch(() => {})
     const revision = authStateRevision.current
     void call<AuthState>('authState').then(state => {
       if (revision === authStateRevision.current) setAuthState(state)
@@ -135,6 +167,7 @@ export default function App() {
         setJavaTasks(current => [...current.filter(task => task.id !== event.task.id), event.task].slice(-30))
       }
       if (event.type === 'worldBackupTask') mergeBackupTask(event.task)
+      if (event.type === 'worldExportTask') mergeExportTask(event.task)
       if (event.type === 'account') {
         ++accountRequest.current
         setAccount(event.account?.mode === 'microsoft' ? event.account : null)
@@ -153,7 +186,7 @@ export default function App() {
         setAuthState(event.state)
       }
     })
-  }, [refresh, applySnapshot, mergeBackupTask])
+  }, [refresh, applySnapshot, mergeBackupTask, mergeExportTask])
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(''), 6500); return () => clearTimeout(timer) }, [toast])
   const run = async (key: string, method: string, ...args: unknown[]) => {
     if (method === 'launch' && instanceSaveLocks.current.has(key)) { setToast('实例设置正在保存，请稍候再启动。'); return }
@@ -262,6 +295,14 @@ export default function App() {
       throw error
     } finally { backupLocks.current.delete(instanceId) }
   }
+  async function exportWorldBackup(instanceId: string, backupId: string): Promise<WorldZipResult> {
+    if (exportTasks.some(task => ['active', 'cancelling'].includes(task.status))) throw new Error('已有 ZIP 导出正在进行，请稍候')
+    const operationId = crypto.randomUUID()
+    const result = await call<WorldZipResult>('exportWorldBackup', instanceId, backupId, operationId)
+    setToast(`已导出 ${result.fileName}，ZIP 已校验。`)
+    return result
+  }
+  async function cancelWorldExport(task: WorldZipTask) { await call('cancelWorldExport', task.instanceId, task.id) }
   async function cancelWorldBackup(task: WorldBackupTask) { await call('cancelWorldBackup', task.instanceId, task.id) }
   async function openWorldBackup(task: WorldBackupTask) {
     if (!task.result) throw new Error('此任务没有已完成的备份')
@@ -401,46 +442,86 @@ export default function App() {
   }
 
 
+  const launchBlocked = (instance: Instance) => Boolean(busy[instance.id] || instanceSaving[instance.id] || modFileBusy[instance.id] || backupActive.has(instance.id) || resourceActive.has(instance.id) || instance.status === 'installing' || !isDesktop)
+  function primaryAction(instance?: Instance) {
+    if (!instance) { showDownloadForm(); return }
+    if (instance.status === 'ready' && !account) { setToast('请先登录 Microsoft 账户，登录后即可启动游戏。'); changeView('account'); return }
+    if (instance.status === 'running' || instance.status === 'ready') void run(instance.id, instance.status === 'running' ? 'stop' : 'launch', instance.id)
+    else { showTasks(); void installInstance(instance.id).catch(() => {}) }
+  }
+  function primaryLabel(instance?: Instance) {
+    if (!instance) return '下载游戏'
+    if (!isDesktop) return '需要桌面版'
+    if (backupActive.has(instance.id)) return '世界备份中…'
+    if (modFileBusy[instance.id]) return '正在修改模组…'
+    if (resourceActive.has(instance.id)) return '资源下载中…'
+    if (instance.status === 'running') return '结束游戏'
+    if (busy[instance.id]) return '正在启动…'
+    if (instance.status === 'ready') return account ? '启动游戏' : '登录后启动'
+    if (instance.status === 'installing') return '安装中…'
+    return instance.status === 'error' ? '重新安装' : '安装游戏'
+  }
+  const deckProgress = selectedInstance && (busy[selectedInstance.id] || selectedInstance.status === 'installing') ? progress[selectedInstance.id] : undefined
+  const pageTitles: Record<View, string> = { library: '启动', discover: '模组', downloads: '下载游戏', modpacks: '整合包', settings: '设置', account: '账户', logs: '运行日志', 'instance-settings': '实例设置', 'instance-content': '实例内容', resources: '资源包与光影' }
+  useEffect(() => { document.title = view === 'library' ? 'Lua · 未央' : `${pageTitles[view]} · Lua` }, [view])
+  const nextTheme: ThemeMode = theme === 'system' ? 'light' : theme === 'light' ? 'dark' : 'system'
+
   return <div className="app-shell">
     <aside className="sidebar">
-      <a className="brand" href="#library" onClick={event => { event.preventDefault(); changeView('library') }} aria-label="Lua 未央，返回我的游戏"><Logo /><span>Lua<small>未央 · 启动器</small></span><span className="alpha">α</span></a>
-      <div className="sidebar-section-label">游戏</div>
-      <nav aria-label="主导航">{navigation.map(item => <button key={item.id} className={`nav-item ${view === item.id ? 'active' : ''}`} onClick={() => changeView(item.id)} aria-current={view === item.id ? 'page' : undefined}><item.icon size={19} /><span>{item.label}</span>{item.id === 'downloads' && downloadCount > 0 && <span className="nav-count">{downloadCount}</span>}</button>)}</nav>
+      <a className="brand" href="#library" onClick={event => { event.preventDefault(); changeView('library') }} aria-label="Lua 未央，返回启动页"><Logo /><span>Lua<small>未央</small></span></a>
+      <nav aria-label="主导航">{navigation.map(item => <button key={item.id} className={`nav-item ${view === item.id ? 'active' : ''}`} onClick={() => changeView(item.id)} aria-current={view === item.id ? 'page' : undefined}><item.icon size={18} /><span>{item.label}</span>{item.id === 'downloads' && downloadCount > 0 && <span className="nav-count">{downloadCount}</span>}</button>)}</nav>
       <div className="sidebar-bottom">
-        <div className="sidebar-note"><span className="online-dot" /><span>{isDesktop ? `Lua Launcher ${APP_VERSION}` : '浏览器预览'}</span></div>
-        <button className={`nav-item ${view === 'logs' ? 'active' : ''}`} onClick={() => changeView('logs')}><Terminal size={18} /><span>运行日志</span></button>
-        <button className={`nav-item ${view === 'settings' ? 'active' : ''}`} onClick={() => changeView('settings')}><Settings2 size={18} /><span>启动器设置</span></button>
-        <button className={`profile-button ${view === 'account' ? 'selected' : ''}`} onClick={() => changeView('account')}><span className="avatar"><UserRound size={20} /></span><span><strong>{account?.username || '添加 Microsoft 账户'}</strong><small>{account ? 'Microsoft 账户' : '尚未登录'}</small></span><ChevronDown size={15} /></button>
+        <button className={`nav-item ${view === 'logs' ? 'active' : ''}`} onClick={() => changeView('logs')} aria-current={view === 'logs' ? 'page' : undefined}><Terminal size={18} /><span>运行日志</span></button>
+        <button className={`nav-item ${view === 'settings' ? 'active' : ''}`} onClick={() => changeView('settings')} aria-current={view === 'settings' ? 'page' : undefined}><Settings2 size={18} /><span>设置</span></button>
+        <button className="nav-item theme-toggle" onClick={() => setTheme(nextTheme)} title={`外观：${themeLabels[theme]}，点击切换为${themeLabels[nextTheme]}`} aria-label={`外观：${themeLabels[theme]}，切换为${themeLabels[nextTheme]}`}>{theme === 'dark' ? <Moon size={18} /> : theme === 'light' ? <Sun size={18} /> : <SunMoon size={18} />}<span>{themeLabels[theme]}</span></button>
+        <button className={`profile-button ${view === 'account' ? 'selected' : ''}`} onClick={() => changeView('account')}><SkinHead account={account} size={34} /><span><strong>{account?.username || '登录账户'}</strong><small>{account ? '正版 · Microsoft' : '使用 Microsoft 登录'}</small></span></button>
+        <div className="sidebar-note">{isDesktop ? `版本 ${APP_VERSION}` : '浏览器预览'}</div>
       </div>
     </aside>
     <main className={`main-panel view-${view}`}>
-      <div className="topbar"><div className="breadcrumb">Lua 未央 <span>/</span> <strong>{({ library: '启动游戏', discover: '模组下载', downloads: '游戏下载', modpacks: '整合包', settings: '启动器设置', account: '游戏账户', logs: '运行日志', 'instance-settings': '实例设置', 'instance-content': '实例内容', resources: '资源包与光影' })[view]}</strong></div><div className="topbar-right"><span className="version-tag">ALPHA {APP_VERSION}</span><button className="icon-button mobile-logs-button" aria-label="查看运行日志" onClick={() => changeView('logs')}><Terminal size={18} /></button><button className="icon-button" aria-label="管理游戏账户" onClick={() => changeView('account')}><UserRound size={18} /></button><button className="icon-button" aria-label="了解项目与开源许可" onClick={() => setToast('Lua 未央 · 独立开源 Minecraft Java 启动器。当前为 Alpha，支持原版、Fabric、Forge 与 NeoForge。Minecraft 是 Mojang 的商标，本项目与 Mojang、Microsoft 无关联。')}><CircleHelp size={18} /></button></div></div>
       <div className="page-content">
-        {!isDesktop && <div className="preview-notice"><Monitor size={15} /><span>当前为浏览器预览。可探索模组、创建预览实例；安装和启动需使用桌面版。</span><span className="preview-label">PREVIEW</span></div>}
+        {!isDesktop && <div className="preview-notice"><Monitor size={15} /><span>这是浏览器预览：可以浏览模组和整合包，安装与启动游戏需要使用桌面版。</span></div>}
         {error && <ErrorBox message={error} retry={() => void refresh()} />}
         {view === 'library' && <>
-          <PageHeading title="启动游戏" subtitle="选择一个游戏版本，或下载新的版本。" />
-          <div className="launch-summary">
-            <button className="summary-item" onClick={() => changeView('account')}><UserRound size={22} /><span><small>游戏账户</small><strong>{account?.username || '尚未登录'}</strong><em>{account ? 'Microsoft 账户' : '添加 Microsoft 账户'}</em></span><ChevronDown size={15} /></button>
-            <div className="summary-item"><Layers3 size={22} /><span><small>当前版本</small><strong>{selectedInstance?.name || '未选择游戏版本'}</strong><em>{selectedInstance ? `${selectedInstance.version} · ${loaderNames[selectedInstance.loader]}` : '在下方列表选择版本'}</em></span></div>
-            <button type="button" className="summary-item" onClick={() => selectedInstance ? openInstanceSettings(selectedInstance) : changeView('settings')}><Cpu size={22} /><span><small>{selectedInstance ? '此实例运行环境' : '运行环境'}</small><strong>{selectedInstance ? resolved ? resolved.values.javaPath ? '指定 Java 路径' : '自动选择 Java' : effectiveError ? '查看实例运行设置' : '正在读取实例配置…' : '配置全局运行环境'}</strong><em>{selectedInstance && resolved ? resolved.values.memoryMode === 'manual' ? `手动内存 ${(resolved.values.memoryMb / 1024).toFixed(1)} GB · 实例设置` : '内存自动分配 · 实例设置' : selectedInstance ? 'Java、内存、JVM 与游戏窗口' : '未选择游戏实例'}</em></span><Settings2 size={15} /></button>
-          </div>
+          <section className="launch-deck" aria-label="启动游戏">
+            <div className="deck-sky" aria-hidden="true"><span className="deck-moon" /><span className="deck-stars" /><Horizon /></div>
+            <div className="deck-body">
+              <div className="deck-instance">
+                <p className="deck-greeting">{greeting()}{account ? `，${account.username}` : ''}</p>
+                <h1>{selectedInstance?.name || '开始你的第一个世界'}</h1>
+                {selectedInstance ? <div className="deck-chips"><span className={`loader-chip loader-${selectedInstance.loader}`}>{loaderNames[selectedInstance.loader]}{selectedInstance.loaderVersion ? ` ${selectedInstance.loaderVersion}` : ''}</span><span className="deck-chip">Minecraft {selectedInstance.version}</span><span className={`deck-chip state status-${selectedInstance.status}`}>{statusLabels[selectedInstance.status]}</span></div>
+                  : <p className="deck-hint">下载一个 Minecraft 版本，就能从这里开始游戏。</p>}
+              </div>
+              <div className="deck-actions">
+                <button className={`launch-button ${selectedInstance?.status === 'running' ? 'running' : ''}`} disabled={Boolean(selectedInstance && launchBlocked(selectedInstance))} onClick={() => primaryAction(selectedInstance)}>{selectedInstance && (busy[selectedInstance.id] || selectedInstance.status === 'installing') ? <Spinner size={20} /> : selectedInstance?.status === 'running' ? <Square size={18} /> : selectedInstance?.status === 'ready' ? (account || !isDesktop ? <Play size={20} fill="currentColor" /> : <LogIn size={19} />) : <Download size={20} />}{primaryLabel(selectedInstance)}</button>
+                {selectedInstance && <div className="deck-tools">
+                  <button type="button" className="deck-tool" onClick={() => showInstanceContent(selectedInstance.id)} title="模组、资源包和世界"><Package size={16} /><span>内容</span></button>
+                  <button type="button" className="deck-tool" onClick={() => openInstanceSettings(selectedInstance)} title="Java、内存和窗口"><Settings2 size={16} /><span>设置</span></button>
+                  <button type="button" className="deck-tool" disabled={!isDesktop} onClick={() => void run(`folder-${selectedInstance.id}`, 'openInstance', selectedInstance.id)} title="打开游戏文件夹"><FolderOpen size={16} /><span>文件夹</span></button>
+                </div>}
+              </div>
+            </div>
+            {deckProgress ? <div className="deck-progress" role="status"><div><span>{deckProgress.phase}</span><span>{deckProgress.total > 0 ? `${percent(deckProgress)}%` : ''}</span></div><progress value={deckProgress.total > 0 ? percent(deckProgress) : undefined} max="100" aria-label="进度" /></div>
+              : <div className="deck-meta">
+                <button type="button" onClick={() => changeView('account')}><SkinHead account={account} size={22} /><span><small>账户</small><strong>{account?.username || '未登录'}</strong></span></button>
+                <button type="button" onClick={() => selectedInstance ? openInstanceSettings(selectedInstance) : changeView('settings')}><Cpu size={17} /><span><small>Java</small><strong>{selectedInstance && resolved ? resolved.values.javaPath ? '指定路径' : '自动匹配' : '自动匹配'}</strong></span></button>
+                <button type="button" onClick={() => selectedInstance ? openInstanceSettings(selectedInstance) : changeView('settings')}><MemoryStick size={17} /><span><small>内存</small><strong>{selectedInstance && resolved?.values.memoryMode === 'manual' ? `${(resolved.values.memoryMb / 1024).toFixed(1)} GB` : '自动分配'}</strong></span></button>
+              </div>}
+          </section>
           <section className="library-section">
-            <div className="section-heading"><h2>版本列表 <span className="heading-count">{instances.length}</span></h2><button className="button primary" onClick={showDownloadForm}><Plus size={16} />添加游戏版本</button></div>
-            <div className="library-toolbar"><div className="segmented" aria-label="按加载器筛选">{[{ id: 'all', label: '全部' }, { id: 'vanilla', label: '原版' }, { id: 'fabric', label: 'Fabric' }, { id: 'forge', label: 'Forge' }, { id: 'neoforge', label: 'NeoForge' }].map(filter => <button key={filter.id} className={gameFilter === filter.id ? 'selected' : ''} onClick={() => setGameFilter(filter.id)} aria-pressed={gameFilter === filter.id}>{filter.label}</button>)}</div><label className="search-field compact"><Search size={16} /><input value={gameQuery} onChange={event => setGameQuery(event.target.value)} placeholder="搜索版本名称" aria-label="搜索游戏版本" /></label></div>
+            <div className="section-heading"><h2>我的实例 <span className="heading-count">{instances.length}</span></h2><button className="button secondary" onClick={showDownloadForm}><Plus size={16} />添加实例</button></div>
+            {instances.length > 3 && <div className="library-toolbar"><div className="segmented" aria-label="按加载器筛选">{[{ id: 'all', label: '全部' }, { id: 'vanilla', label: '原版' }, { id: 'fabric', label: 'Fabric' }, { id: 'forge', label: 'Forge' }, { id: 'neoforge', label: 'NeoForge' }].map(filter => <button key={filter.id} className={gameFilter === filter.id ? 'selected' : ''} onClick={() => setGameFilter(filter.id)} aria-pressed={gameFilter === filter.id}>{filter.label}</button>)}</div><label className="search-field compact"><Search size={16} /><input value={gameQuery} onChange={event => setGameQuery(event.target.value)} placeholder="搜索实例" aria-label="搜索游戏实例" /></label></div>}
             <div className="version-table">
-              <div className="version-table-heading"><span>名称</span><span>游戏版本 / 加载器</span><span>状态</span><span>操作</span></div>
-              {!snapshot && !error ? <div className="loading-state"><Spinner />正在读取游戏列表…</div> : filtered.length === 0 ? <div className="library-empty"><Package size={37} strokeWidth={1.2} /><h3>{instances.length ? '没有匹配的游戏版本' : '还没有安装游戏'}</h3><p>{instances.length ? '请修改搜索关键词或清除筛选。' : '点击“添加游戏版本”，选择 Minecraft 版本和加载器。'}</p>{instances.length > 0 && <button className="text-button" onClick={() => { setGameFilter('all'); setGameQuery('') }}>清除筛选</button>}</div> : filtered.map(instance => <div key={instance.id} className={`version-row ${selectedInstance?.id === instance.id ? 'selected' : ''}`}>
-                <button className="version-name" onClick={() => setSelectedId(instance.id)} aria-pressed={selectedInstance?.id === instance.id}><span className="version-symbol">{instance.loader === 'vanilla' ? <Gamepad2 size={23} /> : <Layers3 size={23} />}</span><span><strong>{instance.name}</strong><small>{!isDesktop ? '预览实例' : instance.lastPlayed ? `上次启动 ${new Date(instance.lastPlayed).toLocaleDateString('zh-CN')}` : '尚未启动'}</small></span></button>
-                <button className="version-meta" onClick={() => setSelectedId(instance.id)}><strong>{instance.version}</strong><small>{loaderNames[instance.loader]}{instance.loaderVersion ? ` ${instance.loaderVersion}` : ''}</small></button>
+              {!snapshot && !error ? <div className="loading-state"><Spinner />正在读取实例…</div> : filtered.length === 0 ? <div className="library-empty"><Gamepad2 size={34} strokeWidth={1.4} /><h3>{instances.length ? '没有符合条件的实例' : '还没有游戏实例'}</h3><p>{instances.length ? '换个关键词，或者清除筛选。' : '选择 Minecraft 版本和加载器，几分钟就能装好。'}</p>{instances.length > 0 ? <button className="text-button" onClick={() => { setGameFilter('all'); setGameQuery('') }}>清除筛选</button> : <button className="button primary" onClick={showDownloadForm}><Plus size={16} />添加第一个实例</button>}</div> : filtered.map(instance => <div key={instance.id} className={`version-row ${selectedInstance?.id === instance.id ? 'selected' : ''}`} onDoubleClick={event => { if ((event.target as HTMLElement).closest('.version-actions')) return; setSelectedId(instance.id); if (instance.status === 'ready' && account && !launchBlocked(instance)) primaryAction(instance) }}>
+                <button className="version-name" onClick={() => setSelectedId(instance.id)} aria-pressed={selectedInstance?.id === instance.id} title="单击选择，双击启动"><span className={`version-symbol loader-${instance.loader}`}>{instance.loader === 'vanilla' ? <Gamepad2 size={20} /> : <Layers3 size={20} />}</span><span><strong>{instance.name}</strong><small>{!isDesktop ? '预览实例' : instance.lastPlayed ? `上次游玩 ${new Date(instance.lastPlayed).toLocaleDateString('zh-CN')}` : '还没玩过'}</small></span></button>
+                <button className="version-meta" onClick={() => setSelectedId(instance.id)} tabIndex={-1}><strong>{instance.version}</strong><small><span className={`loader-dot loader-${instance.loader}`} />{loaderNames[instance.loader]}{instance.loaderVersion ? ` ${instance.loaderVersion}` : ''}</small></button>
                 <div className={`instance-status status-${instance.status}`}><span>{statusLabels[instance.status]}{instance.status === 'installing' && ` ${percent(progress[instance.id])}%`}</span>{instance.status === 'installing' && <progress value={percent(progress[instance.id])} max="100" aria-label={`${instance.name} 安装进度`} />}</div>
-                <div className="version-actions"><button type="button" className="icon-button" title="实例内容" aria-label={`查看 ${instance.name} 的资源`} onClick={() => showInstanceContent(instance.id)}><Package size={17} /></button><button type="button" className="icon-button" title="实例设置" aria-label={`设置 ${instance.name}`} onClick={() => openInstanceSettings(instance)}><Settings2 size={17} /></button><button className="icon-button" aria-label={`打开 ${instance.name} 的文件夹`} title="打开游戏文件夹" onClick={() => void run(`folder-${instance.id}`, 'openInstance', instance.id)} disabled={!isDesktop}><FolderOpen size={17} /></button><button className="icon-button" title="查看日志" aria-label={`查看 ${instance.name} 的日志`} onClick={() => { setSelectedId(instance.id); changeView('logs') }}><Terminal size={17} /></button></div>
+                <div className="version-actions"><button type="button" className="icon-button" title="实例内容" aria-label={`查看 ${instance.name} 的内容`} onClick={() => showInstanceContent(instance.id)}><Package size={17} /></button><button type="button" className="icon-button" title="实例设置" aria-label={`设置 ${instance.name}`} onClick={() => openInstanceSettings(instance)}><Settings2 size={17} /></button><button className="icon-button" aria-label={`打开 ${instance.name} 的文件夹`} title="打开游戏文件夹" onClick={() => void run(`folder-${instance.id}`, 'openInstance', instance.id)} disabled={!isDesktop}><FolderOpen size={17} /></button><button className="icon-button" title="运行日志" aria-label={`查看 ${instance.name} 的日志`} onClick={() => { setSelectedId(instance.id); changeView('logs') }}><Terminal size={17} /></button></div>
                 {instance.error && <p className="version-error">{instance.error}</p>}
               </div>)}
             </div>
-            <p className="library-note">每个实例使用独立的游戏目录，存档与模组相互隔离。当前选择仅保存在{isDesktop ? '本机' : '此浏览器'}，不跨设备同步。</p>
+            {instances.length > 0 && <p className="library-note">每个实例都有独立的存档和模组文件夹。双击实例可以直接启动。</p>}
           </section>
-          <div className="launch-bar"><div className="launch-selection"><Gamepad2 size={25} /><div><strong>{selectedInstance?.name || '未选择游戏版本'}</strong><span>{selectedInstance ? `Minecraft ${selectedInstance.version} · ${loaderNames[selectedInstance.loader]}` : '请先添加游戏版本'}</span></div></div><div className="launch-controls">{selectedInstance && <><button type="button" className="button secondary" onClick={() => showInstanceContent(selectedInstance.id)}><Package size={16} />内容</button><button className="button secondary" onClick={() => changeView('logs')}><Terminal size={16} />日志</button></>}<button className="button primary launch-button" disabled={Boolean(selectedInstance && (busy[selectedInstance.id] || instanceSaving[selectedInstance.id] || modFileBusy[selectedInstance.id] || backupActive.has(selectedInstance.id) || resourceActive.has(selectedInstance.id) || selectedInstance.status === 'installing' || !isDesktop))} onClick={() => { if (!selectedInstance) showDownloadForm(); else if (selectedInstance.status === 'running' || selectedInstance.status === 'ready') void run(selectedInstance.id, selectedInstance.status === 'running' ? 'stop' : 'launch', selectedInstance.id); else { showTasks(); void installInstance(selectedInstance.id).catch(() => {}) } }}>{selectedInstance && (busy[selectedInstance.id] || selectedInstance.status === 'installing') ? <Spinner size={20} /> : selectedInstance?.status === 'running' ? <Square size={19} /> : selectedInstance?.status === 'ready' ? <Play size={20} /> : <Download size={20} />}{!selectedInstance ? '下载游戏' : !isDesktop ? '桌面版可启动' : backupActive.has(selectedInstance.id) ? '世界备份中…' : modFileBusy[selectedInstance.id] ? '正在修改模组…' : resourceActive.has(selectedInstance.id) ? '资源下载中…' : selectedInstance.status === 'running' ? '结束游戏' : selectedInstance.status === 'ready' ? '启动游戏' : selectedInstance.status === 'installing' ? '安装中…' : selectedInstance.status === 'error' ? '重新安装' : '安装游戏'}</button></div></div>
         </>}
         {view === 'instance-settings' && snapshot && (editingInstance && instanceDrafts[editingInstance.id] ? <>
           <div className="instance-switcher"><label htmlFor="instance-settings-target">游戏实例</label><select id="instance-settings-target" value={editingInstance.id} onChange={event => { const next = instances.find(item => item.id === event.target.value); if (next) openInstanceSettings(next) }}>{instances.map(item => <option key={item.id} value={item.id}>{item.name} · {item.version}</option>)}</select></div>
@@ -450,8 +531,8 @@ export default function App() {
             setInstanceDrafts(current => ({ ...current, [draft.instanceId]: draft }))
             setInstanceSaveErrors(current => ({ ...current, [draft.instanceId]: '' }))
           }} onSave={(name, options) => saveInstanceSettings(editingInstance.id, name, options)} onCancel={() => changeView('library')} onPickJava={isDesktop ? () => call<string | null>('chooseJava') : undefined} onRefreshRuntimes={isDesktop ? detectInstanceJava : undefined} />
-        </> : <EmptyState icon={<Settings2 size={26} />} title="没有可设置的实例" action={<button type="button" className="button secondary" onClick={() => changeView('library')}>返回版本列表</button>}>请先添加一个游戏版本。</EmptyState>)}
-        {view === 'instance-content' && <InstanceContent key={contentRevision} initialKind={contentKind} refreshRevision={contentRefresh[selectedInstance?.id || ''] || 0} fileBusy={Boolean(selectedInstance && (modFileBusy[selectedInstance.id] || busy[selectedInstance.id] || instanceSaving[selectedInstance.id] || backupActive.has(selectedInstance.id) || resourceActive.has(selectedInstance.id)))} onPrepareMod={prepareModFile} onCommitMod={commitModFile} backupTasks={backupTasks} onBackupWorld={createWorldBackup} onCancelWorldBackup={cancelWorldBackup} instances={instances} selectedId={selectedInstance?.id || ''} onSelect={setSelectedId} onOpenSettings={openInstanceSettings} onOpenFolder={id => call<void>('openInstance', id)} onBack={() => changeView('library')} />}
+        </> : <EmptyState icon={<Settings2 size={26} />} title="没有可设置的实例" action={<button type="button" className="button secondary" onClick={() => changeView('library')}>返回启动页</button>}>请先添加一个游戏版本。</EmptyState>)}
+        {view === 'instance-content' && <InstanceContent key={contentRevision} initialKind={contentKind} refreshRevision={contentRefresh[selectedInstance?.id || ''] || 0} fileBusy={Boolean(selectedInstance && (modFileBusy[selectedInstance.id] || busy[selectedInstance.id] || instanceSaving[selectedInstance.id] || backupActive.has(selectedInstance.id) || resourceActive.has(selectedInstance.id)))} onPrepareMod={prepareModFile} onCommitMod={commitModFile} backupTasks={backupTasks} onBackupWorld={createWorldBackup} onCancelWorldBackup={cancelWorldBackup} exportTasks={exportTasks} onExportWorldBackup={exportWorldBackup} onCancelWorldExport={cancelWorldExport} instances={instances} selectedId={selectedInstance?.id || ''} onSelect={setSelectedId} onOpenSettings={openInstanceSettings} onOpenFolder={id => call<void>('openInstance', id)} onBack={() => changeView('library')} />}
         {resourcesOpened && <div hidden={view !== 'resources'}><ResourcesView source={resourceSource} setSource={setResourceSource} instances={instances} tasks={resourceTasks} progress={progress} install={installResource} cancel={cancelResource} showContent={showInstanceContent} openUrl={openUrl} /></div>}
         {view === 'discover' && <Discover source={resourceSource} setSource={setResourceSource} openUrl={openUrl} instances={instances} installed={async name => { await refresh(); setToast(`${name} 已安装，必需依赖已一并处理。`) }} />}
         {view === 'downloads' && <DownloadsView tab={downloadTab} setTab={setDownloadTab} instances={instances} progress={progress} busy={busy} taskErrors={taskErrors} packTasks={packTasks} javaTasks={javaTasks} resourceTasks={resourceTasks} cancelResource={cancelResource} backupTasks={backupTasks} cancelBackup={cancelWorldBackup} openBackup={openWorldBackup} showContent={showInstanceContent} cancelJava={async id => { await call('cancelJavaInstall', id) }} retryJava={async major => { await call('installJava', major) }} download={downloadGame} install={installInstance} cancel={cancelDownload} showGame={id => { setSelectedId(id); changeView('library') }} showLogs={id => { setSelectedId(id); changeView('logs') }} showPacks={source => { if (source && source !== 'local') setResourceSource(source); changeView('modpacks') }} />}
@@ -676,7 +757,7 @@ function SettingsView({ settings, rootDir, save, instance, javaTasks }: { settin
       <button type="button" className="text-button" onClick={() => changeAdvanced({ jvmMode: 'default', widthMode: 'default', heightMode: 'default', fullscreen: 'default' })}>将 JVM 与窗口设置恢复默认</button>
     </section>
     <section className="settings-card"><div className="settings-card-heading"><Download size={20} /><div><h2>下载与存储</h2><p>游戏与依赖文件统一保存在启动器数据目录。</p></div></div><div className="setting-row"><div><h3>并行下载数</h3><p>网络不稳定时，可以减少同时下载的文件数。</p></div><select aria-label="并行下载数" value={draft.concurrentDownloads} onChange={event => setDraft({ ...draft, concurrentDownloads: Number(event.target.value) })}>{[2, 4, 6, 8, 12].map(value => <option key={value} value={value}>{value} 个文件</option>)}</select></div><div className="data-directory"><HardDrive size={18} /><div><strong>数据目录</strong><code>{rootDir}</code></div></div></section>
-    <section className="settings-card about-card"><Logo /><div><h3>Lua 未央 <span className="version-tag">{APP_VERSION} ALPHA</span></h3><p>独立开源的 Minecraft Java 启动器。</p><small>Minecraft 是 Mojang 的商标。本项目与 Mojang、Microsoft 无关联。</small></div></section>
+    <section className="settings-card about-card"><Logo /><div><h3>Lua 未央 <span className="version-tag">{APP_VERSION} Alpha</span></h3><p>独立开源的 Minecraft Java 启动器。</p><small>Minecraft 是 Mojang 的商标。本项目与 Mojang、Microsoft 无关联。</small></div></section>
     </fieldset>
     {error && <ErrorBox message={error} retry={!saving ? () => void submit() : undefined} />}<div className="settings-save"><span className="form-hint" role="status">{saving ? '正在保存设置…' : dirty ? '有尚未保存的设置，切页后草稿保留' : '设置已保存'}</span><button type="button" className="button secondary" disabled={saving} onClick={() => { const next = initialDraft(); const advanced = advancedSettingsDraft(settings); setDraft(next); setAdvancedDraft(advanced); setSavedDraft(signature(next, advanced)); setResetKey(value => value + 1); setError('') }}>撤销更改</button><button className="button primary" disabled={saving || !dirty}>{saving ? <Spinner size={16} /> : <Check size={16} />}保存设置</button></div>
   </form></>
@@ -700,5 +781,5 @@ function LogsView({ instances, initialId }: { instances: Instance[]; initialId?:
     const unsubscribe = onEvent(event => { if (event.type === 'log' && event.instanceId === selected) setLines(lines => [...lines.slice(-1999), `[${event.level}] ${event.message}`]) })
     return () => { active = false; unsubscribe() }
   }, [selected, retry])
-  return <><PageHeading title="运行日志" subtitle="查看安装过程、Java 输出与错误信息。" /><div className="logs-toolbar"><label className="field"><span className="sr-only">选择游戏实例</span><select value={selected} onChange={event => setSelected(event.target.value)}><option value="">选择游戏实例</option>{instances.map(instance => <option key={instance.id} value={instance.id}>{instance.name}</option>)}</select></label><button className="button secondary" disabled={!selected || loading} onClick={() => setRetry(value => value + 1)}><RefreshCw size={16} />刷新</button></div>{error && <ErrorBox message={error} />}<div className="log-console"><div className="console-header"><span><Terminal size={15} />GAME OUTPUT</span><span>{lines.length} 行</span></div>{loading ? <div className="loading-state"><Spinner />正在读取日志…</div> : lines.length ? <pre>{lines.join('\n')}</pre> : <EmptyState icon={<Terminal size={26} />} title={selected ? '还没有运行记录' : '选择一个游戏实例'}>{selected ? '安装或启动游戏后，运行输出会显示在这里。' : '这里会记录安装过程、Java 输出与错误信息。'}</EmptyState>}</div></>
+  return <><PageHeading title="运行日志" subtitle="查看安装过程、Java 输出与错误信息。" /><div className="logs-toolbar"><label className="field"><span className="sr-only">选择游戏实例</span><select value={selected} onChange={event => setSelected(event.target.value)}><option value="">选择游戏实例</option>{instances.map(instance => <option key={instance.id} value={instance.id}>{instance.name}</option>)}</select></label><button className="button secondary" disabled={!selected || loading} onClick={() => setRetry(value => value + 1)}><RefreshCw size={16} />刷新</button></div>{error && <ErrorBox message={error} />}<div className="log-console"><div className="console-header"><span><Terminal size={15} />游戏输出</span><span>{lines.length} 行</span></div>{loading ? <div className="loading-state"><Spinner />正在读取日志…</div> : lines.length ? <pre>{lines.join('\n')}</pre> : <EmptyState icon={<Terminal size={26} />} title={selected ? '还没有运行记录' : '选择一个游戏实例'}>{selected ? '安装或启动游戏后，运行输出会显示在这里。' : '这里会记录安装过程、Java 输出与错误信息。'}</EmptyState>}</div></>
 }

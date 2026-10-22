@@ -1,11 +1,11 @@
 .app-shell .version-table-heading,.app-shell .version-row{grid-template-columns:minmax(175px,1.5fr) minmax(130px,1fr) minmax(110px,.8fr) 132px}
-.instance-switcher{display:flex;align-items:center;gap:16px;margin-bottom:23px;max-width:920px;font-size:13px;color:#3e4a55}
+.instance-switcher{display:flex;align-items:center;gap:16px;margin-bottom:23px;max-width:920px;font-size:13px;color:var(--ink)}
 .instance-switcher select{max-width:440px;min-width:0;flex:1;font-size:13px}
 .settings-fieldset{border:0;min-width:0;margin:0;padding:0}
 .global-advanced-settings .field{margin:17px 0}
-.global-advanced-settings textarea{width:100%;min-height:132px;resize:vertical;padding:10px 11px;border:1px solid #ccd5de;border-radius:4px;background:#fff;color:#3e4a55;font:12px/1.8 ui-monospace,SFMono-Regular,Consolas,monospace;caret-color:#437cae;white-space:pre}
-.global-advanced-settings textarea::placeholder{color:#697782}
-.global-advanced-settings textarea:focus-visible{outline:2px solid #437cae;outline-offset:3px}
+.global-advanced-settings textarea{width:100%;min-height:132px;resize:vertical;padding:10px 11px;border:1px solid var(--line);border-radius:4px;background:var(--surface);color:var(--ink);font:12px/1.8 ui-monospace,SFMono-Regular,Consolas,monospace;caret-color:var(--accent);white-space:pre}
+.global-advanced-settings textarea::placeholder{color:var(--ink-2)}
+.global-advanced-settings textarea:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
 .global-advanced-settings>.text-button{margin-top:17px;min-height:32px}
 .global-window-fields{display:grid;grid-template-columns:1fr 1fr;gap:22px}
 .settings-fieldset:disabled textarea{opacity:.6}

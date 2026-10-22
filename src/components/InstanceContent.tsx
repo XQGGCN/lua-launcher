@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react'
 import { AlertTriangle, ArrowLeft, File, FileArchive, Folder, FolderOpen, Layers3, Map, Monitor, Package, RefreshCw, Search, Settings2 } from 'lucide-react'
 import type { InventoryItem, InventoryKind, ResourceInventory } from '../../desktop/resource-inventory'
-import { call, errorText, isDesktop, loaderNames, type Instance, type ModTogglePreview, type ModToggleSelection, type ModToggleResult, type WorldDetails as WorldDetailsData, type WorldSeed, type WorldSelection, type WorldBackupTask, type WorldBackupList, type WorldBackupResult } from '../api'
+import { call, errorText, isDesktop, loaderNames, type Instance, type ModTogglePreview, type ModToggleSelection, type ModToggleResult, type WorldDetails as WorldDetailsData, type WorldSeed, type WorldSelection, type WorldBackupTask, type WorldBackupList, type WorldBackupResult, type WorldZipList, type WorldZipResult, type WorldZipTask } from '../api'
 import ModToggleActions from './ModToggleActions'
 import WorldDetails, { escapeWorldText } from './WorldDetails'
 import WorldBackupActions from './WorldBackupActions'
@@ -23,6 +23,9 @@ export interface InstanceContentProps {
   backupTasks?: WorldBackupTask[]
   onBackupWorld?: (instanceId: string, selection: WorldSelection) => Promise<WorldBackupResult>
   onCancelWorldBackup?: (task: WorldBackupTask) => Promise<void>
+  exportTasks?: WorldZipTask[]
+  onExportWorldBackup?: (instanceId: string, backupId: string) => Promise<WorldZipResult>
+  onCancelWorldExport?: (task: WorldZipTask) => Promise<void>
 }
 export type InstanceInventory = ResourceInventory & { instanceId: string }
 type SortOrder = 'name-asc' | 'name-desc' | 'modified-desc' | 'modified-asc'
@@ -81,7 +84,7 @@ export function InventoryDetails({ item, kind, id }: { item?: InventoryItem; kin
   </section>
 }
 
-export default function InstanceContent({ instances, selectedId, onSelect, onOpenSettings, onOpenFolder, onBack, initialKind = 'mods', refreshRevision = 0, fileBusy = false, onPrepareMod, onCommitMod, backupTasks = [], onBackupWorld, onCancelWorldBackup }: InstanceContentProps) {
+export default function InstanceContent({ instances, selectedId, onSelect, onOpenSettings, onOpenFolder, onBack, initialKind = 'mods', refreshRevision = 0, fileBusy = false, onPrepareMod, onCommitMod, backupTasks = [], onBackupWorld, onCancelWorldBackup, exportTasks = [], onExportWorldBackup, onCancelWorldExport }: InstanceContentProps) {
   const [kind, setKind] = useState<InventoryKind>(initialKind)
   const [query, setQuery] = useState('')
   const [order, setOrder] = useState<SortOrder>('name-asc')
@@ -178,10 +181,10 @@ export default function InstanceContent({ instances, selectedId, onSelect, onOpe
   }
 
   return <div className="instance-content">
-    <header className="inventory-heading"><div><h2>实例内容</h2><p>查看实例文件与文件夹，或在模组页修改单个模组的启用后缀。</p></div><button type="button" className="button secondary" onClick={onBack}><ArrowLeft size={15} />返回版本列表</button></header>
+    <header className="inventory-heading"><div><h2>实例内容</h2><p>查看实例文件与文件夹，或在模组页修改单个模组的启用后缀。</p></div><button type="button" className="button secondary" onClick={onBack}><ArrowLeft size={15} />返回启动页</button></header>
     <div className="inventory-instance-bar"><label htmlFor={`${id}-instance`}>游戏实例</label><select id={`${id}-instance`} value={instance?.id || ''} onChange={event => { ++request.current; setSelectedItemId(''); onSelect(event.target.value) }}><option value="" disabled>{instances.length ? '选择实例' : '尚无游戏实例'}</option>{instances.map(item => <option key={item.id} value={item.id}>{item.name} · {item.version} · {loaderNames[item.loader]}</option>)}</select><button type="button" className="button secondary" disabled={!instance} onClick={() => instance && onOpenSettings(instance)}><Settings2 size={15} />实例设置</button><button type="button" className="button secondary" disabled={!instance || !isDesktop || folderBusy} onClick={() => void openFolder()}>{folderBusy ? <Spinner size={15} /> : <FolderOpen size={15} />}打开实例文件夹</button></div>
     {folderError && <ErrorBox message={folderError} retry={() => void openFolder()} />}
-    {!isDesktop && <div className="inline-notice inventory-notice"><Monitor size={17} /><span>浏览器预览无法访问本机磁盘，不会生成示例文件清单。你可以选择已有预览实例，或返回版本列表创建预览实例；真实清单需要桌面版。</span></div>}
+    {!isDesktop && <div className="inline-notice inventory-notice"><Monitor size={17} /><span>浏览器预览无法访问本机磁盘，不会生成示例文件清单。你可以选择已有预览实例，或返回启动页创建预览实例；真实清单需要桌面版。</span></div>}
     {installing && <div className="inline-notice inventory-notice"><Spinner size={17} /><span>此实例正在安装，暂时不能扫描内容。安装完成或取消后会重新读取目录。</span></div>}
     {instance?.status === 'running' && <div className="inline-notice inventory-notice"><AlertTriangle size={17} /><span>游戏正在运行，可以只读查看；文件可能随游戏变化，清单仅代表本次读取时的状态。</span></div>}
     {instance?.error && <ErrorBox message={instance.error} />}
@@ -192,7 +195,7 @@ export default function InstanceContent({ instances, selectedId, onSelect, onOpe
       <div className="inventory-meta"><span>目录：<code>game/{tab.folder}/</code> · 仅此目录一层</span>{inventory && <span>读取时间：<time dateTime={inventory.observedAt}>{timeLabel(inventory.observedAt)}</time></span>}</div>
       {inventory?.truncated && <div className="inline-notice inventory-notice"><AlertTriangle size={17} /><span>本次扫描未完成，当前不是目录的完整清单。搜索和排序只作用于已经读取的 {inventory.items.length} 个条目，原因见下方扫描提示。</span></div>}
       {!!inventory?.warnings.length && <details className="inventory-warnings"><summary>扫描提示（{inventory.warnings.length}）</summary><ul>{inventory.warnings.map((warning, index) => <li key={`${warning.code}-${index}`}><span>{kind === 'worlds' ? escapeWorldText(warning.message) : warning.message}</span>{warning.relativePath && <code>{kind === 'worlds' ? escapeWorldText(warning.relativePath) : warning.relativePath}</code>}</li>)}</ul></details>}
-      {message ? <ErrorBox message={message} retry={!installing && isDesktop ? refresh : undefined} /> : !instance ? <EmptyState icon={<Folder size={28} />} title={instances.length ? '请选择一个实例' : '还没有游戏实例'}>从上方选择实例，或返回版本列表添加游戏。</EmptyState> : !isDesktop ? <div className="inventory-placeholder"><Monitor size={25} /><h3>桌面版可读取实例内容</h3><p>此预览没有本机文件访问权限，因此不显示文件数量或示例条目。</p></div> : installing ? <div className="inventory-placeholder"><Package size={25} /><h3>安装完成后查看</h3><p>当前不会扫描或展示旧的目录清单。</p></div> : loading || !inventory ? <div className="loading-state" role="status"><Spinner />正在读取 {tab.folder} 目录…</div> : !filtered.length ? <div className="inventory-placeholder"><Folder size={25} /><h3>{query ? '没有匹配的文件名' : inventory.truncated || inventory.warnings.length ? '本次未取得可展示条目' : '此目录暂无条目'}</h3><p>{query ? '搜索仅检查这次已读取的条目，可以修改或清除关键词。' : inventory.truncated || inventory.warnings.length ? '请检查扫描提示，不能据此判断实际目录为空。' : '目录尚未创建或其中没有可展示的文件与文件夹。'}</p>{query && <button type="button" className="text-button" onClick={() => { setQuery(''); setPage(0) }}>清除搜索</button>}</div> : <>
+      {message ? <ErrorBox message={message} retry={!installing && isDesktop ? refresh : undefined} /> : !instance ? <EmptyState icon={<Folder size={28} />} title={instances.length ? '请选择一个实例' : '还没有游戏实例'}>从上方选择实例，或返回启动页添加游戏。</EmptyState> : !isDesktop ? <div className="inventory-placeholder"><Monitor size={25} /><h3>桌面版可读取实例内容</h3><p>此预览没有本机文件访问权限，因此不显示文件数量或示例条目。</p></div> : installing ? <div className="inventory-placeholder"><Package size={25} /><h3>安装完成后查看</h3><p>当前不会扫描或展示旧的目录清单。</p></div> : loading || !inventory ? <div className="loading-state" role="status"><Spinner />正在读取 {tab.folder} 目录…</div> : !filtered.length ? <div className="inventory-placeholder"><Folder size={25} /><h3>{query ? '没有匹配的文件名' : inventory.truncated || inventory.warnings.length ? '本次未取得可展示条目' : '此目录暂无条目'}</h3><p>{query ? '搜索仅检查这次已读取的条目，可以修改或清除关键词。' : inventory.truncated || inventory.warnings.length ? '请检查扫描提示，不能据此判断实际目录为空。' : '目录尚未创建或其中没有可展示的文件与文件夹。'}</p>{query && <button type="button" className="text-button" onClick={() => { setQuery(''); setPage(0) }}>清除搜索</button>}</div> : <>
         <p className="inventory-result-count" role="status">{query ? `${filtered.length} 个匹配条目 / 已读取 ${inventory.items.length} 个` : `已读取 ${inventory.items.length} 个条目`}{inventory.truncated && ' · 非完整清单'}</p>
         <div className="inventory-table-wrap"><table className="inventory-table"><thead><tr><th scope="col">文件名</th><th scope="col">类型 / 后缀</th><th scope="col">大小</th><th scope="col">修改时间</th><th scope="col">曾登记来源</th></tr></thead><tbody>{visibleItems.map(item => <tr key={item.id} className={selectedItemId === item.id ? 'selected' : undefined}><td><button type="button" className="inventory-file-button" aria-pressed={selectedItemId === item.id} aria-controls={`${id}-details`} onClick={() => setSelectedItemId(item.id)}>{item.entryType === 'directory' ? <Folder size={17} /> : <File size={17} />}<span>{kind === 'worlds' ? escapeWorldText(item.name) : item.name}</span></button></td><td>{typeLabel(item)}{item.activation === 'disabled-suffix' && <small>禁用后缀</small>}</td><td className="inventory-size">{inventorySize(item)}</td><td><time dateTime={item.modifiedAt}>{timeLabel(item.modifiedAt)}</time></td><td>{item.recordedSource ? sourceNames[item.recordedSource.source] : '无关联登记'}</td></tr>)}</tbody></table></div>
         {pageCount > 1 && <div className="inventory-pagination"><button type="button" className="button secondary" disabled={currentPage === 0} onClick={() => { setPage(currentPage - 1); setSelectedItemId('') }}>上一页</button><span>已读取清单第 {currentPage + 1} / {pageCount} 页 · 每页最多 {pageSize} 条</span><button type="button" className="button secondary" disabled={currentPage + 1 >= pageCount} onClick={() => { setPage(currentPage + 1); setSelectedItemId('') }}>下一页</button></div>}
@@ -204,10 +207,15 @@ export default function InstanceContent({ instances, selectedId, onSelect, onOpe
           list={() => call<WorldBackupList>('worldBackups', instance.id)}
           create={() => onBackupWorld(instance.id, { itemId: selectedItem.id, name: selectedItem.name })}
           cancel={onCancelWorldBackup}
-          open={backupId => call<void>('openWorldBackup', instance.id, backupId)} />}
+          open={backupId => call<void>('openWorldBackup', instance.id, backupId)}
+          exportTasks={exportTasks}
+          listExports={() => call<WorldZipList>('worldExports', instance.id)}
+          exportZip={onExportWorldBackup ? backupId => onExportWorldBackup(instance.id, backupId) : undefined}
+          cancelExport={onCancelWorldExport}
+          openExport={exportId => call<void>('openWorldExport', instance.id, exportId)} />}
         {kind === 'mods' && instance && selectedItem && onPrepareMod && onCommitMod && <ModToggleActions instance={instance} item={selectedItem} busy={fileBusy || loading || installing} prepare={(selection, enabled) => onPrepareMod(instance.id, selection, enabled)} commit={token => onCommitMod(instance.id, token)} completed={renamed} />}
       </>}
-      <p className="inventory-footer-note">{kind === 'worlds' ? '世界详情只读所选目录的 level.dat 或明确选择的旧副本；不检查区块完整性，不修改或升级世界。' : <>{kind === 'mods' ? '模组操作仅改变一个文件的名称，不自动联动依赖。禁用后下载来源登记不迁移，恢复原名后可重新显示历史来源。' : '不解压资源或推断兼容、启用和实际加载状态。'}“曾登记来源”不代表当前内容已通过哈希验证。</>}</p>
+      <p className="inventory-footer-note">{kind === 'worlds' ? '查看世界信息只会读取 level.dat，不会修改或升级世界。' : <>{kind === 'mods' ? '模组操作仅改变一个文件的名称，不自动联动依赖。禁用后下载来源登记不迁移，恢复原名后可重新显示历史来源。' : '不解压资源或推断兼容、启用和实际加载状态。'}“曾登记来源”不代表当前内容已通过哈希验证。</>}</p>
     </section>
   </div>
 }

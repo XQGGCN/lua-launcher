@@ -6,6 +6,7 @@ export type { InstanceInventory } from '../desktop/core'
 export type { ModTogglePreview } from '../desktop/core'
 export type { ModToggleSelection, ModToggleResult } from '../desktop/mod-toggle'
 export type { WorldSelection, WorldSource, WorldDetails, WorldSeed, WorldMetadata } from '../desktop/world-types'
+export type { WorldZipProgress, WorldZipSummary, WorldZipResult, WorldZipList, WorldZipTask } from '../desktop/world-zip-types'
 export type { WorldBackupProgress, WorldBackupSummary, WorldBackupResult, WorldBackupList, WorldBackupTask } from '../desktop/world-backup-types'
 export type { ResourceKind, ResourceVersion, ResourceInstallInput, ResourceDependency, ResourceSearchResult } from '../desktop/resource-catalog'
 export type { ResourceInstallResult as ResourceInstallReceipt } from '../desktop/resource-install'
@@ -54,7 +55,7 @@ export interface Snapshot { instances: Instance[]; settings: Settings; rootDir: 
 export interface Version { id: string; type: string; releaseTime: string }
 export interface JavaRuntime { path: string; version: string; major: number; arch: string }
 export type { JavaRequirement, JavaRuntimeTask } from '../desktop/core'
-export interface Account { mode: 'microsoft'; username: string; uuid: string }
+export interface Account { mode: 'microsoft'; username: string; uuid: string; skinUrl?: string }
 export interface AuthConfig { configured: boolean; clientId: string; source: 'built-in' | 'custom' | 'none' }
 export interface AuthStatus { stage: string; message: string }
 export interface AuthState { active: boolean; status: AuthStatus | null; deviceCode: DeviceCode | null }
@@ -97,6 +98,7 @@ export type LauncherEvent = Progress | DeviceCode | LogEvent
   | { type: 'authState'; state: AuthState }
   | { type: 'javaTask'; task: import('../desktop/core').JavaRuntimeTask }
   | { type: 'worldBackupTask'; task: import('../desktop/world-backup-types').WorldBackupTask }
+  | { type: 'worldExportTask'; task: import('../desktop/world-zip-types').WorldZipTask }
 
 declare global {
   interface Window {

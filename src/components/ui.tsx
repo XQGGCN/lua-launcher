@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, type ReactNode } from 'react'
-import { AlertCircle, LoaderCircle, RefreshCw, X } from 'lucide-react'
+import { AlertCircle, LoaderCircle, RefreshCw, UserRound, X } from 'lucide-react'
+import type { Account } from '../api'
 
 export function Spinner({ size = 17 }: { size?: number }) {
   return <LoaderCircle size={size} className="spin" aria-hidden="true" />
@@ -31,3 +32,9 @@ export function Dialog({ title, children, close, wide = false }: { title: string
 }
 export const bytes = (value: number) => value >= 1024 ** 3 ? `${(value / 1024 ** 3).toFixed(1)} GB` : `${(value / 1024 ** 2).toFixed(1)} MB`
 export const percent = (progress?: { completed: number; total: number }) => progress && progress.total > 0 ? Math.min(100, Math.round(progress.completed / progress.total * 100)) : 0
+
+/** Draws the face and hat layer of the account's official skin texture. */
+export function SkinHead({ account, size = 32 }: { account: Account | null; size?: number }) {
+  if (!account?.skinUrl) return <span className="skin-head fallback" style={{ width: size, height: size }} aria-hidden="true"><UserRound size={Math.round(size * 0.58)} /></span>
+  return <span className="skin-head" aria-hidden="true" style={{ width: size, height: size, ['--s' as string]: `${size}px`, ['--skin' as string]: `url("${account.skinUrl}")` }} />
+}

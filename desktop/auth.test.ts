@@ -667,3 +667,14 @@ test('refresh reports its real stages without implying a new device-code authori
     'xbox', 'minecraft', 'checking-ownership', 'saving', 'complete',
   ])
 })
+
+test('active skin URL accepts only official Mojang texture URLs', async () => {
+  const { activeSkinUrl } = await import('./auth')
+  const hash = 'a'.repeat(64)
+  assert.equal(activeSkinUrl([{ state: 'INACTIVE', url: `https://textures.minecraft.net/texture/${'b'.repeat(64)}` },
+    { state: 'ACTIVE', url: `http://textures.minecraft.net/texture/${hash}` }]), `https://textures.minecraft.net/texture/${hash}`)
+  assert.equal(activeSkinUrl([{ state: 'ACTIVE', url: `https://evil.example/texture/${hash}` }]), undefined)
+  assert.equal(activeSkinUrl([{ state: 'ACTIVE', url: `https://textures.minecraft.net/texture/${hash}?x=1` }]), undefined)
+  assert.equal(activeSkinUrl('nope'), undefined)
+  assert.equal(activeSkinUrl(undefined), undefined)
+})

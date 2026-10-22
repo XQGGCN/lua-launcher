@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { Check, ChevronDown, Clipboard, ExternalLink, LogIn, LogOut, Settings2, ShieldCheck, Square, UserRound } from 'lucide-react'
 import { call, errorText, isDesktop, type Account, type AuthConfig, type AuthState } from '../api'
-import { ErrorBox, PageHeading, Spinner } from './ui'
+import { ErrorBox, PageHeading, SkinHead, Spinner } from './ui'
 
 type Props = {
   account: Account | null
@@ -57,12 +57,12 @@ export default function AccountView({ account, auth, authError, login, cancelLog
     finally { await refresh() }
   }
   return <>
-    <PageHeading title="游戏账户" subtitle="使用 Microsoft 账户登录 Minecraft Java。" />
-    {account && <div className="account-current"><span className="account-avatar"><UserRound size={28} /></span><div><h2>{account.username}</h2><p>Microsoft · Minecraft Java</p></div><button className="button secondary" disabled={Boolean(busy) || auth.active} onClick={() => void perform('logout', logout)}>{busy === 'logout' ? <Spinner size={16} /> : <LogOut size={16} />}退出账户</button></div>}
+    <PageHeading title="账户" subtitle="用购买了 Minecraft Java 版的 Microsoft 账户登录，登录后即可启动游戏。" />
+    {account && <div className="account-current"><SkinHead account={account} size={52} /><div><h2>{account.username}</h2><p>正版 Minecraft Java 版 · 已验证游戏所有权</p></div><button className="button secondary" disabled={Boolean(busy) || auth.active} onClick={() => void perform('logout', logout)}>{busy === 'logout' ? <Spinner size={16} /> : <LogOut size={16} />}退出账户</button></div>}
     <section className="account-card account-login-card">
       <div className="account-section-heading"><div className="account-card-icon"><div className="microsoft-mark"><i /><i /><i /><i /></div></div><div><h2>Microsoft 登录</h2><p>在 Microsoft 官方网页完成授权，无需在启动器输入密码。</p></div></div>
       <div className="security-note"><ShieldCheck size={16} /><span>登录后会验证 Minecraft Java 游戏所有权。</span></div>
-      {configLoading ? <div className="auth-config-loading"><Spinner size={15} />正在读取登录配置…</div> : !config?.configured && <div className="auth-config-notice"><p>当前测试版尚未配置 Microsoft 登录应用。维护者完成接入后即可直接登录；自有应用可在高级设置填写。</p><button className="text-button" onClick={() => setAdvanced(true)}><Settings2 size={15} />查看高级设置</button></div>}
+      {configLoading ? <div className="auth-config-loading"><Spinner size={15} />正在读取登录配置…</div> : !config?.configured && <div className="auth-config-notice"><p>这个版本没有内置 Microsoft 登录配置。请使用官方发布版，或在下方高级设置中填写你自己的应用 ID。</p><button className="text-button" onClick={() => setAdvanced(true)}><Settings2 size={15} />查看高级设置</button></div>}
       {auth.active ? <div className="auth-progress-panel">
         <div className="auth-status" role="status"><Spinner size={16} /><span>{auth.status?.message || '正在连接 Microsoft…'}</span></div>
         {auth.deviceCode && <>
