@@ -3,9 +3,9 @@ import {
   ArrowDownToLine, ArrowRight, ArrowUpRight, Boxes, Check,
   Download, FolderOpen, Gamepad2, Layers3, MemoryStick, Monitor, Moon, Palette, Puzzle,
   Play, Plus, RefreshCw, Search, Settings2, Sun, SunMoon,
-  Square, Terminal, UserRound, X, Package, Cpu, HardDrive, LogIn, MoreHorizontal, Copy, Trash2, FileWarning, AppWindow,
+  Square, Terminal, UserRound, X, Package, Cpu, HardDrive, LogIn, MoreHorizontal, Copy, Trash2, FileWarning, AppWindow, Sparkles,
 } from 'lucide-react'
-import { call, errorText, isDesktop, loaderNames, onEvent, platform, type CrashAnalysis, type Account, type AuthState, type Instance, type JavaRuntime, type JavaRequirement, type JavaRuntimeTask, type Mod, type ModVersion, type Progress, type ResourceSource, type SearchResult, type Settings, type Snapshot, type Version } from './api'
+import { call, errorText, isDesktop, loaderNames, onEvent, platform, type CrashAnalysis, type UpdateInfo, type Account, type AuthState, type Instance, type JavaRuntime, type JavaRequirement, type JavaRuntimeTask, type Mod, type ModVersion, type Progress, type ResourceSource, type SearchResult, type Settings, type Snapshot, type Version } from './api'
 
 import AccountView from './components/AccountView'
 import DownloadsView, { type DownloadInput, type PackTask } from './components/DownloadsView'
@@ -23,6 +23,7 @@ import ResourceSourcePicker, { resourceProjectUrl, resourceSources } from './com
 import ModCategoryPicker from './components/ModCategoryPicker'
 import { categoryLabel, type ModCategory } from './mod-categories'
 import { APP_VERSION } from './version'
+import { defaultDownloadSource } from '../desktop/download-mirror'
 
 type View = 'library' | 'discover' | 'downloads' | 'modpacks' | 'settings' | 'account' | 'logs' | 'instance-settings' | 'instance-content' | 'resources'
 const navigation = [
@@ -106,6 +107,23 @@ export default function App() {
   const [error, setError] = useState('')
   const [toast, setToast] = useState('')
   const [crash, setCrash] = useState<{ instanceId: string; analysis: CrashAnalysis }>()
+  const [update, setUpdate] = useState<UpdateInfo | null>(null)
+  const [updateOpen, setUpdateOpen] = useState(false)
+  const [updateProgress, setUpdateProgress] = useState<{ received: number; total: number }>()
+  const [autoUpdate, setAutoUpdate] = useState(() => { try { return localStorage.getItem('lua-auto-update') !== '0' } catch { return true } })
+  useEffect(() => { try { localStorage.setItem('lua-auto-update', autoUpdate ? '1' : '0') } catch { /* preference only */ } }, [autoUpdate])
+  const checkUpdate = useCallback(async (manual = false) => {
+    try {
+      const info = await call<UpdateInfo | null>('checkUpdate')
+      setUpdate(info)
+      if (manual) setToast(info ? `发现新版本 ${info.version}` : '已经是最新版本')
+    } catch (error) { if (manual) setToast(errorText(error)) }
+  }, [])
+  useEffect(() => {
+    if (!isDesktop || !autoUpdate) return
+    const timer = setTimeout(() => void checkUpdate(false), 4000)
+    return () => clearTimeout(timer)
+  }, [])
   const [menuFor, setMenuFor] = useState('')
   const [removing, setRemoving] = useState<Instance>()
   const [duplicating, setDuplicating] = useState<Instance>()
@@ -200,6 +218,7 @@ export default function App() {
         ++authStateRevision.current
         setAuthState(current => ({ ...current, status: { stage: event.stage, message: event.message } }))
       }
+      if (event.type === 'updateProgress') setUpdateProgress({ received: event.received, total: event.total })
       if (event.type === 'crash') setCrash({ instanceId: event.instanceId, analysis: event.analysis })
       if (event.type === 'authState') {
         ++authStateRevision.current
@@ -497,6 +516,7 @@ export default function App() {
         <button className={`nav-item ${view === 'logs' ? 'active' : ''}`} onClick={() => changeView('logs')} aria-current={view === 'logs' ? 'page' : undefined}><Terminal size={18} /><span>运行日志</span></button>
         <button className={`nav-item ${view === 'settings' ? 'active' : ''}`} onClick={() => changeView('settings')} aria-current={view === 'settings' ? 'page' : undefined}><Settings2 size={18} /><span>设置</span></button>
         <button className="nav-item theme-toggle" onClick={() => setTheme(nextTheme)} title={`外观：${themeLabels[theme]}，点击切换为${themeLabels[nextTheme]}`} aria-label={`外观：${themeLabels[theme]}，切换为${themeLabels[nextTheme]}`}>{theme === 'dark' ? <Moon size={18} /> : theme === 'light' ? <Sun size={18} /> : <SunMoon size={18} />}<span>{themeLabels[theme]}</span></button>
+        {update && <button className="update-pill" onClick={() => setUpdateOpen(true)}><Sparkles size={16} /><span><strong>新版本 {update.version}</strong><small>点击查看并更新</small></span></button>}
         <button className={`profile-button ${view === 'account' ? 'selected' : ''}`} onClick={() => changeView('account')}><SkinHead account={account} size={34} /><span><strong>{account?.username || '登录账户'}</strong><small>{account ? '正版 · Microsoft' : '使用 Microsoft 登录'}</small></span></button>
         <div className="sidebar-note">{isDesktop ? `版本 ${APP_VERSION}` : '浏览器预览'}</div>
       </div>
@@ -566,7 +586,7 @@ export default function App() {
         {view === 'discover' && <Discover source={resourceSource} setSource={setResourceSource} openUrl={openUrl} instances={instances} installed={async name => { await refresh(); setToast(`${name} 已安装，必需依赖已一并处理。`) }} />}
         {view === 'downloads' && <DownloadsView tab={downloadTab} setTab={setDownloadTab} instances={instances} progress={progress} busy={busy} taskErrors={taskErrors} packTasks={packTasks} javaTasks={javaTasks} resourceTasks={resourceTasks} cancelResource={cancelResource} backupTasks={backupTasks} cancelBackup={cancelWorldBackup} openBackup={openWorldBackup} showContent={showInstanceContent} cancelJava={async id => { await call('cancelJavaInstall', id) }} retryJava={async major => { await call('installJava', major) }} download={downloadGame} install={installInstance} cancel={cancelDownload} showGame={id => { setSelectedId(id); changeView('library') }} showLogs={id => { setSelectedId(id); changeView('logs') }} showPacks={source => { if (source && source !== 'local') setResourceSource(source); changeView('modpacks') }} />}
         {view === 'modpacks' && <ModpacksView source={resourceSource} setSource={setResourceSource} tasks={packTasks} progress={progress} installOnline={(versionId, name, source) => installPack('installModpack', versionId, name, source)} importLocal={(token, name) => installPack('importModpack', token, name)} cancel={cancelDownload} showTasks={showTasks} openUrl={openUrl} />}
-        {settingsOpened && snapshot && <div hidden={view !== 'settings'}><SettingsView theme={theme} setTheme={setTheme} minimizeOnLaunch={minimizeOnLaunch} setMinimizeOnLaunch={setMinimizeOnLaunch} instance={selectedInstance} settings={snapshot.settings} rootDir={snapshot.rootDir} javaTasks={javaTasks} save={async settings => {
+        {settingsOpened && snapshot && <div hidden={view !== 'settings'}><SettingsView autoUpdate={autoUpdate} setAutoUpdate={setAutoUpdate} checkUpdate={() => checkUpdate(true)} update={update} openUpdate={() => setUpdateOpen(true)} theme={theme} setTheme={setTheme} minimizeOnLaunch={minimizeOnLaunch} setMinimizeOnLaunch={setMinimizeOnLaunch} instance={selectedInstance} settings={snapshot.settings} rootDir={snapshot.rootDir} javaTasks={javaTasks} save={async settings => {
           const next = await call<Snapshot>('updateSettings', settings)
           // This response owns global settings only. Instance state may have
           // advanced through an event while this request was in flight.
@@ -577,6 +597,19 @@ export default function App() {
         {view === 'logs' && <LogsView instances={instances} initialId={selectedInstance?.id} />}
       </div>
     </main>
+    {updateOpen && update && <Dialog title={`更新到 ${update.version}`} close={() => { if (!updateProgress) setUpdateOpen(false) }} wide>
+      <p className="modal-description">当前版本 {update.current}{update.publishedAt ? ` · 发布于 ${new Date(update.publishedAt).toLocaleDateString('zh-CN')}` : ''}。{update.action === 'installer' ? '下载后会打开安装程序，启动器自动退出，你的实例和存档不受影响。' : update.action === 'appimage' ? '下载后替换当前 AppImage 并重新启动。' : update.action === 'open-dmg' ? '下载后会打开安装包，把 Lua 拖进「应用程序」替换旧版即可。' : '将打开下载页面。'}</p>
+      <pre className="update-notes">{update.notes.replace(/^#+\s*/gm, '').trim() || '暂无更新说明。'}</pre>
+      {updateProgress && <div className="update-progress"><div><span>正在下载并校验</span><span>{Math.round(updateProgress.received / Math.max(1, updateProgress.total) * 100)}%</span></div><progress value={updateProgress.received} max={updateProgress.total} /></div>}
+      <div className="modal-actions"><button type="button" className="button secondary" disabled={Boolean(updateProgress)} onClick={() => setUpdateOpen(false)}>稍后</button><button type="button" className="button primary" disabled={Boolean(updateProgress)} onClick={async () => {
+        try {
+          setUpdateProgress(update.asset ? { received: 0, total: update.asset.size } : undefined)
+          const result = await call<string>('installUpdate')
+          if (result === 'opened-installer') setToast('安装包已打开，请按提示替换旧版本。')
+          if (result === 'opened-page') setUpdateOpen(false)
+        } catch (error) { setToast(errorText(error)); setUpdateProgress(undefined) }
+      }}>{updateProgress ? <Spinner size={16} /> : <Download size={16} />}{update.action === 'page' ? '打开下载页' : '下载并更新'}</button></div>
+    </Dialog>}
     {crash && <Dialog title={crash.analysis.title} close={() => setCrash(undefined)}>
       <div className="crash-summary"><FileWarning size={22} /><div><strong>{instances.find(item => item.id === crash.instanceId)?.name || '游戏'} 意外退出</strong>{crash.analysis.description && <p>崩溃报告：{crash.analysis.description}</p>}</div></div>
       <h3 className="crash-heading">可以这样解决</h3>
@@ -709,7 +742,8 @@ function globalWindowSize(text: string, min: number, max: number, label: string)
   if (!text.trim() || !Number.isInteger(value) || value < min || value > max) throw new Error(`${label}需要填写 ${min}–${max} 之间的整数。`)
   return value
 }
-function SettingsView({ settings, rootDir, save, instance, javaTasks, theme, setTheme, minimizeOnLaunch, setMinimizeOnLaunch }: { settings: Settings; rootDir: string; save: (settings: Settings) => Promise<void>; instance?: Instance; javaTasks: JavaRuntimeTask[]; theme: ThemeMode; setTheme: (theme: ThemeMode) => void; minimizeOnLaunch: boolean; setMinimizeOnLaunch: (value: boolean) => void }) {
+function SettingsView({ settings, rootDir, save, instance, javaTasks, theme, setTheme, minimizeOnLaunch, setMinimizeOnLaunch, autoUpdate, setAutoUpdate, checkUpdate, update, openUpdate }: { settings: Settings; rootDir: string; save: (settings: Settings) => Promise<void>; instance?: Instance; javaTasks: JavaRuntimeTask[]; theme: ThemeMode; setTheme: (theme: ThemeMode) => void; minimizeOnLaunch: boolean; setMinimizeOnLaunch: (value: boolean) => void; autoUpdate: boolean; setAutoUpdate: (value: boolean) => void; checkUpdate: () => Promise<void>; update: UpdateInfo | null; openUpdate: () => void }) {
+  const [checking, setChecking] = useState(false)
   const initialDraft = () => ({ ...settings, memoryMode: settings.memoryMode || 'auto', manualJavaPath: settings.manualJavaPath || settings.javaPath || '' })
   const [draft, setDraft] = useState(initialDraft)
   const [advancedDraft, setAdvancedDraft] = useState(() => advancedSettingsDraft(settings))
@@ -782,6 +816,8 @@ function SettingsView({ settings, rootDir, save, instance, javaTasks, theme, set
     <section className="settings-card launcher-preferences"><div className="settings-card-heading"><AppWindow size={20} /><div><h2>启动器</h2><p>这些选项立即生效，只保存在这台电脑上。</p></div></div>
       <div className="setting-row"><div><h3>外观</h3><p>跟随系统会在系统切换深色模式时自动变化。</p></div><div className="segmented" role="group" aria-label="外观">{(['system', 'light', 'dark'] as const).map(mode => <button type="button" key={mode} className={theme === mode ? 'selected' : ''} aria-pressed={theme === mode} onClick={() => setTheme(mode)}>{themeLabels[mode]}</button>)}</div></div>
       <label className="setting-row toggle-row"><div><h3>启动游戏后最小化启动器</h3><p>游戏窗口出现后把启动器收起，不影响运行日志记录。</p></div><input type="checkbox" className="switch" checked={minimizeOnLaunch} onChange={event => setMinimizeOnLaunch(event.target.checked)} /></label>
+      <label className="setting-row toggle-row"><div><h3>自动检查更新</h3><p>启动时从 GitHub 检查新版本，有更新会在左下角提示，不会自动安装。</p></div><input type="checkbox" className="switch" checked={autoUpdate} onChange={event => setAutoUpdate(event.target.checked)} /></label>
+      <div className="setting-row toggle-row"><div><h3>当前版本 {APP_VERSION}</h3><p>{update ? `可以更新到 ${update.version}` : '下载安装包会核对 GitHub 公布的 SHA-256。'}</p></div>{update ? <button type="button" className="button primary" onClick={openUpdate}><Sparkles size={16} />更新到 {update.version}</button> : <button type="button" className="button secondary" disabled={!isDesktop || checking} onClick={async () => { setChecking(true); try { await checkUpdate() } finally { setChecking(false) } }}>{checking ? <Spinner size={16} /> : <RefreshCw size={16} />}检查更新</button>}</div>
     </section>
     <form className="settings-form" noValidate onSubmit={event => { event.preventDefault(); void submit() }}>
     <fieldset className="settings-fieldset" disabled={saving}>
@@ -798,7 +834,7 @@ function SettingsView({ settings, rootDir, save, instance, javaTasks, theme, set
       <p className="form-hint">宽高只影响 Minecraft 游戏窗口。全屏时保留宽高，回到窗口模式后使用。</p>
       <button type="button" className="text-button" onClick={() => changeAdvanced({ jvmMode: 'default', widthMode: 'default', heightMode: 'default', fullscreen: 'default' })}>将 JVM 与窗口设置恢复默认</button>
     </section>
-    <section className="settings-card"><div className="settings-card-heading"><Download size={20} /><div><h2>下载与存储</h2><p>游戏与依赖文件统一保存在启动器数据目录。</p></div></div><div className="setting-row"><div><h3>并行下载数</h3><p>网络不稳定时，可以减少同时下载的文件数。</p></div><select aria-label="并行下载数" value={draft.concurrentDownloads} onChange={event => setDraft({ ...draft, concurrentDownloads: Number(event.target.value) })}>{[2, 4, 6, 8, 12].map(value => <option key={value} value={value}>{value} 个文件</option>)}</select></div><div className="data-directory"><HardDrive size={18} /><div><strong>数据目录</strong><code>{rootDir}</code></div></div></section>
+    <section className="settings-card"><div className="settings-card-heading"><Download size={20} /><div><h2>下载与存储</h2><p>游戏与依赖文件统一保存在启动器数据目录。</p></div></div><div className="setting-row download-source-row"><div><h3>下载源</h3><p>国内网络建议使用镜像（BMCLAPI，由社区提供）。所有游戏文件下载后都会按官方校验值核对。模组和整合包始终从 Modrinth / BBSMC 下载。</p></div><select aria-label="下载源" value={draft.downloadSource ?? defaultDownloadSource()} onChange={event => setDraft({ ...draft, downloadSource: event.target.value as Settings['downloadSource'] })}><option value="auto">自动：官方优先，失败换镜像</option><option value="mirror">国内镜像优先</option><option value="official">只用官方服务器</option></select></div><div className="setting-row"><div><h3>并行下载数</h3><p>网络不稳定时，可以减少同时下载的文件数。</p></div><select aria-label="并行下载数" value={draft.concurrentDownloads} onChange={event => setDraft({ ...draft, concurrentDownloads: Number(event.target.value) })}>{[2, 4, 6, 8, 12].map(value => <option key={value} value={value}>{value} 个文件</option>)}</select></div><div className="data-directory"><HardDrive size={18} /><div><strong>数据目录</strong><code>{rootDir}</code></div></div></section>
     <section className="settings-card about-card"><Logo /><div><h3>Lua 未央 <span className="version-tag">{APP_VERSION} Alpha</span></h3><p>独立开源的 Minecraft Java 启动器。</p><small>Minecraft 是 Mojang 的商标。本项目与 Mojang、Microsoft 无关联。</small></div></section>
     </fieldset>
     {error && <ErrorBox message={error} retry={!saving ? () => void submit() : undefined} />}<div className="settings-save"><span className="form-hint" role="status">{saving ? '正在保存设置…' : dirty ? '有尚未保存的设置，切页后草稿保留' : '设置已保存'}</span><button type="button" className="button secondary" disabled={saving} onClick={() => { const next = initialDraft(); const advanced = advancedSettingsDraft(settings); setDraft(next); setAdvancedDraft(advanced); setSavedDraft(signature(next, advanced)); setResetKey(value => value + 1); setError('') }}>撤销更改</button><button className="button primary" disabled={saving || !dirty}>{saving ? <Spinner size={16} /> : <Check size={16} />}保存设置</button></div>

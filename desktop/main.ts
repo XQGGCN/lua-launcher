@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto'
 import { app, BrowserWindow, dialog, ipcMain, Notification, safeStorage, shell } from 'electron'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { spawn } from 'node:child_process'
+import { checkForUpdate, downloadUpdate, replaceAppImage, type UpdateInfo } from './updater'
 import { LauncherCore, type CoreEvent, type LauncherSettings } from './core'
 import { AuthError, AuthManager, type DeviceCode } from './auth'
 import { AuthConfigStore } from './auth-config'
@@ -25,6 +27,8 @@ let authConfig: AuthConfigStore
 let packSelections: PackSelections<Awaited<ReturnType<LauncherCore['inspectModpack']>>>
 let choosingPack = false
 const worldZipSelections = new Map<string, { file: string; expires: number }>()
+let updateInfo: UpdateInfo | null = null
+let updating = false
 let accounts: AccountCoordinator
 const launches = new LaunchPreparations()
 let authState: {
@@ -220,6 +224,40 @@ if (hasLock) app.whenReady().then(async () => {
         shell.showItemInFolder(await core.worldExportPath(text(args[0], 80), text(args[1], 80)))
         return
       }
+      case 'checkUpdate': {
+        updateInfo = await checkForUpdate(app.getVersion(), { appImage: process.env.APPIMAGE })
+        return updateInfo
+      }
+      case 'installUpdate': {
+        if (!updateInfo) throw new Error('请先检查更新')
+        if (updating) throw new Error('更新正在下载')
+        if (!updateInfo.asset || updateInfo.action === 'page') {
+          const page = new URL(updateInfo.page)
+          if (page.protocol !== 'https:' || page.hostname !== 'github.com') throw new Error('更新页面地址无效')
+          await shell.openExternal(page.href)
+          return 'opened-page'
+        }
+        if (core.snapshot().instances.some(item => item.status === 'running')) throw new Error('请先关闭正在运行的游戏，再更新启动器')
+        updating = true
+        try {
+          const file = await downloadUpdate(updateInfo.asset, path.join(app.getPath('temp'), 'lua-launcher-update'), {
+            onProgress: (received, total) => send({ type: 'updateProgress', received, total }),
+          })
+          if (updateInfo.action === 'installer') {
+            spawn(file, [], { detached: true, stdio: 'ignore', windowsHide: false }).unref()
+            setTimeout(() => app.quit(), 800)
+            return 'installing'
+          }
+          if (updateInfo.action === 'appimage' && process.env.APPIMAGE) {
+            await replaceAppImage(file, process.env.APPIMAGE)
+            setTimeout(() => { app.relaunch(); app.exit(0) }, 500)
+            return 'restarting'
+          }
+          const error = await shell.openPath(file)
+          if (error) throw new Error('无法打开下载的安装包')
+          return 'opened-installer'
+        } finally { updating = false }
+      }
       case 'deleteInstance': {
         const id = text(args[0], 80)
         if (launches.has(id)) throw new Error('请先完成或取消此实例的启动准备')
@@ -323,7 +361,7 @@ if (hasLock) app.whenReady().then(async () => {
         // A renderer's second partial save must not restore an older snapshot.
         const patch: Partial<LauncherSettings> = {}
         const keys = ['memoryMode', 'memoryMb', 'javaPath', 'manualJavaPath', 'jvmArgs',
-          'windowWidth', 'windowHeight', 'fullscreen', 'concurrentDownloads'] as const
+          'windowWidth', 'windowHeight', 'fullscreen', 'concurrentDownloads', 'downloadSource'] as const
         for (const key of keys) if (Object.hasOwn(input, key)) {
           ;(patch as Record<string, unknown>)[key] = input[key]
         }

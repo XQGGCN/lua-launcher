@@ -15,7 +15,7 @@ const methods = new Set([
   'prepareModToggle', 'setModEnabled',
   'worldDetails', 'worldDetailsWithSeed',
   'worldBackupTasks', 'worldBackups', 'backupWorld', 'cancelWorldBackup', 'openWorldBackup',
-  'deleteInstance', 'duplicateInstance', 'openCrashReports', 'minimizeWindow', 'setTitleBarTheme',
+  'checkUpdate', 'installUpdate', 'deleteInstance', 'duplicateInstance', 'openCrashReports', 'minimizeWindow', 'setTitleBarTheme',
   'worldMap', 'worldMapTile', 'chooseWorldZip', 'importWorldZip', 'restoreWorldBackup', 'cancelWorldRestore',
   'worldExportTasks', 'worldExports', 'exportWorldBackup', 'cancelWorldExport', 'verifyWorldExport', 'openWorldExport',
 ])

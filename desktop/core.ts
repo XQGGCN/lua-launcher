@@ -19,6 +19,7 @@ import { readWorldDetails, type WorldRead } from './world-details'
 import type { WorldSelection, WorldSource, WorldDetails, WorldSeed, WorldMetadata } from './world-types'
 import { createWorldDirectoryBackup, listWorldDirectoryBackups, worldBackupDirectory, WorldBackupError } from './world-backup'
 import type { WorldBackupTask, WorldBackupResult, WorldBackupList } from './world-backup-types'
+import { createMirrorFetch, defaultDownloadSource, isDownloadSource, type DownloadSource } from './download-mirror'
 import { analyzeCrash, type CrashAnalysis } from './crash-analysis'
 import { readWorldMapInfo, renderRegionTile, type MapDimension, type WorldMapInfo } from './world-map'
 import { inspectWorldZip, restoreWorldFromBackup, restoreWorldFromZip, safeWorldFolderName, type WorldRestoreResult, type WorldZipInspection } from './world-restore'
@@ -106,6 +107,8 @@ export interface LauncherSettings {
   windowHeight?: number
   fullscreen?: boolean
   concurrentDownloads: number
+  /** Official servers, the BMCLAPI mirror, or automatic fallback between them. */
+  downloadSource?: DownloadSource
 }
 export interface LauncherSnapshot {
   instances: Instance[]
@@ -390,7 +393,10 @@ export class LauncherCore {
 
   constructor(rootDir: string, private readonly emit: (event: CoreEvent) => void = () => {}, options: CoreOptions = {}) {
     this.rootDir = path.resolve(rootDir)
-    this.fetcher = options.fetch ?? globalThis.fetch
+    // Injected fetchers (tests) are used as-is; the real network goes through the optional mirror.
+    this.fetcher = options.fetch ?? createMirrorFetch(globalThis.fetch, {
+      source: () => this.settings.downloadSource ?? defaultDownloadSource(),
+    })
     this.spawnProcess = options.spawn ?? spawn
     this.renameFile = options.renameFile ?? fs.rename
     this.stateRename = options.stateRename ?? fs.rename
@@ -1142,6 +1148,7 @@ export class LauncherCore {
         (input.javaPath !== '' && input.javaPath !== 'java' && !path.isAbsolute(input.javaPath))) {
       throw new Error('请选择 Java 可执行文件的绝对路径')
     }
+    if (input.downloadSource !== undefined && !isDownloadSource(input.downloadSource)) throw new Error('无效的下载源')
     if (!Number.isInteger(input.concurrentDownloads) || input.concurrentDownloads < 1 || input.concurrentDownloads > 16) {
       throw new Error('并发下载数需要在 1–16 之间')
     }
@@ -1154,7 +1161,7 @@ export class LauncherCore {
       windowHeight: input.windowHeight, fullscreen: input.fullscreen })
     return { memoryMode: input.memoryMode ?? 'auto', memoryMb: input.memoryMb, javaPath: input.javaPath === 'java' ? '' : input.javaPath,
       manualJavaPath: input.javaPath && input.javaPath !== 'java' ? input.javaPath : manualJavaPath === 'java' ? '' : manualJavaPath,
-      concurrentDownloads: input.concurrentDownloads, ...advanced }
+      concurrentDownloads: input.concurrentDownloads, ...(input.downloadSource ? { downloadSource: input.downloadSource } : {}), ...advanced }
   }
 
   async updateSettings(settings: Partial<LauncherSettings>): Promise<LauncherSnapshot> {

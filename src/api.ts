@@ -41,7 +41,7 @@ export interface Instance {
     applied: boolean
   }
 }
-export interface Settings extends InstanceOptions { memoryMode: 'auto' | 'manual'; memoryMb: number; javaPath: string; concurrentDownloads: number }
+export interface Settings extends InstanceOptions { memoryMode: 'auto' | 'manual'; memoryMb: number; javaPath: string; concurrentDownloads: number; downloadSource?: 'auto' | 'mirror' | 'official' }
 export interface MemoryInfo {
   totalMb: number
   availableMb: number
@@ -101,6 +101,7 @@ export type LauncherEvent = Progress | DeviceCode | LogEvent
   | { type: 'javaTask'; task: import('../desktop/core').JavaRuntimeTask }
   | { type: 'worldBackupTask'; task: import('../desktop/world-backup-types').WorldBackupTask }
   | { type: 'worldExportTask'; task: import('../desktop/world-zip-types').WorldZipTask }
+  | { type: 'updateProgress'; received: number; total: number }
   | { type: 'crash'; instanceId: string; analysis: import('../desktop/crash-analysis').CrashAnalysis }
 
 declare global {
@@ -115,6 +116,7 @@ declare global {
 export const isDesktop = Boolean(window.launcher)
 export const platform = window.launcher?.platform ?? 'web'
 export type { CrashAnalysis } from '../desktop/crash-analysis'
+export type { UpdateInfo } from '../desktop/updater'
 const defaultSnapshot: Snapshot = {
   instances: [],
   settings: { memoryMode: 'auto', memoryMb: 4096, javaPath: '', manualJavaPath: '', concurrentDownloads: 6 },
