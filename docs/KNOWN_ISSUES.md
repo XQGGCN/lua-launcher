@@ -4,7 +4,7 @@
 
 | ID / 类型 | 条件与影响 | 证据与边界 | 当前处理 |
 | --- | --- | --- | --- |
-| KNOWN-001 / 待实测 | 2026-10-22 维护者确认 Minecraft API 接入申请已通过审核；0.8.0 起正版登录对外开放 | 此前 Microsoft、Xbox/XSTS 通过而 Minecraft 接口返回 403；批准后的真实账户登录与游戏启动尚需在各平台实测记录 | 发布后按 AC-AUTH-02 / AC-GAME-01 实测；若仍出现 `CLIENT_CONFIGURATION`，检查 Client ID 是否为获批应用 |
+| KNOWN-001 / 已解决（登录） | 2026-10-22 Minecraft API 接入获批；当天 macOS 真实账户登录、所有权与档案检查实测通过 | 此前 Microsoft、Xbox/XSTS 通过而 Minecraft 接口返回 403；批准后的真实账户登录与游戏启动尚需在各平台实测记录 | 发布后按 AC-AUTH-02 / AC-GAME-01 实测；若仍出现 `CLIENT_CONFIGURATION`，检查 Client ID 是否为获批应用 |
 | KNOWN-002 / 已发布体验限制 | 0.3 没有自动下载 Java，缺正确版本或架构时安装器/启动准备失败 | 0.4 本地已实现自动准备；测试和 macOS 实测范围见验收矩阵 | 0.3 可自行安装并选择匹配 Java；0.4 当前提交三平台 CI 与发布确认前，不称公开可用 |
 | KNOWN-003 / 来源限制 | Mojang index 缺 Linux ARM64，macOS ARM64 的 beta 为空 | 2026-10-21 官方 index 与 gamma/delta/epsilon manifest 复核 | 精确匹配组件/架构，不静默使用 x64 或跨组件；保留手动 Java，Temurin 补充另行实现 |
 | KNOWN-004 / 实验接入 | BBSMC 某些 CDN 返回 HTML 验证页，部分版本是外部网盘 | 真实 Fabric API 下载曾被网页验证阻止；搜索和版本接口可用 | 正确拒绝错误文件，提供官网入口，不绕过访问权限、购买或验证 |
