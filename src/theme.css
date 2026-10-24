@@ -426,11 +426,11 @@ progress::-moz-progress-bar { background: var(--accent); border-radius: 6px; }
 
 /* native window chrome */
 .window-drag { position: fixed; top: 0; left: var(--sidebar); right: 0; height: 36px; z-index: 40; -webkit-app-region: drag; app-region: drag; }
-[data-platform="win32"] .window-drag { right: 140px; }
-[data-platform="darwin"] .sidebar { padding-top: 46px; -webkit-app-region: drag; app-region: drag; }
-[data-platform="darwin"] .sidebar button, [data-platform="darwin"] .sidebar a { -webkit-app-region: no-drag; app-region: no-drag; }
-[data-platform="win32"] .page-content, [data-platform="darwin"] .page-content { padding-top: 44px; }
-[data-platform="darwin"] .window-drag { height: 32px; }
+:root[data-platform="win32"] .app-shell[data-window-chrome="integrated"] .window-drag { right: 140px; }
+:root[data-platform="darwin"] .app-shell[data-window-chrome="integrated"] .sidebar { padding-top: 46px; -webkit-app-region: drag; app-region: drag; }
+:root[data-platform="darwin"] .app-shell[data-window-chrome="integrated"] .sidebar button, :root[data-platform="darwin"] .app-shell[data-window-chrome="integrated"] .sidebar a { -webkit-app-region: no-drag; app-region: no-drag; }
+:root[data-platform="win32"] .app-shell[data-window-chrome="integrated"] .page-content, :root[data-platform="darwin"] .app-shell[data-window-chrome="integrated"] .page-content { padding-top: 44px; }
+:root[data-platform="darwin"] .app-shell[data-window-chrome="integrated"] .window-drag { height: 32px; }
 @media (max-width: 600px) { .window-drag { display: none; } }
 .version-table { overflow: visible; }
 .version-table > .version-row:first-child { border-top-left-radius: var(--radius); border-top-right-radius: var(--radius); }

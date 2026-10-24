@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { app, BrowserWindow, dialog, ipcMain, Notification, safeStorage, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Notification, safeStorage, screen, shell } from 'electron'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { spawn } from 'node:child_process'
@@ -13,6 +13,9 @@ import { getMemoryInfo } from './memory'
 import { LaunchPreparations } from './launch-preparation'
 import type { InventoryKind } from './resource-inventory'
 import { resourceKind } from './resource-catalog'
+import { WindowPreferenceStore } from './window-preferences'
+import { resolveWindowPlacement } from './window-geometry'
+import { boundedWindowFlush, WindowController } from './window-controller'
 
 declare const __LUA_MICROSOFT_CLIENT_ID__: string
 
@@ -37,6 +40,15 @@ let authState: {
 const logs = new Map<string, Extract<CoreEvent, { type: 'log' }>[]>()
 const devURL = process.env.LUA_DEV_URL
 const root = process.env.LUA_DATA_DIR || path.join(app.getPath('userData'), 'launcher')
+const windowPreferences = new WindowPreferenceStore(root)
+let windowController: WindowController | undefined
+let windowCreation: Promise<void> | undefined
+let quitting = false
+let quitFlushed = false
+let displayTimer: ReturnType<typeof setTimeout> | undefined
+// Auto-selected Linux backends do not expose a reliable position capability here.
+// Only explicit X11 opts into positioning; no WAYLAND_DISPLAY guess or fake 0,0 state.
+const positionManagedByDesktop = process.platform === 'linux' && app.commandLine.getSwitchValue('ozone-platform') !== 'x11'
 const entryFile = path.join(__dirname, '../dist/index.html')
 
 function send(event: unknown) {
@@ -94,16 +106,27 @@ function openExternal(input: unknown) {
   return shell.openExternal(url.href)
 }
 
+function displayAreas() {
+  return { workAreas: screen.getAllDisplays().map(display => display.workArea), primary: screen.getPrimaryDisplay().workArea }
+}
 async function createWindow() {
-  // Frameless chrome that matches the night sidebar: macOS keeps its traffic lights inset,
-  // Windows draws native caption buttons over the content area.
-  const chrome: Electron.BrowserWindowConstructorOptions = process.platform === 'darwin'
+  if (quitting || (window && !window.isDestroyed())) return
+  if (windowCreation) return windowCreation
+  windowCreation = (async () => {
+  await boundedWindowFlush(() => windowPreferences.flush())
+  if (quitting) return
+  const snapshot = windowPreferences.snapshot()
+  const effective = process.platform === 'linux' ? 'native' : snapshot.preferences.titleBarStyle
+  const { workAreas, primary } = displayAreas()
+  const placement = resolveWindowPlacement(snapshot.preferences.rememberBounds && !positionManagedByDesktop ? snapshot.state.normalBounds : undefined, workAreas, primary)
+  const chrome: Electron.BrowserWindowConstructorOptions = effective === 'native' ? { titleBarStyle: 'default' } : process.platform === 'darwin'
     ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 18, y: 18 } }
     : process.platform === 'win32'
       ? { titleBarStyle: 'hidden', titleBarOverlay: { color: '#f3f4f8', symbolColor: '#1d2233', height: 36 } }
       : {}
-  window = new BrowserWindow({
-    width: 1240, height: 840, minWidth: 880, minHeight: 640,
+  const localWindow = new BrowserWindow({
+    ...(positionManagedByDesktop ? { width: placement.bounds?.width ?? 1240, height: placement.bounds?.height ?? 840 } : placement.bounds ?? { width: 1240, height: 840 }),
+    minWidth: placement.minWidth, minHeight: placement.minHeight,
     backgroundColor: '#f3f4f8', title: 'Lua · 未央', ...chrome,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -111,24 +134,56 @@ async function createWindow() {
       webSecurity: true,
     },
   })
-  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
-  window.webContents.on('will-navigate', (event, url) => {
+  window = localWindow
+  const controller = new WindowController({ store: windowPreferences, window: localWindow, platform: process.platform,
+    effectiveTitleBarStyle: effective, positionManagedByDesktop, displays: displayAreas,
+    background: work => updateActivity.operation(work), changed: status => {
+      if (window === localWindow && !localWindow.isDestroyed()) localWindow.webContents.send('launcher:event', { type: 'windowPreferences', status })
+    } })
+  windowController = controller
+  localWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  localWindow.webContents.on('will-navigate', (event, url) => {
     const allowed = devURL ? new URL(url).origin === new URL(devURL).origin : url === pathToFileURL(entryFile).href
     if (!allowed) event.preventDefault()
   })
-  window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false))
-  window.webContents.session.setPermissionCheckHandler(() => false)
-  window.on('closed', () => { window = null })
+  localWindow.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false))
+  localWindow.webContents.session.setPermissionCheckHandler(() => false)
+  const capture = () => { if (!quitting) controller.capture() }
+  localWindow.on('move', capture); localWindow.on('resize', capture)
+  localWindow.on('maximize', () => { if (!quitting) controller.capture('maximize') })
+  localWindow.on('unmaximize', () => { if (!quitting) { controller.reconcile(); controller.capture('unmaximize') } })
+  localWindow.on('restore', () => { if (!quitting) { controller.reconcile(); capture() } })
+  localWindow.on('leave-full-screen', () => { if (!quitting) { controller.reconcile(); capture() } })
+  let closeAllowed = false
+  let closing: Promise<void> | undefined
+  localWindow.on('close', event => {
+    if (closeAllowed || quitFlushed) return
+    event.preventDefault()
+    if (!closing) {
+      controller.capture()
+      closing = boundedWindowFlush(() => controller.flush()).then(() => { closeAllowed = true; if (!localWindow.isDestroyed()) localWindow.close() })
+      void closing.catch(() => {})
+    }
+  })
+  localWindow.on('closed', () => {
+    controller.stop()
+    if (window === localWindow) window = null
+    if (windowController === controller) windowController = undefined
+  })
+  if (snapshot.preferences.rememberBounds && snapshot.state.maximized) localWindow.maximize()
   if (devURL) {
     if (new URL(devURL).origin !== 'http://127.0.0.1:5173') throw new Error('无效的开发服务地址')
-    await window.loadURL(devURL)
-  } else await window.loadFile(entryFile)
+    await localWindow.loadURL(devURL)
+  } else await localWindow.loadFile(entryFile)
+  })()
+  try { await windowCreation } finally { windowCreation = undefined }
 }
 
 if (process.platform === 'win32') app.setAppUserModelId('io.lua.launcher')
 if (hasLock) app.whenReady().then(async () => {
   core = new LauncherCore(root, event)
   await core.init()
+  await windowPreferences.initialize()
   authConfig = new AuthConfigStore(root, process.env.LUA_MICROSOFT_CLIENT_ID || __LUA_MICROSOFT_CLIENT_ID__)
   auth = new AuthManager(root, {
     seal: (plain: string) => {
@@ -200,6 +255,7 @@ if (hasLock) app.whenReady().then(async () => {
   // These methods only return already-held state. Every other dispatch is tracked
   // through actual completion, and future methods are blocked during an update by default.
   ipcMain.handle('launcher:call', async (ipcEvent, method: unknown, ...args: unknown[]) => {
+    if (quitting) throw new Error('启动器正在退出')
     const sender = ipcEvent.senderFrame
     const trusted = !!sender && (devURL
       ? new URL(sender.url).origin === new URL(devURL).origin
@@ -212,6 +268,14 @@ if (hasLock) app.whenReady().then(async () => {
     if (method === 'cancelUpdate') { updates.cancel(); return }
     const dispatch = async () => {
     switch (method) {
+      case 'windowPreferences': return windowController?.status()
+      case 'updateWindowPreferences': {
+        const patch = object(args[0])
+        if (process.platform === 'linux' && 'titleBarStyle' in patch) throw new Error('此平台当前使用系统原生标题栏')
+        await windowPreferences.updatePreferences(patch)
+        return windowController?.preferencesChanged()
+      }
+      case 'resetWindowPlacement': return windowController?.resetPlacement()
       case 'snapshot': return core.snapshot()
       case 'versions': return core.versions()
       case 'fabricVersions': return core.fabricVersions(text(args[0], 80))
@@ -357,7 +421,7 @@ if (hasLock) app.whenReady().then(async () => {
       case 'minimizeWindow': { window?.minimize(); return }
       case 'setTitleBarTheme': {
         const dark = args[0] === 'dark'
-        if (process.platform === 'win32' && window) {
+        if (process.platform === 'win32' && window && windowController?.status().effectiveTitleBarStyle === 'integrated') {
           try { window.setTitleBarOverlay({ color: dark ? '#12152a' : '#f3f4f8', symbolColor: dark ? '#e8eaf4' : '#1d2233' }) } catch { /* overlay not enabled */ }
         }
         return
@@ -577,6 +641,13 @@ if (hasLock) app.whenReady().then(async () => {
     return updateActivity.dispatch(method, dispatch)
   })
   await createWindow()
+  const displayChanged = () => {
+    if (quitting) return
+    if (displayTimer) clearTimeout(displayTimer)
+    displayTimer = setTimeout(() => { displayTimer = undefined; if (!quitting) windowController?.reconcile() }, 150)
+  }
+  screen.on('display-removed', displayChanged)
+  screen.on('display-metrics-changed', displayChanged)
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) void createWindow() })
 }).catch(error => {
   console.error('Lua could not start:', error instanceof Error ? error.message : 'unknown error')
@@ -585,7 +656,20 @@ if (hasLock) app.whenReady().then(async () => {
 
 app.on('second-instance', () => { window?.show(); window?.focus() })
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
-app.on('before-quit', () => {
+app.on('before-quit', event => {
+  if (!quitFlushed && windowController) {
+    event.preventDefault()
+    if (quitting) return
+    // Capture before the quitting flag suppresses new event callbacks and IPC.
+    windowController.capture()
+    quitting = true
+    if (displayTimer) clearTimeout(displayTimer)
+    core?.cancelPendingOperations(); accounts?.cancelLogin(); launches.close()
+    const controller = windowController
+    void boundedWindowFlush(() => controller.flush()).finally(() => { quitFlushed = true; app.quit() })
+    return
+  }
+  quitting = true
   updates?.close()
   launches.close()
   core?.cancelPendingOperations()

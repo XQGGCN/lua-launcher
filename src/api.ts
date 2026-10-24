@@ -1,6 +1,7 @@
 import { categoryFacet } from './mod-categories'
 import { resolveInstanceOptions, validateInstanceOptions, type InstanceOptions } from '../desktop/instance-options'
 export type { InstanceOptions, ResolvedInstanceOptions } from '../desktop/instance-options'
+export type { WindowTitleBarStyle, WindowPreferences, WindowPreferencesStatus } from '../desktop/window-preferences-types'
 export type { PackPlanCounts, PackPlanSummary, PackPlanRow, PackPlanPage, PackPlanPageOptions } from '../desktop/modpack-plan-types'
 export type { InventoryKind, InventoryItem, ResourceInventory } from '../desktop/resource-inventory'
 export type { InstanceInventory } from '../desktop/core'
@@ -101,6 +102,7 @@ export interface Progress { type: 'progress'; instanceId: string; phase: string;
 export interface DeviceCode { type: 'deviceCode'; userCode: string; verificationUri: string; expiresAt: number }
 export interface LogEvent { type: 'log'; instanceId: string; level: string; message: string }
 export type LauncherEvent = Progress | DeviceCode | LogEvent
+  | { type: 'windowPreferences'; status: import('../desktop/window-preferences-types').WindowPreferencesStatus }
   | { type: 'state'; snapshot: Snapshot }
   | { type: 'account'; account: Account | null }
   | ({ type: 'authStatus' } & AuthStatus)

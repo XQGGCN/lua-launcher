@@ -14,6 +14,8 @@ import ModpacksView from './components/ModpacksView'
 import type { PackPlanSummary } from '../desktop/modpack-plan-types'
 import MemorySettings from './components/MemorySettings'
 import JavaSettings from './components/JavaSettings'
+import WindowPreferences, { type WindowPreferencesControl } from './components/WindowPreferences'
+import type { WindowPreferences as LauncherWindowPreferences, WindowPreferencesStatus } from './api'
 import InstanceSettings, { createInstanceSettingsDraft, parseInstanceJvmArgs, type InstanceSettingsDraft } from './components/InstanceSettings'
 import InstanceContent from './components/InstanceContent'
 import ResourcesView, { type ResourceInstallTask } from './components/ResourcesView'
@@ -80,14 +82,57 @@ function Logo({ small = false }: { small?: boolean }) {
 export default function App() {
   const [view, setView] = useState<View>('library')
   const [theme, setTheme] = useState<ThemeMode>(readTheme)
+  const [windowStatus, setWindowStatus] = useState<WindowPreferencesStatus | null>(null)
+  const [windowBusy, setWindowBusy] = useState(false)
+  const [windowError, setWindowError] = useState('')
+  const [windowNotice, setWindowNotice] = useState('')
+  const windowRequest = useRef(false)
+  const windowStatusRevision = useRef(0)
+  const windowMounted = useRef(false)
+  const runWindowPreference = useCallback(async (action: 'read' | 'update' | 'reset', patch?: Partial<LauncherWindowPreferences>) => {
+    if (!isDesktop || windowRequest.current) return
+    windowRequest.current = true
+    setWindowBusy(true); setWindowError(''); setWindowNotice('')
+    const revision = windowStatusRevision.current
+    try {
+      const status = action === 'update'
+        ? await call<WindowPreferencesStatus>('updateWindowPreferences', patch)
+        : await call<WindowPreferencesStatus>(action === 'reset' ? 'resetWindowPlacement' : 'windowPreferences')
+      // Main-process events may describe a newer window or save failure than
+      // the response to this request. A late read must not replace that state.
+      if (windowMounted.current && revision === windowStatusRevision.current) {
+        setWindowStatus(status)
+        if (!status.issue && action !== 'read') setWindowNotice(action === 'reset'
+          ? status.positionManagedByDesktop ? '已恢复默认窗口大小，位置由桌面环境安排。' : '已恢复默认大小，并将窗口移回可见区域。'
+          : '窗口偏好已保存。')
+      }
+    } catch (error) {
+      if (windowMounted.current && revision === windowStatusRevision.current) setWindowError(errorText(error))
+    } finally {
+      windowRequest.current = false
+      if (windowMounted.current) setWindowBusy(false)
+    }
+  }, [])
+  useEffect(() => {
+    windowMounted.current = true
+    const unsubscribe = onEvent(event => {
+      if (event.type !== 'windowPreferences') return
+      ++windowStatusRevision.current
+      setWindowStatus(event.status); setWindowError(''); setWindowNotice('')
+    })
+    void runWindowPreference('read')
+    return () => { windowMounted.current = false; unsubscribe() }
+  }, [runWindowPreference])
+  const windowChrome = windowStatus?.effectiveTitleBarStyle ?? 'native'
+  useEffect(() => { document.documentElement.dataset.windowChrome = windowChrome }, [windowChrome])
   useEffect(() => {
     applyTheme(theme)
-    if (platform !== 'win32') return
+    if (platform !== 'win32' || windowChrome !== 'integrated') return
     const media = window.matchMedia('(prefers-color-scheme: dark)')
     const sync = () => { void call('setTitleBarTheme', theme === 'system' ? (media.matches ? 'dark' : 'light') : theme).catch(() => {}) }
     sync(); media.addEventListener('change', sync)
     return () => media.removeEventListener('change', sync)
-  }, [theme])
+  }, [theme, windowChrome])
   const [settingsOpened, setSettingsOpened] = useState(false)
   const [resourcesOpened, setResourcesOpened] = useState(false)
   const [resourceTasks, setResourceTasks] = useState<ResourceInstallTask[]>([])
@@ -512,7 +557,7 @@ export default function App() {
   useEffect(() => { document.title = view === 'library' ? 'Lua · 未央' : `${pageTitles[view]} · Lua` }, [view])
   const nextTheme: ThemeMode = theme === 'system' ? 'light' : theme === 'light' ? 'dark' : 'system'
 
-  return <div className="app-shell">
+  return <div className="app-shell" data-window-chrome={windowChrome}>
     <aside className="sidebar">
       <a className="brand" href="#library" onClick={event => { event.preventDefault(); changeView('library') }} aria-label="Lua 未央，返回启动页"><Logo /><span>Lua<small>未央</small></span></a>
       <nav aria-label="主导航">{navigation.map(item => <button key={item.id} className={`nav-item ${view === item.id ? 'active' : ''}`} onClick={() => changeView(item.id)} aria-current={view === item.id ? 'page' : undefined}><item.icon size={18} /><span>{item.label}</span>{item.id === 'downloads' && downloadCount > 0 && <span className="nav-count">{downloadCount}</span>}</button>)}</nav>
@@ -525,7 +570,7 @@ export default function App() {
         <div className="sidebar-note">{isDesktop ? `版本 ${APP_VERSION}` : '浏览器预览'}</div>
       </div>
     </aside>
-    {(platform === 'win32' || platform === 'darwin') && <div className="window-drag" aria-hidden="true" />}
+    {windowChrome === 'integrated' && (platform === 'win32' || platform === 'darwin') && <div className="window-drag" aria-hidden="true" />}
     <main className={`main-panel view-${view}`}>
       <div className="page-content">
         {!isDesktop && <div className="preview-notice"><Monitor size={15} /><span>这是浏览器预览：可以浏览模组和整合包，安装与启动游戏需要使用桌面版。</span></div>}
@@ -591,7 +636,7 @@ export default function App() {
         {view === 'downloads' && <DownloadsView tab={downloadTab} setTab={setDownloadTab} instances={instances} progress={progress} busy={busy} taskErrors={taskErrors} packTasks={packTasks} javaTasks={javaTasks} resourceTasks={resourceTasks} cancelResource={cancelResource} backupTasks={backupTasks} cancelBackup={cancelWorldBackup} openBackup={openWorldBackup} showContent={showInstanceContent} cancelJava={async id => { await call('cancelJavaInstall', id) }} retryJava={async major => { await call('installJava', major) }} download={downloadGame} install={installInstance} cancel={cancelDownload} showGame={id => { setSelectedId(id); changeView('library') }} showLogs={id => { setSelectedId(id); changeView('logs') }} showPacks={source => { if (source && source !== 'local') setResourceSource(source); changeView('modpacks') }} />}
         {view === 'skins' && <Suspense fallback={<div role="status"><Spinner />正在读取本地皮肤页面…</div>}><SkinsView /></Suspense>}
         {view === 'modpacks' && <ModpacksView source={resourceSource} setSource={setResourceSource} tasks={packTasks} progress={progress} commitPlan={commitPackPlan} cancel={cancelDownload} showTasks={showTasks} openUrl={openUrl} />}
-        {settingsOpened && snapshot && <div hidden={view !== 'settings'}><SettingsView autoUpdate={autoUpdate} setAutoUpdate={setAutoUpdate} checkUpdate={() => checkUpdate(true)} update={update} openUpdate={() => setUpdateOpen(true)} theme={theme} setTheme={setTheme} minimizeOnLaunch={minimizeOnLaunch} setMinimizeOnLaunch={setMinimizeOnLaunch} instance={selectedInstance} settings={snapshot.settings} rootDir={snapshot.rootDir} javaTasks={javaTasks} save={async settings => {
+        {settingsOpened && snapshot && <div hidden={view !== 'settings'}><SettingsView windowPreferences={{ status: windowStatus, desktop: isDesktop, busy: windowBusy, error: windowError, notice: windowNotice, read: () => runWindowPreference('read'), update: patch => runWindowPreference('update', patch), resetPlacement: () => runWindowPreference('reset') }} autoUpdate={autoUpdate} setAutoUpdate={setAutoUpdate} checkUpdate={() => checkUpdate(true)} update={update} openUpdate={() => setUpdateOpen(true)} theme={theme} setTheme={setTheme} minimizeOnLaunch={minimizeOnLaunch} setMinimizeOnLaunch={setMinimizeOnLaunch} instance={selectedInstance} settings={snapshot.settings} rootDir={snapshot.rootDir} javaTasks={javaTasks} save={async settings => {
           const next = await call<Snapshot>('updateSettings', settings)
           // This response owns global settings only. Instance state may have
           // advanced through an event while this request was in flight.
@@ -749,7 +794,7 @@ function globalWindowSize(text: string, min: number, max: number, label: string)
   if (!text.trim() || !Number.isInteger(value) || value < min || value > max) throw new Error(`${label}需要填写 ${min}–${max} 之间的整数。`)
   return value
 }
-function SettingsView({ settings, rootDir, save, instance, javaTasks, theme, setTheme, minimizeOnLaunch, setMinimizeOnLaunch, autoUpdate, setAutoUpdate, checkUpdate, update, openUpdate }: { settings: Settings; rootDir: string; save: (settings: Settings) => Promise<void>; instance?: Instance; javaTasks: JavaRuntimeTask[]; theme: ThemeMode; setTheme: (theme: ThemeMode) => void; minimizeOnLaunch: boolean; setMinimizeOnLaunch: (value: boolean) => void; autoUpdate: boolean; setAutoUpdate: (value: boolean) => void; checkUpdate: () => Promise<void>; update: UpdateInfo | null; openUpdate: () => void }) {
+function SettingsView({ windowPreferences, settings, rootDir, save, instance, javaTasks, theme, setTheme, minimizeOnLaunch, setMinimizeOnLaunch, autoUpdate, setAutoUpdate, checkUpdate, update, openUpdate }: { windowPreferences: WindowPreferencesControl; settings: Settings; rootDir: string; save: (settings: Settings) => Promise<void>; instance?: Instance; javaTasks: JavaRuntimeTask[]; theme: ThemeMode; setTheme: (theme: ThemeMode) => void; minimizeOnLaunch: boolean; setMinimizeOnLaunch: (value: boolean) => void; autoUpdate: boolean; setAutoUpdate: (value: boolean) => void; checkUpdate: () => Promise<void>; update: UpdateInfo | null; openUpdate: () => void }) {
   const [checking, setChecking] = useState(false)
   const initialDraft = () => ({ ...settings, memoryMode: settings.memoryMode || 'auto', manualJavaPath: settings.manualJavaPath || settings.javaPath || '' })
   const [draft, setDraft] = useState(initialDraft)
@@ -826,6 +871,7 @@ function SettingsView({ settings, rootDir, save, instance, javaTasks, theme, set
       <label className="setting-row toggle-row"><div><h3>自动检查更新</h3><p>启动时从 GitHub 检查新版本，有更新会在左下角提示，不会自动安装。</p></div><input type="checkbox" className="switch" checked={autoUpdate} onChange={event => setAutoUpdate(event.target.checked)} /></label>
       <div className="setting-row toggle-row"><div><h3>当前版本 {APP_VERSION}</h3><p>{update ? `可以更新到 ${update.version}` : '下载安装包会核对 GitHub 公布的 SHA-256。'}</p></div>{update ? <button type="button" className="button primary" onClick={openUpdate}><Sparkles size={16} />更新到 {update.version}</button> : <button type="button" className="button secondary" disabled={!isDesktop || checking} onClick={async () => { setChecking(true); try { await checkUpdate() } finally { setChecking(false) } }}>{checking ? <Spinner size={16} /> : <RefreshCw size={16} />}检查更新</button>}</div>
     </section>
+    <WindowPreferences {...windowPreferences} />
     <form className="settings-form" noValidate onSubmit={event => { event.preventDefault(); void submit() }}>
     <fieldset className="settings-fieldset" disabled={saving}>
     <section className="settings-card"><div className="settings-card-heading"><Cpu size={20} /><div><h2>全局游戏运行</h2><p>更改后将在下一次安装或启动游戏时生效；实例已覆盖的项目保持实例设置。</p></div></div><MemorySettings settings={draft} change={next => { if (!savingRef.current) setDraft({ ...next, manualJavaPath: next.manualJavaPath || '' }) }} instanceId={instance?.id} instanceName={instance?.name} /><JavaSettings javaPath={draft.javaPath} manualJavaPath={draft.manualJavaPath} onChangeJavaPath={(javaPath, manualJavaPath) => { if (!savingRef.current) setDraft(current => ({ ...current, javaPath, manualJavaPath })) }} desktop={isDesktop} resetKey={resetKey} requirement={requirement} requirementLoading={requirementLoading} requirementError={requirementError} onRetryRequirement={() => setRequirementRetry(value => value + 1)} runtimes={runtimes} detecting={detecting} detectError={detectError} onDetect={detect} tasks={javaTasks} onInstall={async major => { await call('installJava', major) }} onCancelTask={async id => { await call('cancelJavaInstall', id) }} onPickJava={() => call<string | null>('chooseJava')} onRefresh={detect} /></section>
