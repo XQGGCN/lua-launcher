@@ -11,6 +11,7 @@ const methods = new Set([
   'managedJava', 'runtimeRequirement', 'runtimeTasks', 'installJava', 'cancelJavaInstall', 'chooseJava', 'cancelLaunch',
   'instanceOptions', 'updateInstanceSettings',
   'inventory',
+  'inspectInstanceMod', 'chooseLocalModJar', 'cancelModDetails',
   'searchResources', 'resourceVersions', 'installResource', 'cancelResourceInstall',
   'prepareModToggle', 'setModEnabled',
   'worldDetails', 'worldDetailsWithSeed',

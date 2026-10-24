@@ -13,6 +13,7 @@ Lua's original source is licensed under MIT. Third-party dependencies keep their
 | esbuild | MIT | https://github.com/evanw/esbuild |
 | electron-builder | MIT | https://github.com/electron-userland/electron-builder |
 | tsx | MIT | https://github.com/privatenumber/tsx |
+| smol-toml 1.9.1 | BSD-3-Clause | https://github.com/squirrelchat/smol-toml |
 
 No source or packaged assets from PCL, HMCL or Modrinth App are included. Their names are comparative references, not endorsements. Modrinth API content belongs to individual creators. Minecraft game files, Fabric, Forge, NeoForge and user-selected mods are fetched separately at runtime, subject to their own licenses; they are not part of the Lua source distribution.
 
@@ -25,3 +26,34 @@ Forge and NeoForge installer metadata and processor JARs are downloaded on reque
 ## Downloaded Java runtimes
 
 Lua 0.4.0 downloads selected Mojang-distributed OpenJDK runtime files on demand from official metadata. These runtimes are not bundled in the Lua application or relicensed under MIT. Runtime `legal/` license and notice files remain in the installed runtime. Consult those files for the exact build’s GPLv2 with Classpath Exception and any component-specific notices.
+
+## smol-toml 1.9.1
+
+The bounded mod-metadata reader uses this TOML parser. Its full notice is retained in the bundled parser and reproduced here.
+
+```text
+Copyright (c) Squirrel Chat et al., All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the
+   documentation and/or other materials provided with the distribution.
+3. Neither the name of the copyright holder nor the names of its contributors
+   may be used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```

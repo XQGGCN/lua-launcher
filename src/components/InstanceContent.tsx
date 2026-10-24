@@ -3,6 +3,7 @@ import { AlertTriangle, ArrowLeft, FileUp, File, FileArchive, Folder, FolderOpen
 import type { InventoryItem, InventoryKind, ResourceInventory } from '../../desktop/resource-inventory'
 import { call, errorText, isDesktop, loaderNames, type Instance, type ModTogglePreview, type ModToggleSelection, type ModToggleResult, type WorldDetails as WorldDetailsData, type WorldSeed, type WorldSelection, type WorldBackupTask, type WorldBackupList, type WorldBackupResult, type WorldZipList, type WorldZipResult, type WorldZipTask } from '../api'
 import ModToggleActions from './ModToggleActions'
+import ModDetails from './ModDetails'
 import WorldDetails, { escapeWorldText } from './WorldDetails'
 import WorldDatapacks from './WorldDatapacks'
 import WorldBackupActions from './WorldBackupActions'
@@ -102,6 +103,7 @@ export default function InstanceContent({ instances, selectedId, onSelect, onOpe
   const [fileResult, setFileResult] = useState<{ instanceId: string; result: ModToggleResult }>()
   const [importing, setImporting] = useState(false)
   const [imported, setImported] = useState('')
+  const [modDetailsOperations, setModDetailsOperations] = useState<Record<string, string>>({})
   const afterRename = useRef<{ instanceId: string; itemId: string; name: string } | undefined>(undefined)
   const filters = useRef({ query, order })
   filters.current = { query, order }
@@ -124,6 +126,7 @@ export default function InstanceContent({ instances, selectedId, onSelect, onOpe
   const currentPage = Math.min(page, pageCount - 1)
   const visibleItems = filtered.slice(currentPage * pageSize, (currentPage + 1) * pageSize)
   const selectedItem = filtered.find(item => item.id === selectedItemId)
+  const modDetailsBusy = Boolean(instance && Object.values(modDetailsOperations).includes(instance.id))
 
   useEffect(() => {
     const ticket = ++request.current
@@ -172,7 +175,7 @@ export default function InstanceContent({ instances, selectedId, onSelect, onOpe
     event.preventDefault(); selectTab(tabs[next].kind); tabButtons.current[next]?.focus()
   }
   function refresh() {
-    if (loading || installing || !isDesktop || !instance) return
+    if (loading || installing || modDetailsBusy || !isDesktop || !instance) return
     ++request.current; setRetry(value => value + 1)
   }
   async function openFolder() {
@@ -186,7 +189,7 @@ export default function InstanceContent({ instances, selectedId, onSelect, onOpe
   }
 
   return <div className="instance-content">
-    <header className="inventory-heading"><div><h2>实例内容</h2><p>查看实例文件与文件夹，或在模组页修改单个模组的启用后缀。</p></div><button type="button" className="button secondary" onClick={onBack}><ArrowLeft size={15} />返回启动页</button></header>
+    <header className="inventory-heading"><div><h2>实例内容</h2><p>查看实例文件与文件夹、读取模组声明，或修改单个模组的启用后缀。</p></div><button type="button" className="button secondary" onClick={onBack}><ArrowLeft size={15} />返回启动页</button></header>
     <div className="inventory-instance-bar"><label htmlFor={`${id}-instance`}>游戏实例</label><select id={`${id}-instance`} value={instance?.id || ''} onChange={event => { ++request.current; setSelectedItemId(''); onSelect(event.target.value) }}><option value="" disabled>{instances.length ? '选择实例' : '尚无游戏实例'}</option>{instances.map(item => <option key={item.id} value={item.id}>{item.name} · {item.version} · {loaderNames[item.loader]}</option>)}</select><button type="button" className="button secondary" disabled={!instance} onClick={() => instance && onOpenSettings(instance)}><Settings2 size={15} />实例设置</button><button type="button" className="button secondary" disabled={!instance || !isDesktop || folderBusy} onClick={() => void openFolder()}>{folderBusy ? <Spinner size={15} /> : <FolderOpen size={15} />}打开实例文件夹</button></div>
     {folderError && <ErrorBox message={folderError} retry={() => void openFolder()} />}
     {!isDesktop && <div className="inline-notice inventory-notice"><Monitor size={17} /><span>浏览器预览无法访问本机磁盘，不会生成示例文件清单。你可以选择已有预览实例，或返回启动页创建预览实例；真实清单需要桌面版。</span></div>}
@@ -196,7 +199,7 @@ export default function InstanceContent({ instances, selectedId, onSelect, onOpe
     {fileResult && fileResult.instanceId === instance?.id && <div className="inline-notice inventory-notice" role="status"><span>已将 {fileResult.result.fromName} 改为 {fileResult.result.toName}。下次启动时才可能生效，尚未检查加载、依赖或兼容性。{fileResult.result.warnings.map((warning, index) => <small key={index}>{warning}</small>)}</span></div>}
     <div className="inventory-tabs" role="tablist" aria-label="实例内容类型">{tabs.map((item, index) => <button type="button" key={item.kind} ref={node => { tabButtons.current[index] = node }} id={`${id}-tab-${item.kind}`} role="tab" aria-selected={kind === item.kind} aria-controls={`${id}-panel`} tabIndex={kind === item.kind ? 0 : -1} onKeyDown={event => tabKey(event, index)} onClick={() => selectTab(item.kind)}><item.icon size={16} />{item.label}</button>)}</div>
     <section id={`${id}-panel`} role="tabpanel" aria-labelledby={`${id}-tab-${kind}`} tabIndex={0}>
-      <div className="inventory-toolbar"><label className="inventory-search"><Search size={15} /><input aria-label={`在已读取${tab.label}中按文件名搜索`} placeholder="按文件名搜索已读取条目" value={query} disabled={!inventory || installing} onChange={event => { setQuery(event.target.value); setPage(0); setSelectedItemId('') }} /></label><label className="inventory-sort"><span className="sr-only">清单排序</span><select value={order} onChange={event => { setOrder(event.target.value as SortOrder); setPage(0); setSelectedItemId('') }}><option value="name-asc">文件名：升序</option><option value="name-desc">文件名：降序</option><option value="modified-desc">修改时间：从新到旧</option><option value="modified-asc">修改时间：从旧到新</option></select></label><button type="button" className="button secondary" disabled={!instance || !isDesktop || installing || loading} onClick={refresh}>{loading ? <Spinner size={15} /> : <RefreshCw size={15} />}刷新</button>{kind === 'worlds' && <button type="button" className="button primary" disabled={!instance || !isDesktop || installing || instance.status === 'running'} onClick={() => setImporting(true)}><FileUp size={15} />导入世界 / 地图</button>}</div>
+      <div className="inventory-toolbar"><label className="inventory-search"><Search size={15} /><input aria-label={`在已读取${tab.label}中按文件名搜索`} placeholder="按文件名搜索已读取条目" value={query} disabled={!inventory || installing} onChange={event => { setQuery(event.target.value); setPage(0); setSelectedItemId('') }} /></label><label className="inventory-sort"><span className="sr-only">清单排序</span><select value={order} onChange={event => { setOrder(event.target.value as SortOrder); setPage(0); setSelectedItemId('') }}><option value="name-asc">文件名：升序</option><option value="name-desc">文件名：降序</option><option value="modified-desc">修改时间：从新到旧</option><option value="modified-asc">修改时间：从旧到新</option></select></label><button type="button" className="button secondary" disabled={!instance || !isDesktop || installing || loading || modDetailsBusy} onClick={refresh}>{loading ? <Spinner size={15} /> : <RefreshCw size={15} />}刷新</button>{kind === 'worlds' && <button type="button" className="button primary" disabled={!instance || !isDesktop || installing || instance.status === 'running'} onClick={() => setImporting(true)}><FileUp size={15} />导入世界 / 地图</button>}</div>
       {kind === 'worlds' && imported && <div className="inline-notice inventory-notice" role="status"><span>已导入为新世界「{escapeWorldText(imported)}」，可以直接在游戏的单人游戏列表里打开。</span></div>}
       {importing && instance && <WorldImportDialog instanceId={instance.id} instanceName={instance.name} close={() => setImporting(false)} done={name => { setImporting(false); setImported(name); refresh(); setRetry(value => value + 1) }} />}
       <div className="inventory-meta"><span>目录：<code>game/{tab.folder}/</code> · 仅此目录一层</span>{inventory && <span>读取时间：<time dateTime={inventory.observedAt}>{timeLabel(inventory.observedAt)}</time></span>}</div>
@@ -223,9 +226,16 @@ export default function InstanceContent({ instances, selectedId, onSelect, onOpe
           cancelExport={onCancelWorldExport}
           openExport={exportId => call<void>('openWorldExport', instance.id, exportId)}
           instances={instances} restored={() => { setRetry(value => value + 1) }} />}
-        {kind === 'mods' && instance && selectedItem && onPrepareMod && onCommitMod && <ModToggleActions instance={instance} item={selectedItem} busy={fileBusy || loading || installing} prepare={(selection, enabled) => onPrepareMod(instance.id, selection, enabled)} commit={token => onCommitMod(instance.id, token)} completed={renamed} />}
+        {kind === 'mods' && instance && selectedItem && onPrepareMod && onCommitMod && <ModToggleActions instance={instance} item={selectedItem} busy={fileBusy || loading || installing || modDetailsBusy} prepare={(selection, enabled) => onPrepareMod(instance.id, selection, enabled)} commit={token => onCommitMod(instance.id, token)} completed={renamed} />}
       </>}
-      <p className="inventory-footer-note">{kind === 'worlds' ? '世界信息、地图和数据包预览只读文件，不会修改或升级世界；备份、恢复和导入另需明确操作。' : <>{kind === 'mods' ? '模组操作仅改变一个文件的名称，不自动联动依赖。禁用后下载来源登记不迁移，恢复原名后可重新显示历史来源。' : '不解压资源或推断兼容、启用和实际加载状态。'}“曾登记来源”不代表当前内容已通过哈希验证。</>}</p>
+      {kind === 'mods' && instance && <ModDetails instance={instance} item={selectedItem} busy={fileBusy || loading || installing} readBusy={modDetailsBusy} refreshRevision={refreshRevision + retry}
+        onActivityChange={(operationId, instanceId, active) => setModDetailsOperations(previous => {
+          const next = { ...previous }
+          if (active) next[operationId] = instanceId
+          else delete next[operationId]
+          return next
+        })} />}
+      <p className="inventory-footer-note">{kind === 'worlds' ? '世界信息、地图和数据包预览只读文件，不会修改或升级世界；备份、恢复和导入另需明确操作。' : <>{kind === 'mods' ? '声明读取只读文件；启停操作仅改变一个文件的名称，不自动联动依赖。禁用后下载来源登记不迁移，恢复原名后可重新显示历史来源。' : '不解压资源或推断兼容、启用和实际加载状态。'}“曾登记来源”不代表当前内容已通过哈希验证。</>}</p>
     </section>
   </div>
 }

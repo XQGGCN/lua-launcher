@@ -262,3 +262,4 @@ export function errorText(error: unknown) {
   const text = error instanceof Error ? error.message : String(error)
   return text.replace(/^Error invoking remote method '[^']+': (Error: )?/, '')
 }
+export type { ModDependencyDeclaration, ModDeclaration, ModMetadataDocument, ModJarDetails, InstalledModSelection, InstanceModDetails } from '../desktop/mod-details-types'

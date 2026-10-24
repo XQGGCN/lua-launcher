@@ -25,6 +25,8 @@ import { installWorldDatapack, inspectDatapackInstallRecovery, DatapackInstallEr
 import { resolveDatapackArtifact, downloadDatapackArtifact } from './datapack-artifact'
 import type { DatapackInstallResult, DatapackInstallSource } from './datapack-install-types'
 import type { WorldDatapackInstallPlan } from './datapack-install-plan-types'
+import { inspectModJar, inspectInstalledMod } from './mod-jar'
+import type { InstanceModDetails, ModJarDetails, ModMetadataDocument, InstalledModSelection } from './mod-details-types'
 import type { WorldSelection, WorldSource, WorldDetails, WorldSeed, WorldMetadata } from './world-types'
 import { createWorldDirectoryBackup, listWorldDirectoryBackups, worldBackupDirectory, WorldBackupError } from './world-backup'
 import type { WorldBackupTask, WorldBackupResult, WorldBackupList } from './world-backup-types'
@@ -259,6 +261,7 @@ interface CoreOptions {
   datapackCatalog?: { search: typeof searchDatapackCatalog; versions: typeof readDatapackProjectVersions }
   datapackInstaller?: typeof installWorldDatapack
   datapackArtifact?: { resolve: typeof resolveDatapackArtifact; download: typeof downloadDatapackArtifact }
+  modDetailsReader?: { local: typeof inspectModJar; installed: typeof inspectInstalledMod }
   worldBackupCreator?: typeof createWorldDirectoryBackup
   worldBackupLister?: typeof listWorldDirectoryBackups
   worldBackupResolver?: typeof worldBackupDirectory
@@ -409,6 +412,10 @@ export class LauncherCore {
   private readonly datapackEngine: NonNullable<CoreOptions['datapackEngine']>
   private readonly datapackCatalog: NonNullable<CoreOptions['datapackCatalog']>
   private readonly datapackInstaller: typeof installWorldDatapack
+  private readonly modDetailsReader: NonNullable<CoreOptions['modDetailsReader']>
+  private modDetailReads = new Map<string, { instanceId: string; controller: AbortController }>()
+  private modDetailOperationIds = new Set<string>()
+  private modDetailViews = new Map<string, object>()
   private readonly datapackArtifact: NonNullable<CoreOptions['datapackArtifact']>
   private datapackInstallCapabilities = new Map<string, { instanceId: string; revision: string; proof: DatapackWorldProof;
     selection: WorldSelection; source: DatapackInstallSource; sourceIdentity: string; worldRevisionKey: string; worldVersion: string;
@@ -476,6 +483,7 @@ export class LauncherCore {
       verify: verifyDatapackWorld, item: inspectDatapackItem, zip: inspectDatapackZip }
     this.datapackCatalog = options.datapackCatalog ?? { search: searchDatapackCatalog, versions: readDatapackProjectVersions }
     this.datapackInstaller = options.datapackInstaller ?? installWorldDatapack
+    this.modDetailsReader = options.modDetailsReader ?? { local: inspectModJar, installed: inspectInstalledMod }
     this.datapackArtifact = options.datapackArtifact ?? { resolve: resolveDatapackArtifact, download: downloadDatapackArtifact }
     this.worldBackupCreator = options.worldBackupCreator ?? createWorldDirectoryBackup
     this.worldBackupLister = options.worldBackupLister ?? listWorldDirectoryBackups
@@ -523,7 +531,7 @@ export class LauncherCore {
         this.installs.size || this.processes.size || this.launching.size || this.stopping.size ||
         this.launchControllers.size || this.instanceSettingsSaving.size || this.javaDownloads.size ||
         this.resourceDownloads.size || this.worldBackupOperations.size || this.worldExportOperation ||
-        this.worldRestores.size || this.inventoryScans.size || this.worldReads.size || this.datapackReads.size || this.datapackInstallOperations.size ||
+        this.worldRestores.size || this.inventoryScans.size || this.worldReads.size || this.datapackReads.size || this.datapackInstallOperations.size || this.modDetailReads.size ||
         this.worldMapActive || this.worldMapQueue.length ||
         [...this.javaTasks.values()].some(task => ['queued', 'active', 'cancelling'].includes(task.status)) ||
         [...this.worldBackupHistory.values(), ...this.worldExportHistory.values()].some(task => ['active', 'cancelling'].includes(task.status)) ||
@@ -601,6 +609,7 @@ export class LauncherCore {
     this.instance(id)
     if (!['mods', 'resourcepacks', 'shaderpacks', 'worlds'].includes(kind)) throw new Error('无效的资源类型')
     if (this.installs.has(id)) throw new Error('此实例正在安装，请完成或取消后刷新资源清单')
+    if (kind === 'mods') this.modDetailViews.delete(id)
     const generation = this.mutationGeneration.get(id) || 0
     const key = `${id}:${kind}`
     const active = this.inventoryScans.get(key)
@@ -641,6 +650,8 @@ export class LauncherCore {
     for (const [token, value] of this.worldRevisions) if (value.instanceId === id) this.worldRevisions.delete(token)
     for (const [key, value] of this.worldViews) if (value.instanceId === id) this.worldViews.delete(key)
     this.datapackViews.delete(id)
+    this.modDetailViews.delete(id)
+    for (const read of this.modDetailReads.values()) if (read.instanceId === id) read.controller.abort(new DOMException('实例已变化', 'AbortError'))
     for (const [token, value] of this.datapackInstallCapabilities) if (value.instanceId === id) this.datapackInstallCapabilities.delete(token)
     for (const key of this.datapackCatalogViews.keys()) if (key.startsWith(`${id}:`)) this.datapackCatalogViews.delete(key)
     for (const [token, value] of this.datapackRevisions) if (value.instanceId === id) this.datapackRevisions.delete(token)
@@ -690,6 +701,7 @@ export class LauncherCore {
 
   private assertDatapackIdle(id: string): void {
     if ([...this.datapackReads.values()].some(read => read.instanceId === id)) throw new Error('请先完成或取消数据包预览，等待读取结束后再操作此实例')
+    if ([...this.modDetailReads.values()].some(read => read.instanceId === id)) throw new Error('请先完成或取消模组详情，等待读取结束后再操作此实例')
   }
 
   private async withDatapackRead<T>(id: string, operationId: string, inspecting: boolean,
@@ -858,6 +870,99 @@ export class LauncherCore {
       this.datapackCatalog.versions(projectId, { gameVersion, signal, fetch: this.fetcher, userAgent: USER_AGENT }))
     return { instanceId: id, revision, world, gameVersion, project: publicDatapackCatalogProject(value.project),
       versions: value.versions.map(publicDatapackCatalogVersion), upstreamVersionCount: value.upstreamVersionCount, omittedVersions: value.omittedVersions }
+  }
+
+  private publicModJarDetails(value: ModJarDetails): ModJarDetails {
+    const documents: ModMetadataDocument[] = value.documents.map(document => ({ path: document.path, format: document.format, status: document.status,
+      schemaVersion: document.schemaVersion, loader: document.loader ? { id: document.loader.id, version: document.loader.version } : undefined,
+      reason: document.reason, warnings: [...document.warnings], manifest: document.manifest?.map(field => ({ name: field.name, value: field.value })),
+      mods: document.mods.map(mod => ({ id: mod.id, name: mod.name, version: mod.version, description: mod.description,
+        authors: [...mod.authors], licenses: [...mod.licenses], environment: mod.environment, provides: [...mod.provides],
+        dependencies: mod.dependencies.map(dependency => ({ id: dependency.id, kind: dependency.kind, version: dependency.version,
+          environment: dependency.environment, details: dependency.details })), nestedJars: [...mod.nestedJars], warnings: [...mod.warnings] })) }))
+    const result: ModJarDetails = { name: value.name, disabledSuffix: value.disabledSuffix, observedAt: value.observedAt, status: value.status,
+      archiveBytes: value.archiveBytes, sha512: value.sha512, documents, warnings: [...value.warnings] }
+    if (Buffer.byteLength(JSON.stringify(result)) > 1024 ** 2) throw new Error('模组详情超过界面读取预算')
+    return result
+  }
+
+  private modLoaderAssessment(value: ModJarDetails, loader: Loader): InstanceModDetails['assessment'] {
+    const unknown = { status: 'unknown', message: '只展示声明，尚未判断游戏/Java版本、环境、依赖和实际加载兼容性' } as const
+    if (value.status !== 'metadata-read') return unknown
+    const documents = value.documents.filter(document => document.format !== 'manifest')
+    if (!documents.length || documents.some(document => document.status !== 'read')) return unknown
+    const formats = [...new Set(documents.map(document => document.format))]
+    if (loader === 'vanilla') return { status: 'mismatch', message: '原版实例不提供这些模组加载方式；未执行或判断此文件能否作为其他库使用' }
+    if (formats.length !== 1) return { status: 'unknown', message: '文件含多种加载格式声明，分别展示；没有合并推断它们的运行兼容性' }
+    if (loader === 'fabric' && formats[0] === 'fabric') return { status: 'matches-declaration', message: '识别到与Fabric对应的声明格式；游戏/Java版本、依赖、环境和实际加载均未核实' }
+    if (loader === 'fabric') return { status: 'mismatch', message: '未读取到此实例所用的Fabric声明格式；Quilt或Forge声明不等于Fabric支持' }
+    // A mods.toml path alone does not distinguish all old Forge/NeoForge
+    // families or establish a supported language-loader/version grammar.
+    return unknown
+  }
+
+  private async readModDetails(id: string, operationId: string, source: 'installed' | 'local', itemId: string | undefined,
+    read: (signal: AbortSignal, check: () => void) => Promise<ModJarDetails | null>): Promise<InstanceModDetails | null> {
+    const finish = this.beginLauncherOperation()
+    let operation: { instanceId: string; controller: AbortController } | undefined
+    try {
+      this.assertNoLauncherUpdate(); this.assertWorldReadable(id)
+      if (typeof operationId !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(operationId) || this.modDetailOperationIds.has(operationId)) throw new Error('模组读取任务标识无效或已使用')
+      if (this.modDetailReads.size >= 2 || [...this.modDetailReads.values()].some(value => value.instanceId === id)) throw new Error('模组详情仍在读取，请等待完成或取消后再试')
+      operation = { instanceId: id, controller: new AbortController() }
+      this.modDetailOperationIds.add(operationId)
+      while (this.modDetailOperationIds.size > 256) {
+        const candidate = [...this.modDetailOperationIds].find(key => !this.modDetailReads.has(key))
+        if (!candidate) break
+        this.modDetailOperationIds.delete(candidate)
+      }
+      this.modDetailReads.set(operationId, operation)
+      const view = {}, generation = this.mutationGeneration.get(id) || 0, epoch = this.worldReadEpoch
+      const gameVersion = this.instance(id).version, loader = this.instance(id).loader, controller = operation.controller
+      this.modDetailViews.set(id, view)
+      const check = () => {
+        controller.signal.throwIfAborted(); this.assertNoLauncherUpdate(); this.assertWorldReadable(id)
+        if (this.modDetailViews.get(id) !== view || generation !== (this.mutationGeneration.get(id) || 0) || epoch !== this.worldReadEpoch ||
+            this.instance(id).version !== gameVersion || this.instance(id).loader !== loader) throw new Error('实例或列表已变化，请重新读取模组详情')
+      }
+      await this.assertWorldRestoreSafe(id, controller.signal); check()
+      const result = await read(controller.signal, check)
+      check()
+      if (!result) return null
+      return structuredClone({ ...this.publicModJarDetails(result), instanceId: id, viewId: randomUUID(), source, itemId,
+        instanceGameVersion: gameVersion, instanceLoader: loader, assessment: this.modLoaderAssessment(result, loader) })
+    } catch (error) {
+      if (operation?.controller.signal.aborted || error instanceof Error && error.name === 'AbortError') throw new DOMException('模组详情读取已取消，请等待读取结束后重新操作', 'AbortError')
+      throw new Error('模组详情读取未完成；请关闭游戏并刷新列表后重试。文件可能变化、忙碌或超出检查范围')
+    } finally {
+      if (operation && this.modDetailReads.get(operationId) === operation) this.modDetailReads.delete(operationId)
+      finish()
+    }
+  }
+
+  async inspectInstanceMod(id: string, input: unknown, operationId: string): Promise<InstanceModDetails> {
+    if (!input || typeof input !== 'object' || Array.isArray(input) || ![Object.prototype, null].includes(Object.getPrototypeOf(input)) ||
+        Reflect.ownKeys(input).length !== 4 || Reflect.ownKeys(input).some(key => typeof key !== 'string' ||
+          !['itemId', 'name', 'sizeBytes', 'modifiedAt'].includes(key) || !('value' in Object.getOwnPropertyDescriptor(input, key)!))) throw new Error('模组条目选择格式无效')
+    const selected = input as InstalledModSelection
+    if (typeof selected.itemId !== 'string' || typeof selected.name !== 'string' || typeof selected.modifiedAt !== 'string' ||
+        !Number.isSafeInteger(selected.sizeBytes) || selected.sizeBytes < 0) throw new Error('模组条目选择字段无效')
+    const selection = { itemId: selected.itemId, name: selected.name, sizeBytes: selected.sizeBytes, modifiedAt: selected.modifiedAt }
+    return (await this.readModDetails(id, operationId, 'installed', selection.itemId, (signal) => this.modDetailsReader.installed(this.instanceDirectory(id), selection, { signal })))!
+  }
+
+  /** Native picker only; a read-only viewId never grants import authorization. */
+  async previewLocalModJar(id: string, operationId: string, chooseFile: () => Promise<string | undefined>): Promise<InstanceModDetails | null> {
+    return this.readModDetails(id, operationId, 'local', undefined, async (signal, check) => {
+      const file = await chooseFile(); check()
+      return file ? this.modDetailsReader.local(file, { signal }) : null
+    })
+  }
+
+  cancelModDetails(id: string, operationId: string): void {
+    this.instance(id)
+    const read = this.modDetailReads.get(operationId)
+    if (read?.instanceId === id) read.controller.abort(new DOMException('模组详情读取已取消', 'AbortError'))
   }
 
   private async datapackSourceIdentity(file: string): Promise<string> {
@@ -2303,6 +2408,8 @@ export class LauncherCore {
     this.datapackCatalogViews.clear()
     this.datapackRevisions.clear()
     this.datapackInstallCapabilities.clear()
+    this.modDetailViews.clear()
+    for (const read of this.modDetailReads.values()) read.controller.abort(new DOMException('启动器正在退出', 'AbortError'))
     for (const read of this.datapackReads.values()) read.controller.abort(new DOMException('启动器正在退出', 'AbortError'))
     for (const controller of [...this.installs.values(), ...this.javaDownloads.values(), ...this.launchControllers.values(),
       ...[...this.inventoryScans.values()].map(scan => scan.controller), ...[...this.worldReads.values()].map(read => read.controller), ...(this.worldExportOperation ? [this.worldExportOperation.controller] : [])]) {

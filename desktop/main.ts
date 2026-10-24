@@ -236,6 +236,20 @@ if (hasLock) app.whenReady().then(async () => {
       }
       case 'instanceOptions': return core.instanceOptions(text(args[0], 80))
       case 'inventory': return core.inventory(text(args[0], 80), text(args[1], 20) as InventoryKind)
+      case 'inspectInstanceMod': {
+        const id = text(args[0], 80)
+        if (launches.has(id)) throw new Error('请先完成或取消启动准备，再读取模组详情')
+        return core.inspectInstanceMod(id, object(args[1]), text(args[2], 80))
+      }
+      case 'chooseLocalModJar': {
+        const id = text(args[0], 80)
+        if (launches.has(id)) throw new Error('请先完成或取消启动准备，再选择本地模组')
+        return core.previewLocalModJar(id, text(args[1], 80), async () => {
+          const selected = await dialog.showOpenDialog(dialogWindow(), { title: '只读预览本地模组 JAR', properties: ['openFile'], filters: [{ name: '模组 JAR', extensions: ['jar'] }] })
+          return selected.canceled ? undefined : selected.filePaths[0]
+        })
+      }
+      case 'cancelModDetails': return core.cancelModDetails(text(args[0], 80), text(args[1], 80))
       case 'worldDatapacks': {
         const id = text(args[0], 80)
         if (launches.has(id)) throw new Error('请先完成或取消启动准备，再查看数据包')
