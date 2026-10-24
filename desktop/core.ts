@@ -389,6 +389,10 @@ export class LauncherCore {
   private launching = new Set<string>()
   private stopping = new Set<string>()
   private writes: Promise<void> = Promise.resolve()
+  private pendingWrites = 0
+  private pendingLauncherOperations = 0
+  private launcherUpdateReserved = false
+  private initialized = false
   private manifestCache?: { at: number; value: ManifestIndex }
   readonly rootDir: string
 
@@ -420,6 +424,8 @@ export class LauncherCore {
   }
 
   async init(): Promise<LauncherSnapshot> {
+    const finish = this.beginLauncherOperation()
+    try {
     await fs.mkdir(this.rootDir, { recursive: true })
     try {
       const state = JSON.parse(await fs.readFile(path.join(this.rootDir, 'launcher.json'), 'utf8'))
@@ -441,14 +447,59 @@ export class LauncherCore {
       catch { /* Preserve the instance and its recovery evidence; expose its error below. */ }
     }
     await this.save()
+    this.initialized = true
     return this.snapshot()
+    } finally { finish() }
   }
 
   snapshot(): LauncherSnapshot {
     return structuredClone({ instances: this.instances, settings: this.settings, rootDir: this.rootDir })
   }
 
+  /** Main holds this lease through download and installer/restart handoff. */
+  reserveLauncherUpdate(): () => void {
+    this.assertNoLauncherUpdate()
+    if (!this.initialized || this.pendingWrites || this.pendingLauncherOperations ||
+        this.installs.size || this.processes.size || this.launching.size || this.stopping.size ||
+        this.launchControllers.size || this.instanceSettingsSaving.size || this.javaDownloads.size ||
+        this.resourceDownloads.size || this.worldBackupOperations.size || this.worldExportOperation ||
+        this.worldRestores.size || this.inventoryScans.size || this.worldReads.size ||
+        this.worldMapActive || this.worldMapQueue.length ||
+        [...this.javaTasks.values()].some(task => ['queued', 'active', 'cancelling'].includes(task.status)) ||
+        [...this.worldBackupHistory.values(), ...this.worldExportHistory.values()].some(task => ['active', 'cancelling'].includes(task.status)) ||
+        this.instances.some(instance => instance.status === 'running' || instance.status === 'installing')) {
+      throw new Error('请先等待游戏、安装、备份、登录准备或设置保存结束，再更新启动器')
+    }
+    this.launcherUpdateReserved = true
+    let held = true
+    return () => {
+      if (!held) return
+      held = false
+      this.launcherUpdateReserved = false
+    }
+  }
+
+  private assertNoLauncherUpdate(): void {
+    if (this.launcherUpdateReserved) throw new Error('启动器正在更新，请等待更新结束后再操作')
+  }
+
+  /** Covers metadata/validation waits before an operation acquires its existing file lock. */
+  private beginLauncherOperation(): () => void {
+    this.assertNoLauncherUpdate()
+    this.pendingLauncherOperations++
+    let held = true
+    return () => {
+      if (!held) return
+      held = false
+      this.pendingLauncherOperations--
+    }
+  }
+
   private async save(prepare?: () => { instances?: Instance[]; settings?: LauncherSettings; commit: () => void }): Promise<void> {
+    this.assertNoLauncherUpdate()
+    // Count synchronously, including time queued behind another write. A Promise's
+    // existence alone cannot tell the update coordinator whether writes have settled.
+    this.pendingWrites++
     const run = this.writes.catch(() => {}).then(async () => {
       const file = path.join(this.rootDir, 'launcher.json')
       const temporary = `${file}.${randomUUID()}.tmp`
@@ -467,8 +518,10 @@ export class LauncherCore {
       }
     })
     this.writes = run
-    await run
-    this.emit({ type: 'state', snapshot: this.snapshot() })
+    try {
+      await run
+      this.emit({ type: 'state', snapshot: this.snapshot() })
+    } finally { this.pendingWrites-- }
   }
 
   private instance(id: string): Instance {
@@ -575,6 +628,7 @@ export class LauncherCore {
   }
 
   async backupWorld(id: string, input: unknown, options: unknown): Promise<WorldBackupResult> {
+    this.assertNoLauncherUpdate()
     this.assertWorldReadable(id)
     const selection = this.worldSelection(input)
     if (!options || typeof options !== 'object' || Array.isArray(options) ||
@@ -685,6 +739,7 @@ export class LauncherCore {
 
   /** Exports a completed directory backup as a verified ZIP. Reads only the backup, never the live world. */
   async exportWorldBackup(id: string, backupId: string, operationId: string): Promise<WorldZipResult> {
+    this.assertNoLauncherUpdate()
     this.instance(id)
     const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/
     if (typeof backupId !== 'string' || !uuid.test(backupId)) throw new Error('备份标识无效')
@@ -819,6 +874,7 @@ export class LauncherCore {
   }
 
   private async runWorldRestore(id: string, operation: (options: { saves: string; staging: string; signal: AbortSignal; onProgress: (progress: { phase: string; filesDone: number; filesTotal?: number; bytesDone: number; bytesTotal?: number }) => void }) => Promise<WorldRestoreResult>): Promise<WorldRestoreResult> {
+    this.assertNoLauncherUpdate()
     const instance = this.instance(id)
     if (this.installs.has(id)) throw new Error('此实例正在安装、备份或恢复，请稍后再试')
     if (this.processes.has(id) || this.launching.has(id) || instance.status === 'running') throw new Error('请先关闭此实例的游戏，再恢复或导入世界')
@@ -856,10 +912,13 @@ export class LauncherCore {
 
   /** Restores a completed backup (from any instance) as a new world in `targetId`. Never overwrites. */
   async restoreWorldBackup(targetId: string, sourceInstanceId: string, backupId: string, folderName?: string): Promise<WorldRestoreResult> {
+    const finish = this.beginLauncherOperation()
+    try {
     this.instance(sourceInstanceId)
     if (folderName !== undefined && !safeWorldFolderName(folderName)) throw new Error('世界名称不能包含特殊字符，也不能以点开头')
     const directory = await this.worldBackupPath(sourceInstanceId, backupId)
-    return this.runWorldRestore(targetId, options => restoreWorldFromBackup(directory, { ...options, folderName }))
+    return await this.runWorldRestore(targetId, options => restoreWorldFromBackup(directory, { ...options, folderName }))
+    } finally { finish() }
   }
 
   /** Main-process only: `file` comes from a native file dialog, never from the renderer. */
@@ -978,6 +1037,8 @@ export class LauncherCore {
 
   /** Recovery evidence is checked independently of launcher.json's retryable status. */
   async assertInstanceUsable(id: string, signal?: AbortSignal): Promise<void> {
+    const finish = this.beginLauncherOperation()
+    try {
     const instance = this.instance(id)
     try { await this.assertWorldRestoreSafe(id, signal) }
     catch (error) {
@@ -1009,9 +1070,11 @@ export class LauncherCore {
       this.emit({ type: 'state', snapshot: this.snapshot() })
       throw new Error(instance.error)
     }
+    } finally { finish() }
   }
 
   private assertModToggleIdle(id: string): Instance {
+    this.assertNoLauncherUpdate()
     const instance = this.instance(id)
     if (instance.status !== 'ready' || instance.loader === 'vanilla') throw new Error('请先安装模组加载器并关闭游戏，再修改模组文件')
     if (this.installs.has(id) || this.launching.has(id) || this.processes.has(id) || this.instanceSettingsSaving.has(id)) {
@@ -1022,6 +1085,7 @@ export class LauncherCore {
   }
 
   assertLaunchAvailable(id: string): void {
+    this.assertNoLauncherUpdate()
     const instance = this.instance(id)
     if (this.installs.has(id) || this.launching.has(id) || this.processes.has(id) || this.instanceSettingsSaving.has(id)) {
       throw new Error('请等待此实例的文件操作、启动或设置保存结束')
@@ -1031,6 +1095,8 @@ export class LauncherCore {
   }
 
   async prepareModToggle(id: string, selection: unknown, enabled: boolean): Promise<ModTogglePreview> {
+    const finish = this.beginLauncherOperation()
+    try {
     this.assertModToggleIdle(id)
     if (typeof enabled !== 'boolean') throw new Error('模组文件目标状态无效')
     if (!selection || typeof selection !== 'object' || Array.isArray(selection) ||
@@ -1056,9 +1122,11 @@ export class LauncherCore {
     return { token, instanceId: id, itemId: input.itemId, fromName: input.name,
       toName: enabled ? input.name.slice(0, -'.disabled'.length) : input.name + '.disabled', enabled,
       sizeBytes: input.sizeBytes, modifiedAt: input.modifiedAt, expiresAt }
+    } finally { finish() }
   }
 
   async setModEnabled(id: string, token: string): Promise<ModToggleResult> {
+    this.assertNoLauncherUpdate()
     this.instance(id)
     const pending = this.modToggleTokens.get(token)
     // Consume before the first await: an old confirmation can never invert a later request.
@@ -1098,6 +1166,7 @@ export class LauncherCore {
   }
 
   async updateInstanceSettings(id: string, input: { name: string; options: unknown }): Promise<LauncherSnapshot> {
+    this.assertNoLauncherUpdate()
     const instance = this.instance(id)
     if (this.instanceSettingsSaving.has(id)) throw new Error('此实例的设置正在保存')
     if (this.installs.has(id) || this.launching.has(id) || this.processes.has(id)) {
@@ -1124,6 +1193,7 @@ export class LauncherCore {
   }
 
   private assertInstanceIdle(id: string): Instance {
+    this.assertNoLauncherUpdate()
     const instance = this.instance(id)
     if (this.installs.has(id) || this.launching.has(id) || this.processes.has(id) || instance.status === 'running' || instance.status === 'installing') {
       throw new Error('请先关闭游戏并等待安装、备份等操作完成')
@@ -1140,24 +1210,32 @@ export class LauncherCore {
 
   /** Removes the instance record. The caller has already trashed or archived its folder. */
   async forgetInstance(id: string): Promise<LauncherSnapshot> {
+    const finish = this.beginLauncherOperation()
+    try {
     this.assertInstanceIdle(id)
     this.instances = this.instances.filter(item => item.id !== id)
     this.invalidateInventory(id)
     await this.save()
     return this.snapshot()
+    } finally { finish() }
   }
 
   /** Fallback when the system trash is unavailable: move the folder aside instead of deleting it. */
   async archiveInstanceFolder(id: string): Promise<string> {
+    const finish = this.beginLauncherOperation()
+    try {
     const source = this.removableInstancePath(id)
     const target = safeJoin(this.rootDir, `deleted-instances/${id}-${Date.now()}`)
     await fs.mkdir(path.dirname(target), { recursive: true })
     await fs.rename(source, target)
     return target
+    } finally { finish() }
   }
 
   /** Copies an idle instance (game files, settings and installed state) under a new name. */
   async duplicateInstance(id: string, name: string): Promise<Instance> {
+    const finish = this.beginLauncherOperation()
+    try {
     const source = this.assertInstanceIdle(id)
     const trimmed = String(name ?? '').trim()
     if (!trimmed || trimmed.length > 64 || /[\u0000-\u001f\u007f]/u.test(trimmed)) throw new Error('实例名称需要 1–64 个字符')
@@ -1179,9 +1257,12 @@ export class LauncherCore {
     this.instances.push(copy)
     await this.save()
     return structuredClone(copy)
+    } finally { finish() }
   }
 
   async createInstance(input: { name: string; version: string; loader: Loader; loaderVersion?: string }): Promise<Instance> {
+    const finish = this.beginLauncherOperation()
+    try {
     const name = String(input.name ?? '').trim()
     if (!name || name.length > 64) throw new Error('实例名称需要 1–64 个字符')
     if (!isGameVersionId(input.version)) throw new Error('无效的 Minecraft 版本')
@@ -1203,6 +1284,7 @@ export class LauncherCore {
     this.instances.push(instance)
     await this.save()
     return structuredClone(instance)
+    } finally { finish() }
   }
 
   private validateSettings(input: LauncherSettings): LauncherSettings {
@@ -1231,6 +1313,7 @@ export class LauncherCore {
   }
 
   async updateSettings(settings: Partial<LauncherSettings>): Promise<LauncherSnapshot> {
+    this.assertNoLauncherUpdate()
     await this.save(() => {
       const next = this.validateSettings({ ...this.settings, ...settings })
       return { settings: next, commit: () => { this.settings = next } }
@@ -1414,6 +1497,7 @@ export class LauncherCore {
   }
 
   async install(id: string): Promise<LauncherSnapshot> {
+    this.assertNoLauncherUpdate()
     const instance = this.instance(id)
     if (this.instanceSettingsSaving.has(id)) throw new Error('请等待此实例的设置保存完成')
     if (this.installs.has(id)) throw new Error('该实例正在安装')
@@ -1684,6 +1768,8 @@ export class LauncherCore {
   }
 
   async runtimeRequirement(id: string): Promise<JavaRequirement> {
+    const finish = this.beginLauncherOperation()
+    try {
     const instance = this.instance(id)
     let installed: InstalledManifest | undefined
     try {
@@ -1703,12 +1789,18 @@ export class LauncherCore {
       throw new Error('已安装加载器与官方游戏的 Java 要求不一致，请重新安装修复实例')
     }
     return base
+    } finally { finish() }
   }
 
-  managedJava(): Promise<ManagedJavaRuntime[]> { return this.javaRuntimeManager.discover() }
+  async managedJava(): Promise<ManagedJavaRuntime[]> {
+    const finish = this.beginLauncherOperation()
+    try { return await this.javaRuntimeManager.discover() }
+    finally { finish() }
+  }
   runtimeTasks(): JavaRuntimeTask[] { return structuredClone([...this.javaTasks.values()]) }
 
   startJavaInstall(major: number): JavaRuntimeTask {
+    this.assertNoLauncherUpdate()
     if (!Number.isInteger(major) || !JAVA_COMPONENTS[major]) throw new Error('请选择 Java 17、21 或 25')
     const previous = [...this.javaTasks.values()].find(task => task.major === major && ['queued', 'active', 'cancelling'].includes(task.status))
     if (previous) return structuredClone(previous)
@@ -1779,6 +1871,8 @@ export class LauncherCore {
   }
 
   async detectJava(additionalPath?: string): Promise<JavaRuntime[]> {
+    const finish = this.beginLauncherOperation()
+    try {
     const executable = this.platform === 'win32' ? 'java.exe' : 'java'
     const candidates = new Set<string>([additionalPath, this.settings.javaPath, 'java'].filter((value): value is string => Boolean(value)))
     if (process.env.JAVA_HOME) candidates.add(path.join(process.env.JAVA_HOME, 'bin', executable))
@@ -1849,9 +1943,11 @@ export class LauncherCore {
     const managed = await this.javaRuntimeManager.discover()
     return [...new Map([...runtimes.filter((runtime): runtime is JavaRuntime => Boolean(runtime)), ...managed].map(runtime => [runtime.path, runtime])).values()]
       .sort((a, b) => b.major - a.major)
+    } finally { finish() }
   }
 
   async launch(id: string, account: LaunchAccount, beforeSpawn?: () => void): Promise<{ pid: number | undefined }> {
+    this.assertNoLauncherUpdate()
     if (this.installs.has(id)) throw new Error('请等待此实例的安装或文件操作完成')
     if (this.instanceSettingsSaving.has(id)) throw new Error('请等待此实例的设置保存完成')
     if (this.launching.has(id)) throw new Error('该实例正在启动')
@@ -2025,6 +2121,10 @@ export class LauncherCore {
     child.once('close', (code, signal) => {
       // A failed older child may report close after a successful retry already owns this instance.
       if (this.processes.get(id) !== child) return
+      // The child has ended, but its diagnostics and state write have not. Retain
+      // an operation lease before removing the process so update cannot slip in.
+      const finishExit = this.beginLauncherOperation()
+      let crashWork: Promise<unknown> = Promise.resolve()
       this.processes.delete(id)
       const requestedStop = this.stopping.delete(id)
       instance.playtimeMs += Math.max(0, Date.now() - started)
@@ -2034,7 +2134,7 @@ export class LauncherCore {
           ? `游戏异常退出，信号 ${signal}；请查看游戏日志。`
           : `游戏已退出，退出码 ${code ?? '未知'}；请查看游戏日志。`
         this.log(id, 'error', instance.error)
-        void this.crashReport(gameDir, started).then(report => {
+        crashWork = this.crashReport(gameDir, started).then(report => {
           const analysis = analyzeCrash(recent, report)
           instance.error = `${analysis.title}（${signal ? `信号 ${signal}` : `退出码 ${code ?? '未知'}`}）。${analysis.hints[0]}`
           this.log(id, 'error', `崩溃分析：${analysis.title}`)
@@ -2042,7 +2142,8 @@ export class LauncherCore {
           this.emit({ type: 'state', snapshot: this.snapshot() })
         }).catch(() => {})
       } else { delete instance.error; this.log(id, 'info', '游戏已关闭') }
-      void this.save().catch(error => this.log(id, 'error', errorMessage(error)))
+      void Promise.allSettled([crashWork, this.save().catch(error => this.log(id, 'error', errorMessage(error)))])
+        .finally(finishExit)
     })
     await new Promise<void>((resolve, reject) => {
       child.once('spawn', resolve)
@@ -2150,6 +2251,7 @@ export class LauncherCore {
   }
 
   async installResource(instanceId: string, selection: unknown, operationId: string): Promise<ResourceInstallResult> {
+    this.assertNoLauncherUpdate()
     const instance = this.instance(instanceId)
     const input = validateResourceSelection(selection)
     if (typeof operationId !== 'string' || !/^[a-f0-9-]{36}$/.test(operationId)) throw new Error('资源任务标识无效')
@@ -2258,10 +2360,14 @@ export class LauncherCore {
   }
 
   async importModpack(filePath: string, options: { name?: string } = {}): Promise<LauncherSnapshot> {
-    return this.createPackInstance(await readModpack(filePath), options, { source: 'local' })
+    const finish = this.beginLauncherOperation()
+    try {
+    return await this.createPackInstance(await readModpack(filePath), options, { source: 'local' })
+    } finally { finish() }
   }
 
   async installModpack(versionId: string, options: { name?: string; source?: ResourceSource } = {}): Promise<LauncherSnapshot> {
+    this.assertNoLauncherUpdate()
     const source = options.source ?? 'modrinth'
     const provider = resourceProvider(source)
     const taskId = source === 'modrinth' ? `modpack-${sanitizeId(versionId)}` : `modpack-${source}-${sanitizeId(versionId)}`
@@ -2315,6 +2421,8 @@ export class LauncherCore {
     source: Pick<NonNullable<Instance['modpack']>, 'source' | 'projectId' | 'modrinthVersionId' | 'remoteVersionId'>,
     signal?: AbortSignal,
   ): Promise<LauncherSnapshot> {
+    const finish = this.beginLauncherOperation()
+    try {
     signal?.throwIfAborted()
     const preview = pack.preview
     if (preview.unsupportedReason) throw new Error(preview.unsupportedReason)
@@ -2354,6 +2462,7 @@ export class LauncherCore {
       if (signal?.aborted) abort()
       return await installing
     } finally { signal?.removeEventListener('abort', abort) }
+    } finally { finish() }
   }
 
   private async installPackFiles(id: string, pack: ParsedModpack, signal: AbortSignal): Promise<void> {
@@ -2489,6 +2598,7 @@ export class LauncherCore {
 
   /** Installs required dependencies too; rejects incompatible versions instead of guessing. */
   async installMod(instanceId: string, versionId: string, source: ResourceSource = 'modrinth'): Promise<LauncherSnapshot> {
+    this.assertNoLauncherUpdate()
     if (this.instanceSettingsSaving.has(instanceId)) throw new Error('请等待此实例的设置保存完成')
     const provider = resourceProvider(source)
     const instance = this.instance(instanceId)

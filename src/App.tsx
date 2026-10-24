@@ -607,7 +607,7 @@ export default function App() {
       <div className="modal-actions">{updateOpened ? <button type="button" className="button primary" onClick={() => setUpdateOpen(false)}>知道了</button> : <><button type="button" className="button secondary" disabled={Boolean(updateProgress)} onClick={() => setUpdateOpen(false)}>稍后</button><button type="button" className="button primary" disabled={Boolean(updateProgress)} onClick={async () => {
         try {
           setUpdateProgress(update.asset ? { received: 0, total: update.asset.size } : undefined)
-          const result = await call<string>('installUpdate')
+          const result = await call<string>('installUpdate', update.selectionId)
           setUpdateProgress(undefined)
           if (result === 'opened-installer') setUpdateOpened(true)
           if (result === 'opened-page') setUpdateOpen(false)

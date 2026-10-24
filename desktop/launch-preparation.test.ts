@@ -53,3 +53,14 @@ test('cancelling one instance does not cancel another and failed preparation rel
   await assert.rejects(queue.run('third', async () => { throw new Error('credential refresh failed') }), /refresh failed/)
   assert.equal(await queue.run('third', async () => 43), 43)
 })
+
+test('the update gate can observe pending credential work even after a cancellation request', async () => {
+  const queue = new LaunchPreparations(), pending = deferred()
+  const operation = queue.run('instance', async signal => { await pending.promise; signal.throwIfAborted() })
+  const rejected = assert.rejects(operation, /取消/)
+  assert.equal(queue.size, 1)
+  queue.cancel('instance')
+  assert.equal(queue.size, 1)
+  pending.resolve(); await rejected
+  assert.equal(queue.size, 0)
+})

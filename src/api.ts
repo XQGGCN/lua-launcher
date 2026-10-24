@@ -116,7 +116,7 @@ declare global {
 export const isDesktop = Boolean(window.launcher)
 export const platform = window.launcher?.platform ?? 'web'
 export type { CrashAnalysis } from '../desktop/crash-analysis'
-export type { UpdateInfo } from '../desktop/updater'
+export type { SelectedUpdate as UpdateInfo } from '../desktop/update-coordinator'
 const defaultSnapshot: Snapshot = {
   instances: [],
   settings: { memoryMode: 'auto', memoryMb: 4096, javaPath: '', manualJavaPath: '', concurrentDownloads: 6 },

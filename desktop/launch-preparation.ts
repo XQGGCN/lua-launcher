@@ -18,6 +18,9 @@ export class LaunchPreparations {
 
   has(id: string): boolean { return this.active.has(id) }
 
+  /** Includes cancelled preparations until their credential/runtime worker settles. */
+  get size(): number { return this.active.size }
+
   close(): void {
     this.closed = true
     for (const controller of this.active.values()) {

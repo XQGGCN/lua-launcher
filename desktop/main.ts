@@ -3,7 +3,8 @@ import { app, BrowserWindow, dialog, ipcMain, Notification, safeStorage, shell }
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { spawn } from 'node:child_process'
-import { checkForUpdate, downloadUpdate, replaceAppImage, type UpdateInfo } from './updater'
+import { checkForUpdate, downloadUpdate, replaceAppImage } from './updater'
+import { UpdateActivityGate, UpdateCoordinator } from './update-coordinator'
 import { LauncherCore, type CoreEvent, type LauncherSettings } from './core'
 import { AuthError, AuthManager, type DeviceCode } from './auth'
 import { AuthConfigStore } from './auth-config'
@@ -27,8 +28,8 @@ let authConfig: AuthConfigStore
 let packSelections: PackSelections<Awaited<ReturnType<LauncherCore['inspectModpack']>>>
 let choosingPack = false
 const worldZipSelections = new Map<string, { file: string; expires: number }>()
-let updateInfo: UpdateInfo | null = null
-let updating = false
+const updateActivity = new UpdateActivityGate()
+let updates: UpdateCoordinator
 let accounts: AccountCoordinator
 const launches = new LaunchPreparations()
 let authState: {
@@ -66,6 +67,10 @@ function notify(title: string, body: string) {
 function text(value: unknown, max = 1024): string {
   if (typeof value !== 'string' || value.length > max) throw new Error('输入参数无效')
   return value
+}
+function dialogWindow(): BrowserWindow {
+  if (!window || window.isDestroyed()) throw new Error('启动器窗口已关闭，请重新打开后再选择文件')
+  return window
 }
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('输入参数无效')
@@ -163,6 +168,42 @@ if (hasLock) app.whenReady().then(async () => {
     config: () => authConfig.status(),
     onAccount: account => send({ type: 'account', account }),
   })
+  updates = new UpdateCoordinator({
+    activity: updateActivity,
+    reserveCore: () => {
+      if (launches.size || accounts.loginPending || choosingPack) throw new Error('请先完成或取消启动准备、登录和文件选择，再更新启动器')
+      return core.reserveLauncherUpdate()
+    },
+    check: () => checkForUpdate(app.getVersion(), { appImage: process.env.APPIMAGE }),
+    download: (selected, signal) => {
+      if (!selected.asset) throw new Error('此版本没有可用的平台安装包')
+      return downloadUpdate(selected.asset, path.join(app.getPath('temp'), 'lua-launcher-update'), {
+        signal, onProgress: (received, total) => send({ type: 'updateProgress', received, total }),
+      })
+    },
+    openPage: async input => {
+      const page = new URL(input)
+      if (page.protocol !== 'https:' || page.hostname !== 'github.com' || page.username || page.password || page.port ||
+          !/^\/XQGGCN\/lua-launcher\/releases(?:\/|$)/.test(page.pathname)) throw new Error('更新页面地址无效')
+      await shell.openExternal(page.href)
+    },
+    openInstaller: async file => { if (await shell.openPath(file)) throw new Error('无法打开下载的安装包，可稍后重试') },
+    startInstaller: file => new Promise<void>((resolve, reject) => {
+      const child = spawn(file, [], { detached: true, stdio: 'ignore', windowsHide: false })
+      child.once('error', () => reject(new Error('无法启动更新安装程序；启动器没有自动退出')))
+      child.once('spawn', () => { child.unref(); resolve() })
+    }),
+    replaceAppImage: async (file, selected, signal) => {
+      if (!process.env.APPIMAGE || !selected.asset) throw new Error('当前不是可原位更新的 AppImage，请使用下载页面')
+      await replaceAppImage(file, process.env.APPIMAGE, { signal, expected: { size: selected.asset.size, sha256: selected.asset.sha256 } })
+    },
+    handoff: action => {
+      if (action === 'appimage') setTimeout(() => { app.relaunch(); app.exit(0) }, 500)
+      else setTimeout(() => app.quit(), 800)
+    },
+  })
+  // These methods only return already-held state. Every other dispatch is tracked
+  // through actual completion, and future methods are blocked during an update by default.
   ipcMain.handle('launcher:call', async (ipcEvent, method: unknown, ...args: unknown[]) => {
     const sender = ipcEvent.senderFrame
     const trusted = !!sender && (devURL
@@ -171,6 +212,10 @@ if (hasLock) app.whenReady().then(async () => {
     if (!window || ipcEvent.sender.id !== window.webContents.id || !trusted || sender !== ipcEvent.sender.mainFrame) {
       throw new Error('不受信任的调用来源')
     }
+    if (method === 'checkUpdate') return updates.check()
+    if (method === 'installUpdate') return updates.install(text(args[0], 80))
+    if (method === 'cancelUpdate') { updates.cancel(); return }
+    const dispatch = async () => {
     switch (method) {
       case 'snapshot': return core.snapshot()
       case 'versions': return core.versions()
@@ -224,40 +269,6 @@ if (hasLock) app.whenReady().then(async () => {
         shell.showItemInFolder(await core.worldExportPath(text(args[0], 80), text(args[1], 80)))
         return
       }
-      case 'checkUpdate': {
-        updateInfo = await checkForUpdate(app.getVersion(), { appImage: process.env.APPIMAGE })
-        return updateInfo
-      }
-      case 'installUpdate': {
-        if (!updateInfo) throw new Error('请先检查更新')
-        if (updating) throw new Error('更新正在下载')
-        if (!updateInfo.asset || updateInfo.action === 'page') {
-          const page = new URL(updateInfo.page)
-          if (page.protocol !== 'https:' || page.hostname !== 'github.com') throw new Error('更新页面地址无效')
-          await shell.openExternal(page.href)
-          return 'opened-page'
-        }
-        if (core.snapshot().instances.some(item => item.status === 'running')) throw new Error('请先关闭正在运行的游戏，再更新启动器')
-        updating = true
-        try {
-          const file = await downloadUpdate(updateInfo.asset, path.join(app.getPath('temp'), 'lua-launcher-update'), {
-            onProgress: (received, total) => send({ type: 'updateProgress', received, total }),
-          })
-          if (updateInfo.action === 'installer') {
-            spawn(file, [], { detached: true, stdio: 'ignore', windowsHide: false }).unref()
-            setTimeout(() => app.quit(), 800)
-            return 'installing'
-          }
-          if (updateInfo.action === 'appimage' && process.env.APPIMAGE) {
-            await replaceAppImage(file, process.env.APPIMAGE)
-            setTimeout(() => { app.relaunch(); app.exit(0) }, 500)
-            return 'restarting'
-          }
-          const error = await shell.openPath(file)
-          if (error) throw new Error('无法打开下载的安装包')
-          return 'opened-installer'
-        } finally { updating = false }
-      }
       case 'deleteInstance': {
         const id = text(args[0], 80)
         if (launches.has(id)) throw new Error('请先完成或取消此实例的启动准备')
@@ -286,7 +297,7 @@ if (hasLock) app.whenReady().then(async () => {
       case 'worldMap': return core.worldMap(text(args[0], 80), object(args[1]))
       case 'worldMapTile': return core.worldMapTile(text(args[0], 80), object(args[1]), args[2], args[3], args[4])
       case 'chooseWorldZip': {
-        const selected = await dialog.showOpenDialog(window, { title: '选择世界或地图 ZIP', properties: ['openFile'], filters: [{ name: 'ZIP 压缩包', extensions: ['zip'] }] })
+        const selected = await dialog.showOpenDialog(dialogWindow(), { title: '选择世界或地图 ZIP', properties: ['openFile'], filters: [{ name: 'ZIP 压缩包', extensions: ['zip'] }] })
         if (selected.canceled || !selected.filePaths[0]) return null
         const file = selected.filePaths[0]
         const preview = await core.inspectWorldZip(file)
@@ -387,7 +398,7 @@ if (hasLock) app.whenReady().then(async () => {
       }
       case 'cancelJavaInstall': return core.cancelJavaInstall(text(args[0], 80))
       case 'chooseJava': {
-        const selected = await dialog.showOpenDialog(window, {
+        const selected = await dialog.showOpenDialog(dialogWindow(), {
           title: '选择 Java 可执行文件', properties: ['openFile'],
           ...(process.platform === 'win32' ? { filters: [{ name: 'Java 可执行文件', extensions: ['exe'] }] } : {}),
         })
@@ -413,7 +424,7 @@ if (hasLock) app.whenReady().then(async () => {
         if (choosingPack) throw new Error('请先完成当前文件选择')
         choosingPack = true
         try {
-          const selected = await dialog.showOpenDialog(window, {
+          const selected = await dialog.showOpenDialog(dialogWindow(), {
             title: '选择 Minecraft 整合包',
             properties: ['openFile'],
             filters: [{ name: 'Modrinth 整合包', extensions: ['mrpack', 'zip'] }],
@@ -499,6 +510,8 @@ if (hasLock) app.whenReady().then(async () => {
         return accounts.logout()
       default: throw new Error('不支持的操作')
     }
+    }
+    return updateActivity.dispatch(method, dispatch)
   })
   await createWindow()
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) void createWindow() })
@@ -510,6 +523,7 @@ if (hasLock) app.whenReady().then(async () => {
 app.on('second-instance', () => { window?.show(); window?.focus() })
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
 app.on('before-quit', () => {
+  updates?.close()
   launches.close()
   core?.cancelPendingOperations()
   accounts?.cancelLogin()
