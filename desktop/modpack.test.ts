@@ -48,6 +48,22 @@ test('client selection skips server-only files and applies client overrides last
   assert.equal(result.preview.loaderVersion, '0.16.10')
 })
 
+test('provenance retains excluded and shadowed roles without adding them to installation or claiming server payload verification', () => {
+  const result = parseModpack(archive({ files: [
+    packFile('config/example.json', 'indexed', { env: { client: 'optional', server: 'required' } }),
+    packFile('mods/server.jar', 'server', { env: { client: 'unsupported', server: 'required' } }),
+  ] }, { 'overrides/config/example.json': 'shared', 'client-overrides/config/example.json': 'client', 'server-overrides/server.properties': 'not inflated on client' }))
+  const indexed = result.provenance.find(row => row.origin === 'indexed' && row.path === 'config/example.json')!
+  const shared = result.provenance.find(row => row.origin === 'overrides')!, client = result.provenance.find(row => row.origin === 'client-overrides')!
+  assert.equal(indexed.role, 'optional'); assert.equal(indexed.effective, false)
+  assert.equal(result.provenance[indexed.shadowedBy!], shared); assert.equal(result.provenance[shared.shadowedBy!], client)
+  assert.equal(client.effective, true); assert.equal(client.sha512, hashes('client').sha512); assert.equal(client.hashBasis, 'archive-payload')
+  const server = result.provenance.find(row => row.origin === 'server-overrides')!
+  assert.equal(server.role, 'server-excluded'); assert.equal(server.effective, false); assert.equal(server.sizeBasis, 'declared-archive'); assert.equal(server.hashBasis, undefined)
+  assert.equal(server.sha512, undefined); assert.ok(!JSON.stringify(result.provenance).includes('not inflated on client'))
+  assert.equal(result.files.length, 0); assert.equal(result.overrides.length, 1); assert.equal(result.preview.fileCount, 1)
+})
+
 test('unknown loaders and old Minecraft releases produce an unsupported preview', () => {
   for (const dependency of ['quilt-loader', 'future-loader']) {
     const pack = parseModpack(archive({ dependencies: { minecraft: '1.20.1', [dependency]: '1.0' } }))
@@ -135,6 +151,7 @@ test('invalid format and environment values fail before an installation plan is 
   assert.throws(() => parseModpack(archive({ formatVersion: 2 })), /格式 1/)
   assert.throws(() => parseModpack(archive({ game: 'other' })), /Minecraft/)
   assert.throws(() => parseModpack(archive({ files: [packFile('mods/a.jar', 'x', { env: { client: 'sometimes', server: 'required' } })] })), /环境/)
+  assert.throws(() => parseModpack(archive({ files: [packFile('mods/a.jar', 'x', { env: { client: 'optional', server: 'required', futureSide: 'optional' } })] })), /环境/)
   assert.throws(() => parseModpack(archive({ files: [packFile('mods/a.jar'), packFile('mods/a.jar')] })), /重复路径/)
 })
 

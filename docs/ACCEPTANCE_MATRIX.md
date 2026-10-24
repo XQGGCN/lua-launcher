@@ -1,6 +1,6 @@
 # 验收矩阵
 
-更新：2026-10-24。公开版本为 [0.10.2 Alpha](https://github.com/XQGGCN/lua-launcher/releases/tag/v0.10.2)，0.10.3、0.10.4、0.11.0、0.11.1、0.11.2、0.12.0与0.12.1本地完成待发行。L1静态/类型、L2确定性测试、L3真实网络与文件、L4原生桌面、L5真实账户/游戏/联机分别记录；测试桥不代替原生，CI不代替游玩。
+更新：2026-10-24。公开版本为 [0.10.2 Alpha](https://github.com/XQGGCN/lua-launcher/releases/tag/v0.10.2)，0.10.3、0.10.4、0.11.0、0.11.1、0.11.2、0.12.0、0.12.1与0.13.0本地完成待发行。L1静态/类型、L2确定性测试、L3真实网络与文件、L4原生桌面、L5真实账户/游戏/联机分别记录；测试桥不代替原生，CI不代替游玩。
 
 W=Windows x64，M=macOS ARM64，L=Linux x64。新架构单独列证据，官方有 Java 包不等于 Lua 安装包或游戏已支持。每次结果关联版本/commit、平台、命令/步骤和证据路径；私有日志与截图留在被忽略目录，不保存令牌。
 
@@ -9,7 +9,7 @@ W=Windows x64，M=macOS ARM64，L=Linux x64。新架构单独列证据，官方�
 | 条目 | 证据与范围 | 尚未证明 |
 | --- | --- | --- |
 | 0.10.2发行 | [运行39734466434](https://github.com/XQGGCN/lua-launcher/actions/runs/39734466434)在9432352提交完成W/M/L测试、构建、打包；非draft Alpha，四项资产uploaded、非空并有GitHub摘要 | 本轮仅完整下载DMG独立重算hash，其余三资产未重新下载；签名/公证未配置，不证明三平台游玩 |
-| 当前基线 | cad65ec只改说明/官网，本轮全量568/568、0失败/跳过 | 新补丁需独立全量与当前提交CI |
+| 当前基线 | cad65ec只改说明/官网，既有基线全量568/568、0失败/跳过 | 新补丁需独立全量与当前提交CI |
 | AC-AUTH-02当前进展 | 读取2026-10-22既有macOS完整登录、所有权/profile与重启恢复记录，见[MICROSOFT_LOGIN](MICROSOFT_LOGIN.md) | 本轮没有重做认证，全部负向/撤销与W/L实机条件仍需记录 |
 | AC-GAME-01当前进展 | 0.10.0正式macARM包原版1.21.1进入主菜单，重启恢复会话并再次启动有记录 | 世界保存重载、四加载器/代表包、W/L实机、长期游玩及实际联机未全面验收 |
 | 0.8–0.10新增实现 | ZIP、地图、恢复、旧版、崩溃、镜像和更新测试已进全量入口，发布说明与CI可查 | 专门独立review/devlog缺口保留，不以旧审查或发布说明冒充 |
@@ -22,6 +22,7 @@ W=Windows x64，M=macOS ARM64，L=Linux x64。新架构单独列证据，官方�
 | 0.11.2本地完成 | 完整777/777、独立205/205、构建/本地包/ASAR5文件核对；生产Electron IPC/FS验本地及站点准备/确认/备份安装，2回执和6备份文件独立重算，8原文件及state不变；官方2metadata GET和准确格式文件校验分记 | HTTP元数据/ZIP及picker明确原创替身，非真实数据包、OS窗口、用户世界或游戏；本版CI/公开资产/签名/三平台实机另验。保留缓存/暂存/备份，结果不明重启保护，无清理或恢复向导 |
 | 0.11.1本地完成 | 完整701/701、独立新增34/34及相关60/60、构建/本地包核对；最终生产Core真实官方metadata3GET，20hit/3version及7源/state不变；隔离Electron真实IPC验发现/分页/版本/取消/刷新保留/A→B/11源state不变 | 原生UI的HTTP与shell打开端口明确注入，不冒充真实网络或站点窗口；无ZIP下载/安装/游戏/用户世界，当前提交CI/公开资产/签名及性能矩阵另验，构建500kB提示保留 |
 | 0.12.1本地完成 | 完整928/928、独立254/254=78新增受管+9原创探针+167不重叠旧相关、构建及未签名macARM版本/架构/ASAR六文件核验通过；生产Electron真实IPC/FS验11项，Fabric/Forge2次导入/回执与hardlink独立重建，11源/state文件不变 | 仅picker回调注入，原创惰性JAR及ready/profile记录非实际游戏安装；0网络/子进程/外部打开，进程已关，包未执行。真实OS picker/第三方模组/游戏、当前提交CI与公开资产另验；CRC/hash非代码安全或全语法兼容 |
+| 0.13.0本地完成 | 完整991/991（新增63项）与构建通过；生产Electron真实main/preload/Core/parser/selector/installer/FS验7项，准备不创建实例/下载内容/调用Java属性，确认selected[]仅写必需+客户端覆盖，保存选择/schema/hash/digest/操作ID，3源/无关文件hash与BigInt身份不变 | HTTP与picker全部原创注入；提交阶段9次Java属性回调及2次空系统枚举为替身，不是实际Java/加载器/游戏执行。独立139/139（63新受管+9原创探针+67不重叠旧相关）通过；未签名macARM包版本/架构/hash与ASAR六文件精确匹配，包未执行；1240浅色/920深色完整视口及modal/内容/工具/表格宽度无横向溢出。当前提交CI/资产、OS选择/真实整合包另验；原全包事务不冒充单JAR或完整崩溃/断电保证 |
 
 ## 历史快照说明
 
@@ -191,3 +192,18 @@ W=Windows x64，M=macOS ARM64，L=Linux x64。新架构单独列证据，官方�
 | AC-MODIMPORT-05 | wx暂存、短写、独立读回、同卷hardlink无覆盖、提交不明保留/重启阻断 | 事务31项及Core重启回归通过；PREPARING→INTENT→COMPLETE→FINALIZED有界检查，不删除源/现有模组/历史登记 | `desktop/mod-import.test.ts`、[用法](LOCAL_MOD_IMPORT.md) |
 | AC-MODIMPORT-06 | 确认目标/关闭外部游戏声明、停止、A/B迟到、结果保留、窄窗与主题 | 生产Electron实际11项：阻断/停止等待/A→B/确认重置/两实例真实文件导入/刷新保留/两主题920px；11源/state文件不变，2回执独立核对。picker回调注入，非OS窗口或游戏运行 | `src/components/LocalModImport.tsx`、`InstanceContent.tsx` |
 | AC-MODIMPORT-07 | 全量/build/包精确版本架构内容、本提交三平台CI和发行 | 全量928与独立254、build、未签名macARM版本/架构/hash及ASAR六文件精确核对通过；包未执行，CI/签名/公证/公开资产待 | [开发记录](devlog/0.12.1.md) |
+
+
+## 0.13.0 整合包文件计划验收
+
+本轮只扩展已支持客户端.mrpack Format1的新实例安装前预览与有效optional选择，保留原游戏/加载器范围。完整991/991（新增63项）与构建通过；生产Electron真实main/preload/Core/解析/选择/安装文件流程7项通过，3源/无关文件不变。HTTP/picker、9次Java属性及2次空系统枚举回调明确注入，未执行实际Java、加载器或游戏；独立139/139通过，有限范围无未修阻塞；未签名macARM包版本/架构/hash与ASAR六文件核同，包未执行；1240浅/920深完整视口及各容器宽度复核无横向溢出。安装会话与之后仅视口会话分开，不将后者零probe当作整个安装流程零回调。
+
+| ID | 场景与通过条件 | 当前范围与验证位置 |
+| --- | --- | --- |
+| AC-PACKPLAN-01 | 本地与在线从同一份私有已核归档规划；准备不创建实例/下载游戏或索引载荷 | `core-modpack-plan.test.ts`；本轮生产Electron实际准备步骤通过，HTTP/picker注入，不含真实站点归档下载 |
+| AC-PACKPLAN-02 | required/optional/server-excluded/共享/客户端覆盖及同路径遮蔽来源一致 | `modpack-plan.test.ts`、`modpack.test.ts`；只最终有效optional可选择 |
+| AC-PACKPLAN-03 | 100行分页、200字符查询、512KiB摘要/页和完整可选ID集合；跨页全选清空不丢选择 | `modpack-plan.test.ts`；UI注入检查与生产原生分记 |
+| AC-PACKPLAN-04 | 120秒独立计划能力、源/副本FD祖先身份、短写/独立读回/源二次hash | `pack-selection.test.ts`、Core与IPC；无renderer原生路径/URL，历史缓存不扫删 |
+| AC-PACKPLAN-05 | 选择schema/双hash关联规划摘要先保存；取消/失败/重启重试精确复用，空选择非缺记录 | `modpack-selection-record.test.ts`、`core-modpack-plan.test.ts`；坏记录阻断，旧未完成无记录明确legacy-all，已应用不重写 |
+| AC-PACKPLAN-06 | 精确操作ID→实例ID；取消等原任务，关闭安装窗可后台继续，迟到准备/查询不污染新选择 | `App.tsx`、`ModpacksView.tsx`、`ModpackPlan.tsx`和Core；生产Electron已验停止等待、跨页选择与空选择实际写入，OS窗口及真实游戏另验 |
+| AC-PACKPLAN-07 | full/build/独立审核/包版本架构内容、当前提交三平台CI/Release | 991/991、独立139/139与构建通过；未签名macARM版本/架构/hash/ASAR六文件精确核对与1240浅/920深视口通过；当前提交CI/签名公证/公开资产待，旧CI/单JAR审核不能替代 |

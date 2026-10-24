@@ -1,0 +1,58 @@
+dialog.modal:has(.modpack-plan){width:min(1000px,calc(100vw - 32px));max-height:92dvh}
+.modpack-plan{min-width:0;font-size:12px;color:var(--ink)}
+.modpack-plan-heading h3{font-size:16px;font-weight:500;line-height:1.6;overflow-wrap:anywhere}
+.modpack-plan-heading p{font-size:12px;line-height:1.8;color:var(--ink-2);overflow-wrap:anywhere;margin-top:5px}
+.modpack-plan-purpose{color:var(--ink-2);line-height:1.9;margin:15px 0 13px}
+.modpack-plan-summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 24px;margin:0 0 20px;padding:14px 0;border-block:1px solid var(--line);font-variant-numeric:tabular-nums}
+.modpack-plan-summary>div{display:flex;gap:12px;min-width:0;line-height:1.7}
+.modpack-plan-summary dt{color:var(--ink-2);flex-shrink:0;min-width:60px}
+.modpack-plan-summary dd{margin:0;overflow-wrap:anywhere}
+.modpack-plan-tools{display:flex;align-items:flex-end;gap:15px;justify-content:space-between;margin-bottom:13px}
+.modpack-plan-search{display:flex;gap:8px;flex:1;min-width:0}
+.modpack-plan-search .search-field{margin:0;max-width:none;min-width:0;min-height:36px;flex:1}
+.modpack-plan-search .search-field input{font-size:12px}
+.modpack-plan-search .button{font-size:12px;min-height:36px;padding:7px 12px}
+.modpack-plan-filter{display:flex;align-items:center;gap:10px;flex-shrink:0;color:var(--ink-2)}
+.modpack-plan-filter select{width:auto;min-height:36px;font-size:12px;padding:6px 28px 6px 10px}
+.modpack-plan-selection-tools{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:0 0 12px;font-size:11px;color:var(--ink-2);line-height:1.8}
+.modpack-plan-selection-tools>div{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.modpack-plan-selection-tools .text-button{font-size:12px;min-height:30px}
+.modpack-plan-selection-tools>label{display:flex;align-items:center;gap:7px;cursor:pointer;min-height:30px}
+.modpack-plan input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px;flex-shrink:0}
+.modpack-plan-loading,.modpack-plan-empty{min-height:120px;border-block:1px solid var(--line);display:flex;align-items:center;justify-content:center;gap:9px;color:var(--ink-2);line-height:1.8;padding:20px}
+.modpack-plan-table-scroll{max-height:360px;overflow:auto;border:1px solid var(--line);border-radius:4px}
+.modpack-plan-table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:12px;line-height:1.7}
+.modpack-plan-table th{font-weight:500;color:var(--ink-2);text-align:left;background:var(--surface-2);position:sticky;top:0;z-index:1}
+.modpack-plan-table th,.modpack-plan-table td{padding:10px 11px;vertical-align:top;border-bottom:1px solid var(--line)}
+.modpack-plan-table tr:last-child td{border-bottom:0}
+.modpack-plan-table tbody tr:hover{background:var(--surface-2)}
+.modpack-plan-table th:nth-child(1){width:60px}
+.modpack-plan-table th:nth-child(3){width:160px}
+.modpack-plan-table th:nth-child(4){width:100px;text-align:right}
+.modpack-plan-row-check{display:flex;align-items:center;gap:4px;min-height:22px}
+.modpack-plan-row-check>svg{color:var(--ink-2);flex-shrink:0}
+.modpack-plan-path{display:block;overflow-wrap:anywhere;word-break:break-word;font-size:11px;line-height:1.8;color:var(--ink)}
+.modpack-plan-row-details{margin-top:5px;color:var(--ink-2);font-size:11px}
+.modpack-plan-row-details summary{cursor:pointer;min-height:22px;width:fit-content}
+.modpack-plan-row-details dl{margin:8px 0 0;display:grid;grid-template-columns:90px minmax(0,1fr);gap:6px 9px;line-height:1.8}
+.modpack-plan-row-details dd{margin:0;overflow-wrap:anywhere}
+.modpack-plan-row-details code{display:block;font-size:10px;overflow-wrap:anywhere;word-break:break-all}
+.modpack-plan-table td:nth-child(3)>small{display:block;font-size:10px;color:var(--ink-2);line-height:1.8;margin-top:3px;overflow-wrap:anywhere}
+.modpack-plan-size{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;color:var(--ink-2)}
+.modpack-plan-excluded .modpack-plan-path{color:var(--ink-2)}
+.modpack-plan-pagination{display:flex;align-items:center;justify-content:space-between;gap:15px;flex-wrap:wrap;margin-top:12px;line-height:1.8;color:var(--ink-2);font-variant-numeric:tabular-nums}
+.modpack-plan-pagination>div{display:flex;align-items:center;gap:8px}
+.modpack-plan-note{font-size:11px;line-height:1.9;color:var(--ink-2);margin-top:16px;max-width:75ch}
+.modpack-plan-archive{font-size:11px;color:var(--ink-2);margin-top:12px;line-height:1.8}
+.modpack-plan-archive summary{cursor:pointer;width:fit-content;min-height:25px}
+.modpack-plan-archive>code{display:block;overflow-wrap:anywhere;word-break:break-all;font-size:10px;margin-top:7px}
+.modpack-plan-archive>p{margin-top:7px}
+.modpack-plan-confirm{margin-top:18px;border-top:1px solid var(--line);padding-top:1px}
+.modpack-plan-confirm>.field{max-width:480px;margin:17px 0 7px}
+.modpack-plan-confirm .modal-actions{border-top:0;margin-top:17px;padding-top:0}
+.modpack-plan-progress{padding-top:16px}
+.modpack-plan-progress-actions{display:flex;justify-content:space-between;align-items:center;gap:13px;flex-wrap:wrap;margin:14px 0}
+.modpack-preparation p{font-size:12px;line-height:1.9;color:var(--ink-2);margin-top:10px;overflow-wrap:anywhere}
+.modpack-preparation-status{display:flex;align-items:center;gap:10px;font-size:13px;margin:20px 0;line-height:1.8}
+@media(max-width:800px){.modpack-plan-tools{align-items:stretch;flex-wrap:wrap}.modpack-plan-search{flex-basis:100%}.modpack-plan-filter{margin-left:auto}.modpack-plan-table th:nth-child(3){width:126px}.modpack-plan-table th:nth-child(4){width:82px}.modpack-plan-table th,.modpack-plan-table td{padding:9px 8px}.modpack-plan-summary{column-gap:15px}.modpack-plan-row-details dl{grid-template-columns:1fr;gap:2px}.modpack-plan-row-details dd{margin-bottom:5px}}
+@media(max-width:600px){dialog.modal:has(.modpack-plan){width:calc(100vw - 20px)}.modpack-plan-summary{grid-template-columns:1fr}.modpack-plan-table th:nth-child(1){width:42px}.modpack-plan-table th:nth-child(3){width:93px}.modpack-plan-table th:nth-child(4){width:65px}.modpack-plan-table{font-size:11px}.modpack-plan-table th,.modpack-plan-table td{padding:8px 5px}.modpack-plan-path{font-size:10px}.modpack-plan-row-check>svg{display:none}.modpack-plan-size{white-space:normal}.modpack-plan-filter{margin-left:0}.modpack-plan-selection-tools>div{gap:8px 12px}.modpack-plan-selection-tools>div>span{flex-basis:100%}.modpack-plan-pagination{font-size:11px}.modpack-plan-pagination>div{margin-left:auto}}

@@ -1,6 +1,7 @@
 import { categoryFacet } from './mod-categories'
 import { resolveInstanceOptions, validateInstanceOptions, type InstanceOptions } from '../desktop/instance-options'
 export type { InstanceOptions, ResolvedInstanceOptions } from '../desktop/instance-options'
+export type { PackPlanCounts, PackPlanSummary, PackPlanRow, PackPlanPage, PackPlanPageOptions } from '../desktop/modpack-plan-types'
 export type { InventoryKind, InventoryItem, ResourceInventory } from '../desktop/resource-inventory'
 export type { InstanceInventory } from '../desktop/core'
 export type { ModTogglePreview } from '../desktop/core'
@@ -43,6 +44,8 @@ export interface Instance {
     archiveSha1: string
     archiveSha512: string
     applied: boolean
+    operationId?: string
+    selection?: { schema: 1; archiveSha512: string; planDigest: string; selectedOptionalIds: string[] }
   }
 }
 export interface Settings extends InstanceOptions { memoryMode: 'auto' | 'manual'; memoryMb: number; javaPath: string; concurrentDownloads: number; downloadSource?: 'auto' | 'mirror' | 'official' }

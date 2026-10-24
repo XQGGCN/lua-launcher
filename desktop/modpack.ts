@@ -1,5 +1,7 @@
 import * as fs from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import AdmZip from 'adm-zip'
+import type { PackPlanEnvironment, PackPlanOrigin, PackPlanRole } from './modpack-plan-types'
 
 /** https://support.modrinth.com/en/articles/8802351-modrinth-modpack-format-mrpack */
 export const MODPACK_LIMITS = {
@@ -39,11 +41,27 @@ export interface PackFile {
   optional: boolean
 }
 export interface PackOverride { path: string; data: Buffer }
+/** Main-only provenance; paths are game-relative, never native paths or URLs. */
+export interface PackProvenance {
+  origin: PackPlanOrigin
+  role: PackPlanRole
+  path: string
+  bytes: number
+  sizeBasis: 'declared-download' | 'verified-archive' | 'declared-archive'
+  environment?: { client: PackPlanEnvironment; server: PackPlanEnvironment; implicit: boolean }
+  sha1?: string
+  sha512?: string
+  hashBasis?: 'index-declaration' | 'archive-payload'
+  effective: boolean
+  /** Index in this same bounded provenance array, not a renderer-supplied path. */
+  shadowedBy?: number
+}
 export interface ParsedModpack {
   preview: PackPreview
   archive: Buffer
   files: PackFile[]
   overrides: PackOverride[]
+  provenance: PackProvenance[]
 }
 
 function object(value: unknown, field: string): Record<string, unknown> {
@@ -229,6 +247,7 @@ export function parseModpack(archive: Buffer): ParsedModpack {
   const indexedPaths = new PathIndex()
   const outputPaths = new PathIndex()
   const files: PackFile[] = []
+  const provenance: PackProvenance[] = [], effectiveRecords = new Map<string, number>()
   let downloadBytes = 0
   for (const item of index.files) {
     const file = object(item, '文件')
@@ -243,11 +262,17 @@ export function parseModpack(archive: Buffer): ParsedModpack {
     if (!Array.isArray(file.downloads) || !file.downloads.length || file.downloads.length > 8) throw new Error('整合包文件下载链接无效')
     const downloads = file.downloads.map(validatePackUrl)
     const environment = file.env === undefined ? undefined : object(file.env, '客户端环境')
-    if (environment && ['client', 'server'].some(side => !['required', 'optional', 'unsupported'].includes(String(environment[side])))) {
+    if (environment && (Object.keys(environment).some(side => !['client', 'server'].includes(side)) || ['client', 'server'].some(side => !['required', 'optional', 'unsupported'].includes(String(environment[side]))))) {
       throw new Error('整合包文件环境必须使用 required、optional 或 unsupported')
     }
+    const client = (environment?.client ?? 'required') as PackPlanEnvironment, server = (environment?.server ?? 'required') as PackPlanEnvironment
+    const recordIndex = provenance.length
+    provenance.push({ origin: 'indexed', role: client === 'unsupported' ? 'server-excluded' : client === 'optional' ? 'optional' : 'required', path: filePath,
+      bytes: fileSize, sizeBasis: 'declared-download', environment: { client, server, implicit: environment === undefined },
+      sha1: hashes.sha1.toLowerCase(), sha512: hashes.sha512.toLowerCase(), hashBasis: 'index-declaration', effective: client !== 'unsupported' })
     if (environment?.client === 'unsupported') continue
     outputPaths.add(filePath)
+    effectiveRecords.set(filePath, recordIndex)
     downloadBytes += fileSize
     if (downloadBytes > MODPACK_LIMITS.totalBytes) throw new Error('整合包下载总大小超出 8 GiB 限制')
     files.push({ path: filePath, downloads, hashes: { sha1: hashes.sha1.toLowerCase(), sha512: hashes.sha512.toLowerCase() },
@@ -259,8 +284,22 @@ export function parseModpack(archive: Buffer): ParsedModpack {
       if (entry.isDirectory || !entry.entryName.startsWith(prefix)) continue
       const relative = validatePackPath(entry.entryName.slice(prefix.length))
       outputPaths.add(relative, false, true)
-      overrides.set(relative, { path: relative, data: getEntryData(entry) })
+      const data = getEntryData(entry), origin = prefix === 'overrides/' ? 'overrides' : 'client-overrides', recordIndex = provenance.length
+      const previous = effectiveRecords.get(relative)
+      if (previous !== undefined) { provenance[previous].effective = false; provenance[previous].shadowedBy = recordIndex }
+      provenance.push({ origin, role: origin, path: relative, bytes: data.length, sizeBasis: 'verified-archive',
+        sha1: createHash('sha1').update(data).digest('hex'), sha512: createHash('sha512').update(data).digest('hex'), hashBasis: 'archive-payload', effective: true })
+      effectiveRecords.set(relative, recordIndex)
+      overrides.set(relative, { path: relative, data })
     }
+  }
+  for (const entry of entries) {
+    if (entry.isDirectory || !entry.entryName.startsWith('server-overrides/')) continue
+    const relative = validatePackPath(entry.entryName.slice('server-overrides/'.length))
+    // The client does not inflate excluded server overrides. Header sizes are
+    // bounded above but not represented as verified payload bytes or CRCs.
+    provenance.push({ origin: 'server-overrides', role: 'server-excluded', path: relative, bytes: entry.header.size,
+      sizeBasis: 'declared-archive', effective: false })
   }
   // Final override content replaces any indexed download at the same exact path.
   const effectiveFiles = files.filter(file => !overrides.has(file.path))
@@ -271,7 +310,7 @@ export function parseModpack(archive: Buffer): ParsedModpack {
     throw new Error('整合包客户端文件总大小或数量超出限制')
   }
   return {
-    archive, files: effectiveFiles, overrides: overrideList,
+    archive, files: effectiveFiles, overrides: overrideList, provenance,
     preview: { name, versionId, summary, minecraftVersion, loader, loaderVersion,
       fileCount: effectiveFiles.length + overrides.size, totalBytes,
       optionalFileCount: effectiveFiles.filter(file => file.optional).length, unsupportedReason },

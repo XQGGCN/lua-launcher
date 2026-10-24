@@ -8,7 +8,6 @@ import { UpdateActivityGate, UpdateCoordinator } from './update-coordinator'
 import { LauncherCore, type CoreEvent, type LauncherSettings } from './core'
 import { AuthError, AuthManager, type DeviceCode } from './auth'
 import { AuthConfigStore } from './auth-config'
-import { PackSelections } from './pack-selection'
 import { AccountCoordinator } from './accounts'
 import { getMemoryInfo } from './memory'
 import { LaunchPreparations } from './launch-preparation'
@@ -25,8 +24,6 @@ let window: BrowserWindow | null = null
 let core: LauncherCore
 let auth: AuthManager
 let authConfig: AuthConfigStore
-let packSelections: PackSelections<Awaited<ReturnType<LauncherCore['inspectModpack']>>>
-let choosingPack = false
 const worldZipSelections = new Map<string, { file: string; expires: number }>()
 const updateActivity = new UpdateActivityGate()
 let updates: UpdateCoordinator
@@ -133,8 +130,6 @@ if (hasLock) app.whenReady().then(async () => {
   core = new LauncherCore(root, event)
   await core.init()
   authConfig = new AuthConfigStore(root, process.env.LUA_MICROSOFT_CLIENT_ID || __LUA_MICROSOFT_CLIENT_ID__)
-  packSelections = new PackSelections(root, file => core.inspectModpack(file))
-  await packSelections.init()
   auth = new AuthManager(root, {
     seal: (plain: string) => {
       if (!safeStorage.isEncryptionAvailable() ||
@@ -171,7 +166,7 @@ if (hasLock) app.whenReady().then(async () => {
   updates = new UpdateCoordinator({
     activity: updateActivity,
     reserveCore: () => {
-      if (launches.size || accounts.loginPending || choosingPack) throw new Error('请先完成或取消启动准备、登录和文件选择，再更新启动器')
+      if (launches.size || accounts.loginPending) throw new Error('请先完成或取消启动准备、登录和文件选择，再更新启动器')
       return core.reserveLauncherUpdate()
     },
     check: () => checkForUpdate(app.getVersion(), { appImage: process.env.APPIMAGE }),
@@ -493,26 +488,14 @@ if (hasLock) app.whenReady().then(async () => {
         if (launches.has(id)) throw new Error('请先完成或取消此实例的启动准备')
         return core.installMod(id, text(args[1], 80), resourceSource(args[2]))
       }
-      case 'chooseModpack': {
-        if (choosingPack) throw new Error('请先完成当前文件选择')
-        choosingPack = true
-        try {
-          const selected = await dialog.showOpenDialog(dialogWindow(), {
-            title: '选择 Minecraft 整合包',
-            properties: ['openFile'],
-            filters: [{ name: 'Modrinth 整合包', extensions: ['mrpack', 'zip'] }],
-          })
-          if (selected.canceled || !selected.filePaths[0]) return null
-          return await packSelections.choose(selected.filePaths[0])
-        } finally {
-          choosingPack = false
-        }
-      }
-      case 'importModpack': {
-        const options = args[1] === undefined ? {} : object(args[1])
-        const name = options.name === undefined ? undefined : text(options.name, 80)
-        return packSelections.use(text(args[0], 80), file => core.importModpack(file, { name }))
-      }
+      case 'prepareModpackLocal': return core.prepareModpackLocal(text(args[0], 80), async () => {
+        const selected = await dialog.showOpenDialog(dialogWindow(), { title: '选择要预览的 Minecraft 整合包', properties: ['openFile'], filters: [{ name: 'Modrinth 整合包', extensions: ['mrpack', 'zip'] }] })
+        return selected.canceled || !selected.filePaths[0] ? null : selected.filePaths[0]
+      })
+      case 'prepareModpackOnline': return core.prepareModpackOnline(resourceSource(args[0]), text(args[1], 80), text(args[2], 80), text(args[3], 80))
+      case 'modpackPlanPage': return core.modpackPlanPage(text(args[0], 80), object(args[1]))
+      case 'commitModpackPlan': return core.commitModpackPlan(text(args[0], 80), object(args[1]) as unknown as Parameters<LauncherCore['commitModpackPlan']>[1])
+      case 'cancelModpackPreparation': return core.cancelModpackPreparation(text(args[0], 80))
       case 'searchModpacks': {
         const options = args[1] === undefined ? {} : object(args[1])
         return core.searchModpacks(text(args[0], 200), {
@@ -534,13 +517,6 @@ if (hasLock) app.whenReady().then(async () => {
       }
       case 'cancelResourceInstall': return core.cancelResourceInstall(text(args[0], 80), text(args[1], 80))
       case 'modpackVersions': return core.modpackVersions(text(args[0], 80), resourceSource(args[1]))
-      case 'installModpack': {
-        const options = args[1] === undefined ? {} : object(args[1])
-        return core.installModpack(text(args[0], 80), {
-          name: options.name === undefined ? undefined : text(options.name, 80),
-          source: resourceSource(options.source),
-        })
-      }
       case 'openInstance': {
         const result = await shell.openPath(core.getInstancePath(text(args[0], 80)))
         if (result) throw new Error(result)
@@ -600,5 +576,4 @@ app.on('before-quit', () => {
   launches.close()
   core?.cancelPendingOperations()
   accounts?.cancelLogin()
-  void packSelections?.close().catch(() => {})
 })

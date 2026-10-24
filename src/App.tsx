@@ -11,6 +11,7 @@ import { plainNotes } from './release-notes'
 import AccountView from './components/AccountView'
 import DownloadsView, { type DownloadInput, type PackTask } from './components/DownloadsView'
 import ModpacksView from './components/ModpacksView'
+import type { PackPlanSummary } from '../desktop/modpack-plan-types'
 import MemorySettings from './components/MemorySettings'
 import JavaSettings from './components/JavaSettings'
 import InstanceSettings, { createInstanceSettingsDraft, parseInstanceJvmArgs, type InstanceSettingsDraft } from './components/InstanceSettings'
@@ -164,7 +165,7 @@ export default function App() {
     setSnapshot(next)
     setPackTasks(tasks => tasks.map(task => {
       if (task.status !== 'active' || task.instanceId) return task
-      const created = next.instances.find(instance => instance.modpack?.source === task.source && !task.existingIds.includes(instance.id) && instance.name === task.name)
+      const created = next.instances.find(instance => instance.modpack?.operationId === task.id)
       return created ? { ...task, instanceId: created.id } : task
     }))
   }, [])
@@ -440,28 +441,26 @@ export default function App() {
     setBusy(current => ({ ...current, [`cancel-${id}`]: true }))
     try {
       const instance = instances.find(item => item.id === id)
-      await call(instance && instance.status !== 'installing' && busy[id] ? 'cancelLaunch' : 'cancelInstall', id)
+      await call(!instance && packTasks.some(task => task.id === id) ? 'cancelModpackPreparation' : instance && instance.status !== 'installing' && busy[id] ? 'cancelLaunch' : 'cancelInstall', id)
       await refresh()
     }
     finally { setBusy(current => ({ ...current, [`cancel-${id}`]: false })) }
   }
-  async function installPack(method: 'installModpack' | 'importModpack', sourceId: string, name: string, resourceSource: ResourceSource = 'modrinth') {
-    if (packOperationActive.current) throw new Error('已有整合包正在安装，请完成或取消当前任务后再试。')
+  async function commitPackPlan(planId: string, options: { name: string; selectedOptionalIds: string[]; operationId: string }, plan: PackPlanSummary & { source: 'local' | ResourceSource }) {
+    if (packOperationActive.current) throw new Error('已有整合包正在安装，请等待当前任务结束。')
     packOperationActive.current = true
-    const source = method === 'importModpack' ? 'local' : resourceSource
-    const id = source === 'local' ? `localpack-${sourceId}` : source === 'bbsmc' ? `modpack-bbsmc-${sourceId}` : `modpack-${sourceId}`
-    const task: PackTask = { id, name, source, status: 'active', startedAt: Date.now(), existingIds: instances.map(instance => instance.id) }
+    const id = options.operationId
+    const task: PackTask = { id, name: options.name, source: plan.source, status: 'active', startedAt: Date.now(), existingIds: instances.map(instance => instance.id) }
     setPackTasks(tasks => [...tasks.filter(item => item.id !== id), task])
     try {
-      const next = await call<Snapshot>(method, sourceId, { name, ...(method === 'installModpack' ? { source: resourceSource } : {}) })
-      applySnapshot(next)
-      const installed = next.instances.find(instance => instance.modpack?.source === task.source && !task.existingIds.includes(instance.id) && instance.name === name)
-      if (installed) setSelectedId(installed.id)
-      setPackTasks(tasks => tasks.map(item => item.id === id ? { ...item, status: 'complete', instanceId: installed?.id || item.instanceId } : item))
-      setToast(`${name} 已安装完成。`)
+      const result = await call<{ operationId: string; instanceId: string }>('commitModpackPlan', planId, options)
+      if (result.operationId !== id || !result.instanceId) throw new Error('整合包安装回执不一致，请查看任务。')
+      await refresh(); setSelectedId(result.instanceId)
+      setPackTasks(tasks => tasks.map(item => item.id === id ? { ...item, status: 'complete', instanceId: result.instanceId } : item))
+      setToast(`${options.name} 已安装完成。`)
+      return result
     } catch (error) {
-      const message = errorText(error)
-      await refresh()
+      const message = errorText(error); await refresh()
       setPackTasks(tasks => tasks.map(item => item.id === id ? { ...item, status: message.includes('已取消') ? 'cancelled' : 'error', error: message } : item))
       throw error
     } finally { packOperationActive.current = false }
@@ -587,7 +586,7 @@ export default function App() {
         {resourcesOpened && <div hidden={view !== 'resources'}><ResourcesView source={resourceSource} setSource={setResourceSource} instances={instances} tasks={resourceTasks} progress={progress} install={installResource} cancel={cancelResource} showContent={showInstanceContent} openUrl={openUrl} /></div>}
         {view === 'discover' && <Discover source={resourceSource} setSource={setResourceSource} openUrl={openUrl} instances={instances} installed={async name => { await refresh(); setToast(`${name} 已安装，必需依赖已一并处理。`) }} />}
         {view === 'downloads' && <DownloadsView tab={downloadTab} setTab={setDownloadTab} instances={instances} progress={progress} busy={busy} taskErrors={taskErrors} packTasks={packTasks} javaTasks={javaTasks} resourceTasks={resourceTasks} cancelResource={cancelResource} backupTasks={backupTasks} cancelBackup={cancelWorldBackup} openBackup={openWorldBackup} showContent={showInstanceContent} cancelJava={async id => { await call('cancelJavaInstall', id) }} retryJava={async major => { await call('installJava', major) }} download={downloadGame} install={installInstance} cancel={cancelDownload} showGame={id => { setSelectedId(id); changeView('library') }} showLogs={id => { setSelectedId(id); changeView('logs') }} showPacks={source => { if (source && source !== 'local') setResourceSource(source); changeView('modpacks') }} />}
-        {view === 'modpacks' && <ModpacksView source={resourceSource} setSource={setResourceSource} tasks={packTasks} progress={progress} installOnline={(versionId, name, source) => installPack('installModpack', versionId, name, source)} importLocal={(token, name) => installPack('importModpack', token, name)} cancel={cancelDownload} showTasks={showTasks} openUrl={openUrl} />}
+        {view === 'modpacks' && <ModpacksView source={resourceSource} setSource={setResourceSource} tasks={packTasks} progress={progress} commitPlan={commitPackPlan} cancel={cancelDownload} showTasks={showTasks} openUrl={openUrl} />}
         {settingsOpened && snapshot && <div hidden={view !== 'settings'}><SettingsView autoUpdate={autoUpdate} setAutoUpdate={setAutoUpdate} checkUpdate={() => checkUpdate(true)} update={update} openUpdate={() => setUpdateOpen(true)} theme={theme} setTheme={setTheme} minimizeOnLaunch={minimizeOnLaunch} setMinimizeOnLaunch={setMinimizeOnLaunch} instance={selectedInstance} settings={snapshot.settings} rootDir={snapshot.rootDir} javaTasks={javaTasks} save={async settings => {
           const next = await call<Snapshot>('updateSettings', settings)
           // This response owns global settings only. Instance state may have

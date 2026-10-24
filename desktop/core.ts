@@ -6,6 +6,10 @@ import os from 'node:os'
 import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import { promisify } from 'node:util'
 import AdmZip from 'adm-zip'
+import { PackSelections } from './pack-selection'
+import { createModpackPlan, modpackPlanPage, applyOptionalSelection, type ModpackPlan } from './modpack-plan'
+import type { PackPlanSummary, PackPlanPageOptions } from './modpack-plan-types'
+import { applySavedPackSelection, type PackSelectionRecord } from './modpack-selection-record'
 import { MODPACK_LIMITS, PACK_REDIRECT_HOSTS, readModpack, validatePackPath, validatePackUrl, type PackPreview, type ParsedModpack } from './modpack'
 import { installForge, loaderMetadataUrl, parseLoaderVersions, type LoaderVersion } from './loader'
 import { effectiveMemory, type MemorySystem } from './memory'
@@ -110,6 +114,8 @@ export interface Instance {
     archiveSha1: string
     archiveSha512: string
     applied: boolean
+    selection?: PackSelectionRecord
+    operationId?: string
   }
 }
 export interface LauncherSettings {
@@ -464,12 +470,19 @@ export class LauncherCore {
   private pendingWrites = 0
   private pendingLauncherOperations = 0
   private launcherUpdateReserved = false
+  private readonly preparedPackSources: PackSelections<ModpackPlan>
+  private preparedPackSourcesReady?: Promise<void>
+  private preparedPacks = new Map<string, { token: string; plan: ModpackPlan; expires: number;
+    source: Pick<NonNullable<Instance['modpack']>, 'source' | 'projectId' | 'remoteVersionId' | 'modrinthVersionId'> }>()
+  private packOperations = new Map<string, AbortController>()
+  private packOperationIds = new Set<string>()
   private initialized = false
   private manifestCache?: { at: number; value: ManifestIndex }
   readonly rootDir: string
 
   constructor(rootDir: string, private readonly emit: (event: CoreEvent) => void = () => {}, options: CoreOptions = {}) {
     this.rootDir = path.resolve(rootDir)
+    this.preparedPackSources = new PackSelections(this.rootDir, async file => createModpackPlan(await readModpack(file)))
     // Injected fetchers (tests) are used as-is; the real network goes through the optional mirror.
     this.fetcher = options.fetch ?? createMirrorFetch(globalThis.fetch, {
       source: () => this.settings.downloadSource ?? defaultDownloadSource(),
@@ -2246,6 +2259,7 @@ export class LauncherCore {
             createHash('sha512').update(pack.archive).digest('hex') !== instance.modpack.archiveSha512) {
           throw new Error('保存的整合包已被修改，请重新导入')
         }
+        if (instance.modpack.selection !== undefined) pack = applySavedPackSelection(pack, instance.modpack.selection)
         if (pack.preview.unsupportedReason) throw new Error(pack.preview.unsupportedReason)
         if (pack.preview.minecraftVersion !== instance.version || pack.preview.loader !== instance.loader ||
             pack.preview.loaderVersion !== instance.loaderVersion) {
@@ -2583,6 +2597,9 @@ export class LauncherCore {
     this.datapackInstallCapabilities.clear()
     this.modDetailViews.clear()
     this.localModImportCapabilities.clear()
+    this.preparedPacks.clear()
+    for (const operation of this.packOperations.values()) operation.abort(new DOMException('启动器正在退出', 'AbortError'))
+    void this.preparedPackSources.close().catch(() => {})
     for (const read of this.modDetailReads.values()) read.controller.abort(new DOMException('启动器正在退出', 'AbortError'))
     for (const read of this.datapackReads.values()) read.controller.abort(new DOMException('启动器正在退出', 'AbortError'))
     for (const controller of [...this.installs.values(), ...this.javaDownloads.values(), ...this.launchControllers.values(),
@@ -3078,6 +3095,97 @@ export class LauncherCore {
     ).map(version => this.resourceVersion(version, source, 'modpack'))
   }
 
+  private async withPackOperation<T>(operationId: string, work: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    this.assertNoLauncherUpdate()
+    if (!this.initialized || typeof operationId !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(operationId) ||
+        this.packOperationIds.has(operationId) || this.packOperationIds.size >= 4096) throw new Error('无效或已使用的整合包操作标识')
+    if (this.packOperations.size || this.installs.size || this.javaDownloads.size || this.launching.size || this.processes.size) throw new Error('请等待现有安装、游戏或整合包任务结束')
+    const finish = this.beginLauncherOperation(), controller = new AbortController()
+    this.packOperationIds.add(operationId); this.packOperations.set(operationId, controller)
+    try { return await work(controller.signal) }
+    catch (error) { if (controller.signal.aborted) throw new Error('整合包操作已取消'); const message = error instanceof Error ? error.message : ''; throw new Error((error as NodeJS.ErrnoException)?.code || /https?:\/\/|\/Users\/|\/private\//.test(message) ? '整合包源文件或传输校验未完成，请重新预览' : message || '整合包操作未完成') }
+    finally { this.packOperations.delete(operationId); finish() }
+  }
+
+  private async ensurePackSources(): Promise<void> {
+    this.preparedPackSourcesReady ??= this.preparedPackSources.init()
+    await this.preparedPackSourcesReady
+  }
+
+  private rememberPreparedPack(token: string, plan: ModpackPlan,
+    source: Pick<NonNullable<Instance['modpack']>, 'source' | 'projectId' | 'remoteVersionId' | 'modrinthVersionId'>): PackPlanSummary & { planId: string; source: 'local' | ResourceSource; expiresAt: string } {
+    const planId = randomUUID(), expires = Date.now()+120000
+    this.preparedPacks.clear() // At most one bounded archive plan retained in memory.
+    this.preparedPacks.set(planId, { token, plan, expires, source })
+    return structuredClone({ ...plan.summary, planId, source: source.source, expiresAt: new Date(expires).toISOString() })
+  }
+
+  async prepareModpackLocal(operationId: string, pick: () => Promise<string | null>) {
+    return this.withPackOperation(operationId, async signal => {
+      this.preparedPacks.clear(); await this.ensurePackSources(); signal.throwIfAborted()
+      const file = await pick(); signal.throwIfAborted(); if (!file) return null
+      const chosen = await this.preparedPackSources.choose(file, { signal }); signal.throwIfAborted()
+      return this.rememberPreparedPack(chosen.token, chosen.preview, { source: 'local' })
+    })
+  }
+
+  async prepareModpackOnline(source: ResourceSource, projectId: string, versionId: string, operationId: string) {
+    return this.withPackOperation(operationId, async signal => {
+      this.preparedPacks.clear(); const provider = resourceProvider(source)
+      sanitizeId(projectId); sanitizeId(versionId); await this.ensurePackSources(); signal.throwIfAborted()
+      const version = this.resourceVersion(await this.json<ModrinthVersion>(`${provider.api}/version/${encodeURIComponent(versionId)}`, signal), source, 'modpack')
+      if (version.id !== versionId || version.project_id !== projectId || version.externalOnly) throw new Error('整合包发布身份不符或需要从官网获取')
+      const files = version.files.filter(file => file.filename.toLowerCase().endsWith('.mrpack'))
+      const primary = files.filter(file => file.primary), file = primary.length === 1 ? primary[0] : primary.length === 0 && files.length === 1 ? files[0] : undefined
+      if (!file || !validHash(file.hashes.sha1) || !/^[a-f0-9]{128}$/i.test(file.hashes.sha512 ?? '') || !Number.isSafeInteger(file.size) || file.size < 22 || file.size > MODPACK_LIMITS.archiveBytes) throw new Error('整合包主文件有歧义或校验声明无效')
+      const url = validatePackUrl(file.url); assertNetworkUrl(url, provider.downloads)
+      const directory = safeJoin(this.rootDir, `packs/prepare-${randomUUID()}`)
+      await fs.mkdir(directory, { recursive: true, mode: 0o700 }); signal.throwIfAborted()
+      const archivePath = path.join(directory, 'archive.mrpack')
+      await this.download({ file: archivePath, download: { url, sha1: file.hashes.sha1, sha512: file.hashes.sha512!, size: file.size }, allowedHosts: provider.downloads }, signal)
+      const chosen = await this.preparedPackSources.registerVerified(archivePath, { archiveBytes: file.size, sha1: file.hashes.sha1, sha512: file.hashes.sha512!, signal })
+      signal.throwIfAborted()
+      if (!version.game_versions.includes(chosen.preview.summary.preview.minecraftVersion) || !version.loaders.some(loader => loader === chosen.preview.summary.preview.loader || chosen.preview.summary.preview.loader === 'vanilla' && ['minecraft','vanilla'].includes(loader))) throw new Error('归档与所选发布的游戏或加载器声明不符')
+      return this.rememberPreparedPack(chosen.token, chosen.preview, { source, projectId, remoteVersionId: versionId, ...(source === 'modrinth' ? { modrinthVersionId: versionId } : {}) })
+    })
+  }
+
+  private currentPackPlan(planId: string) {
+    const prepared = this.preparedPacks.get(planId)
+    if (!prepared || prepared.expires <= Date.now()) { this.preparedPacks.delete(planId); throw new Error('整合包预览已过期或失效，请重新选择') }
+    return prepared
+  }
+
+  modpackPlanPage(planId: string, options: PackPlanPageOptions = {}) {
+    const prepared = this.currentPackPlan(planId)
+    return modpackPlanPage(prepared.plan, options)
+  }
+
+  async commitModpackPlan(planId: string, options: { name: string; selectedOptionalIds: string[]; operationId: string }) {
+    if (!options || Object.keys(options).sort().join(',') !== ['name','operationId','selectedOptionalIds'].sort().join(',') || typeof options.name !== 'string' || !options.name.trim() || options.name.trim().length > 64) throw new Error('整合包确认参数无效')
+    const prepared = this.currentPackPlan(planId)
+    // Validate selection before consuming the capability; no renderer plan or paths accepted.
+    applyOptionalSelection(prepared.plan, options.selectedOptionalIds)
+    return this.withPackOperation(options.operationId, async signal => {
+      this.preparedPacks.delete(planId)
+      const validated = await this.preparedPackSources.use(prepared.token, async file => {
+        signal.throwIfAborted(); const plan = createModpackPlan(await readModpack(file)); signal.throwIfAborted()
+        if (plan.summary.planDigest !== prepared.plan.summary.planDigest || plan.summary.archiveSha512 !== prepared.plan.summary.archiveSha512) throw new Error('整合包归档或规划已变化，请重新预览')
+        const pack = applyOptionalSelection(plan, options.selectedOptionalIds)
+        const selection: PackSelectionRecord = { schema: 1, archiveSha512: plan.summary.archiveSha512, planDigest: plan.summary.planDigest, selectedOptionalIds: [...options.selectedOptionalIds].sort() }
+        return { pack, selection }
+      }, { signal })
+      // Finish all source-cache checks before creating any instance. Subsequent
+      // work uses the verified in-memory archive, never reopens this cache path.
+      await this.createPackInstance(validated.pack, { name: options.name, selection: validated.selection, operationId: options.operationId }, prepared.source, signal)
+      const instance = this.instances.find(item => item.modpack?.operationId === options.operationId)
+      if (!instance) throw new Error('整合包安装回执缺失，请查看任务')
+      return { operationId: options.operationId, instanceId: instance.id }
+    })
+  }
+
+  cancelModpackPreparation(operationId: string): void { this.packOperations.get(operationId)?.abort(new DOMException('整合包操作已取消', 'AbortError')) }
+
   async inspectModpack(filePath: string): Promise<PackPreview> {
     return structuredClone((await readModpack(filePath)).preview)
   }
@@ -3140,7 +3248,7 @@ export class LauncherCore {
   }
 
   private async createPackInstance(
-    pack: ParsedModpack, options: { name?: string },
+    pack: ParsedModpack, options: { name?: string; selection?: PackSelectionRecord; operationId?: string },
     source: Pick<NonNullable<Instance['modpack']>, 'source' | 'projectId' | 'modrinthVersionId' | 'remoteVersionId'>,
     signal?: AbortSignal,
   ): Promise<LauncherSnapshot> {
@@ -3163,6 +3271,7 @@ export class LauncherCore {
         name: preview.name, versionId: preview.versionId, ...source,
         archiveSha1: createHash('sha1').update(pack.archive).digest('hex'),
         archiveSha512: createHash('sha512').update(pack.archive).digest('hex'), applied: false,
+        ...(options.selection ? { selection: options.selection } : {}), ...(options.operationId ? { operationId: options.operationId } : {}),
       },
     }
     const directory = safeJoin(this.rootDir, `instances/${instance.id}`)
