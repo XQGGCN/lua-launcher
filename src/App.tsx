@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import {
   ArrowDownToLine, ArrowRight, ArrowUpRight, Boxes, Check,
   Download, FolderOpen, Gamepad2, Layers3, MemoryStick, Monitor, Moon, Palette, Puzzle,
@@ -18,6 +18,8 @@ import WindowPreferences, { type WindowPreferencesControl } from './components/W
 import type { WindowPreferences as LauncherWindowPreferences, WindowPreferencesStatus, ZoomPercent } from './api'
 import InstanceSettings, { createInstanceSettingsDraft, parseInstanceJvmArgs, type InstanceSettingsDraft } from './components/InstanceSettings'
 import InstanceContent from './components/InstanceContent'
+import InstanceLibrary from './components/InstanceLibrary'
+import { deriveInstanceLibrary, readLibraryPreferences, saveLibraryPreferences, resetLibraryPreferences, type LibraryLoaderFilter, type LibraryPreferences, type LibraryStorage } from './instance-library'
 import ResourcesView, { type ResourceInstallTask } from './components/ResourcesView'
 import type { InventoryKind, ResourceInstallInput, ResourceInstallReceipt, ResourceKind, ModTogglePreview, ModToggleResult, ModToggleSelection, WorldSelection, WorldBackupTask, WorldBackupResult, WorldZipTask, WorldZipResult } from './api'
 import type { InstanceOptions, ResolvedInstanceOptions } from './api'
@@ -66,6 +68,8 @@ function Horizon() {
 const statusLabels: Record<Instance['status'], string> = { 'not-installed': '等待安装', installing: '正在安装', ready: '准备就绪', running: '游戏运行中', error: '需要处理' }
 const count = (value: number) => new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 }).format(value)
 const percent = (progress?: Progress) => progress && progress.total > 0 ? Math.min(100, Math.round(progress.completed / progress.total * 100)) : 0
+const libraryStorage: LibraryStorage = { getItem: key => window.localStorage.getItem(key), setItem: (key, value) => window.localStorage.setItem(key, value) }
+const libraryStorageMode = isDesktop ? 'desktop' : 'preview'
 const selectedInstancePreference = `lua-selected-instance-${isDesktop ? 'desktop' : 'preview'}`
 function readSelectedInstance() {
   try { return localStorage.getItem(selectedInstancePreference) || '' } catch { return '' }
@@ -209,7 +213,10 @@ export default function App() {
   const authOperation = useRef(0)
   const authStateRevision = useRef(0)
   const [gameQuery, setGameQuery] = useState('')
-  const [gameFilter, setGameFilter] = useState('all')
+  const [gameFilter, setGameFilter] = useState<LibraryLoaderFilter>('all')
+  const [libraryPreferences, setLibraryPreferences] = useState(() => readLibraryPreferences(libraryStorage, libraryStorageMode))
+  const [libraryPage, setLibraryPage] = useState(0)
+  useEffect(() => { setMenuFor('') }, [gameQuery, gameFilter, libraryPreferences.preferences.layout, libraryPreferences.preferences.density, libraryPreferences.preferences.sortBy, libraryPreferences.preferences.direction, libraryPage])
   const [selectedId, setSelectedId] = useState(readSelectedInstance)
   const [editingInstanceId, setEditingInstanceId] = useState('')
   const [instanceDrafts, setInstanceDrafts] = useState<Record<string, InstanceSettingsDraft>>({})
@@ -336,7 +343,25 @@ export default function App() {
     + backupTasks.filter(task => ['active', 'cancelling'].includes(task.status)).length
   const resourceActive = new Set(resourceTasks.filter(task => task.status === 'active').map(task => task.instanceId))
   const backupActive = new Set(backupTasks.filter(task => ['active', 'cancelling'].includes(task.status)).map(task => task.instanceId))
-  const filtered = instances.filter(instance => instance.name.toLowerCase().includes(gameQuery.toLowerCase()) && (gameFilter === 'all' || instance.loader === gameFilter))
+  const libraryView = useMemo(() => {
+    try { return { result: deriveInstanceLibrary(instances, { preferences: libraryPreferences.preferences, query: gameQuery, loaderFilter: gameFilter, page: libraryPage, selectedId: selectedInstance?.id }), error: '' } }
+    catch (error) { return { result: undefined, error: errorText(error) } }
+  }, [snapshot?.instances, libraryPreferences.preferences, gameQuery, gameFilter, libraryPage, selectedInstance?.id])
+  useEffect(() => { if (libraryView.result && libraryPage !== libraryView.result.page) setLibraryPage(libraryView.result.page) }, [libraryView.result?.page, libraryPage])
+  function changeLibraryPreferences(patch: Partial<LibraryPreferences>) {
+    setMenuFor(''); setLibraryPage(0)
+    setLibraryPreferences(saveLibraryPreferences(libraryStorage, libraryStorageMode, { ...libraryPreferences.preferences, ...patch }))
+  }
+  function clearLibraryFilters() { setMenuFor(''); setGameQuery(''); setGameFilter('all'); setLibraryPage(0) }
+  function locateLibrarySelection(clearFilters: boolean) {
+    if (!selectedInstance) return
+    try {
+      const result = deriveInstanceLibrary(instances, { preferences: libraryPreferences.preferences, query: clearFilters ? '' : gameQuery, loaderFilter: clearFilters ? 'all' : gameFilter, page: libraryPage, selectedId: selectedInstance.id })
+      setMenuFor('')
+      if (clearFilters) { setGameQuery(''); setGameFilter('all') }
+      if ('page' in result.selection) setLibraryPage(result.selection.page)
+    } catch { /* Invalid search remains visible until explicitly corrected. */ }
+  }
   const openUrl = (url: string) => { void call('openExternal', url).catch(error => setToast(errorText(error))) }
   const changeView = (next: View) => { if (next === 'settings') setSettingsOpened(true); if (next === 'resources') setResourcesOpened(true); setView(next); document.querySelector('main')?.scrollTo(0, 0) }
   function showInstanceContent(id: string, kind?: ResourceKind) {
@@ -612,25 +637,18 @@ export default function App() {
                 <button type="button" onClick={() => selectedInstance ? openInstanceSettings(selectedInstance) : changeView('settings')}><MemoryStick size={17} /><span><small>内存</small><strong>{selectedInstance && resolved?.values.memoryMode === 'manual' ? `${(resolved.values.memoryMb / 1024).toFixed(1)} GB` : '自动分配'}</strong></span></button>
               </div>}
           </section>
-          <section className="library-section">
-            <div className="section-heading"><h2>我的实例 <span className="heading-count">{instances.length}</span></h2><button className="button secondary" onClick={showDownloadForm}><Plus size={16} />添加实例</button></div>
-            {instances.length > 3 && <div className="library-toolbar"><div className="segmented" aria-label="按加载器筛选">{[{ id: 'all', label: '全部' }, { id: 'vanilla', label: '原版' }, { id: 'fabric', label: 'Fabric' }, { id: 'forge', label: 'Forge' }, { id: 'neoforge', label: 'NeoForge' }].map(filter => <button key={filter.id} className={gameFilter === filter.id ? 'selected' : ''} onClick={() => setGameFilter(filter.id)} aria-pressed={gameFilter === filter.id}>{filter.label}</button>)}</div><label className="search-field compact"><Search size={16} /><input value={gameQuery} onChange={event => setGameQuery(event.target.value)} placeholder="搜索实例" aria-label="搜索游戏实例" /></label></div>}
-            <div className="version-table">
-              {!snapshot && !error ? <div className="loading-state"><Spinner />正在读取实例…</div> : filtered.length === 0 ? <div className="library-empty"><Gamepad2 size={34} strokeWidth={1.4} /><h3>{instances.length ? '没有符合条件的实例' : '还没有游戏实例'}</h3><p>{instances.length ? '换个关键词，或者清除筛选。' : '选择 Minecraft 版本和加载器，几分钟就能装好。'}</p>{instances.length > 0 ? <button className="text-button" onClick={() => { setGameFilter('all'); setGameQuery('') }}>清除筛选</button> : <button className="button primary" onClick={showDownloadForm}><Plus size={16} />添加第一个实例</button>}</div> : filtered.map(instance => <div key={instance.id} className={`version-row ${selectedInstance?.id === instance.id ? 'selected' : ''}`} onDoubleClick={event => { if ((event.target as HTMLElement).closest('.version-actions')) return; setSelectedId(instance.id); if (instance.status === 'ready' && account && !launchBlocked(instance)) primaryAction(instance) }}>
-                <button className="version-name" onClick={() => setSelectedId(instance.id)} aria-pressed={selectedInstance?.id === instance.id} title="单击选择，双击启动"><span className={`version-symbol loader-${instance.loader}`}>{instance.loader === 'vanilla' ? <Gamepad2 size={20} /> : <Layers3 size={20} />}</span><span><strong>{instance.name}</strong><small>{!isDesktop ? '预览实例' : instance.lastPlayed ? `上次游玩 ${new Date(instance.lastPlayed).toLocaleDateString('zh-CN')}` : '还没玩过'}</small></span></button>
-                <button className="version-meta" onClick={() => setSelectedId(instance.id)} tabIndex={-1}><strong>{instance.version}</strong><small><span className={`loader-dot loader-${instance.loader}`} />{loaderNames[instance.loader]}{instance.loaderVersion ? ` ${instance.loaderVersion}` : ''}</small></button>
-                <div className={`instance-status status-${instance.status}`}><span>{statusLabels[instance.status]}{instance.status === 'installing' && ` ${percent(progress[instance.id])}%`}</span>{instance.status === 'installing' && <progress value={percent(progress[instance.id])} max="100" aria-label={`${instance.name} 安装进度`} />}</div>
-                <div className="version-actions"><button type="button" className="icon-button" title="实例内容" aria-label={`查看 ${instance.name} 的内容`} onClick={() => showInstanceContent(instance.id)}><Package size={17} /></button><button type="button" className="icon-button" title="实例设置" aria-label={`设置 ${instance.name}`} onClick={() => openInstanceSettings(instance)}><Settings2 size={17} /></button><button className="icon-button" aria-label={`打开 ${instance.name} 的文件夹`} title="打开游戏文件夹" onClick={() => void run(`folder-${instance.id}`, 'openInstance', instance.id)} disabled={!isDesktop}><FolderOpen size={17} /></button><div className="row-menu"><button className="icon-button" title="更多" aria-label={`${instance.name} 的更多操作`} aria-expanded={menuFor === instance.id} onClick={() => setMenuFor(current => current === instance.id ? '' : instance.id)}><MoreHorizontal size={17} /></button>{menuFor === instance.id && <div className="menu-popover" role="menu">
-                  <button role="menuitem" onClick={() => { setMenuFor(''); setSelectedId(instance.id); changeView('logs') }}><Terminal size={15} />运行日志</button>
-                  <button role="menuitem" disabled={!isDesktop} onClick={() => { setMenuFor(''); setDuplicating(instance) }}><Copy size={15} />复制实例</button>
-                  <button role="menuitem" disabled={!isDesktop} onClick={() => { setMenuFor(''); void call('openCrashReports', instance.id).catch(error => setToast(errorText(error))) }}><FileWarning size={15} />崩溃报告</button>
-                  <button role="menuitem" className="danger" disabled={!isDesktop || instance.status === 'running' || instance.status === 'installing'} onClick={() => { setMenuFor(''); setRemoving(instance) }}><Trash2 size={15} />删除实例</button>
-                </div>}</div></div>
-                {instance.error && <p className="version-error">{instance.error}</p>}
-              </div>)}
-            </div>
-            {instances.length > 0 && <p className="library-note">每个实例都有独立的存档和模组文件夹。双击实例可以直接启动。</p>}
-          </section>
+          <InstanceLibrary instances={instances} result={libraryView.result} loading={!snapshot && !error} queryError={libraryView.error} preferences={libraryPreferences.preferences} preferenceIssue={libraryPreferences.issue}
+            query={gameQuery} loaderFilter={gameFilter} selected={selectedInstance} progress={progress} desktop={isDesktop} menuFor={menuFor} onMenu={setMenuFor}
+            working={id => Boolean(busy[id] || instanceSaving[id] || modFileBusy[id] || backupActive.has(id) || resourceActive.has(id))}
+            onQuery={value => { setGameQuery(value); setLibraryPage(0); setMenuFor('') }} onLoaderFilter={value => { setGameFilter(value); setLibraryPage(0); setMenuFor('') }}
+            onPreferences={changeLibraryPreferences} onResetPreferences={() => { setLibraryPreferences(resetLibraryPreferences(libraryStorage, libraryStorageMode)); setLibraryPage(0); setMenuFor('') }}
+            onClearFilters={clearLibraryFilters} onLocate={locateLibrarySelection} onPage={page => { setLibraryPage(page); setMenuFor('') }} onSelect={setSelectedId}
+            onDoubleClick={id => { const instance = instances.find(item => item.id === id); if (!instance) return; setSelectedId(id); if (instance.status === 'ready' && account && !launchBlocked(instance)) primaryAction(instance) }}
+            onAdd={showDownloadForm} onContent={id => showInstanceContent(id)} onSettings={id => { const instance = instances.find(item => item.id === id); if (instance) openInstanceSettings(instance) }}
+            onFolder={id => void run(`folder-${id}`, 'openInstance', id)} onLogs={id => { setMenuFor(''); setSelectedId(id); changeView('logs') }}
+            onDuplicate={id => { setMenuFor(''); const instance = instances.find(item => item.id === id); if (instance) setDuplicating(instance) }}
+            onCrash={id => { setMenuFor(''); void call('openCrashReports', id).catch(error => setToast(errorText(error))) }}
+            onRemove={id => { setMenuFor(''); const instance = instances.find(item => item.id === id); if (instance) setRemoving(instance) }} />
         </>}
         {view === 'instance-settings' && snapshot && (editingInstance && instanceDrafts[editingInstance.id] ? <>
           <div className="instance-switcher"><label htmlFor="instance-settings-target">游戏实例</label><select id="instance-settings-target" value={editingInstance.id} onChange={event => { const next = instances.find(item => item.id === event.target.value); if (next) openInstanceSettings(next) }}>{instances.map(item => <option key={item.id} value={item.id}>{item.name} · {item.version}</option>)}</select></div>

@@ -1,0 +1,61 @@
+.instance-library { margin-top: 26px; }
+.instance-library-toolbar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 13px 12px; }
+.instance-library-search { flex: 1 1 230px; min-width: 0; }
+.instance-library-search > label, .instance-library-control > span { display: block; margin-bottom: 7px; color: var(--ink-2); font-size: 12px; font-weight: 500; }
+.instance-library-search > div { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 8px 0 10px; background: var(--surface); border: 1px solid var(--line-strong); border-radius: var(--radius-sm); color: var(--ink-2); }
+.instance-library-search input { width: 100%; min-width: 0; border: 0; outline-offset: 3px; background: transparent; color: var(--ink); font: 13px var(--font); caret-color: var(--accent); }
+.instance-library-search input::placeholder { color: var(--ink-2); }
+.instance-library-search .icon-button { width: 30px; height: 30px; flex-shrink: 0; }
+.instance-library-control { flex: 0 0 auto; min-width: 0; }
+.instance-library-control select { width: 100%; max-width: 195px; min-height: 36px; padding: 7px 9px; font-size: 12px; }
+.instance-library-control .segmented { min-height: 36px; }
+.instance-library-control .segmented button { display: inline-flex; align-items: center; gap: 5px; min-height: 32px; padding: 6px 9px; }
+.instance-library-toolbar-note { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; margin: 12px 0 14px; }
+.instance-library-toolbar-note p { color: var(--ink-2); font-size: 11px; line-height: 1.8; }
+.instance-library-toolbar-note > div { display: flex; flex-wrap: wrap; gap: 12px; }
+.instance-library-toolbar-note .text-button { min-height: 30px; font-size: 12px; }
+.instance-library-preference-issue { margin: 12px 0; color: var(--warn); font-size: 12px; line-height: 1.8; }
+.instance-library-result-count { margin: 12px 0; color: var(--ink-2); font-size: 12px; line-height: 1.8; font-variant-numeric: tabular-nums; }
+.instance-library-selection-note { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 9px; margin: 12px 0; padding: 11px 13px; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--ink-2); font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; }
+.instance-library-items { list-style: none; padding: 0; margin: 0; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+.instance-library-item { position: relative; display: grid; grid-template-columns: minmax(180px, 1.35fr) minmax(155px, 1fr) minmax(120px, .8fr) auto; align-items: center; gap: 12px; min-width: 0; min-height: 76px; padding: 14px 15px; border-bottom: 1px solid var(--line); }
+.instance-library-item:last-child { border-bottom: 0; }
+.instance-library-item:first-child { border-radius: var(--radius) var(--radius) 0 0; }
+.instance-library-item:last-child { border-radius: 0 0 var(--radius) var(--radius); }
+.instance-library-item.selected { background: var(--accent-soft); }
+.instance-library-name { display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0; padding: 0; border: 0; background: transparent; color: var(--ink); text-align: left; cursor: pointer; }
+.instance-library-name > span:last-child { display: block; min-width: 0; }
+.instance-library-name strong { display: block; font-size: 14px; font-weight: 600; line-height: 1.65; overflow-wrap: anywhere; }
+.instance-library-name small, .instance-library-meta small { display: block; margin-top: 4px; font-size: 11px; color: var(--ink-2); line-height: 1.7; overflow-wrap: anywhere; }
+.instance-library-current { display: inline-block; margin-top: 4px; font-size: 11px; line-height: 1.7; color: var(--accent); }
+.instance-library-symbol { display: grid; place-items: center; width: 36px; height: 40px; flex-shrink: 0; color: var(--ink-2); background: var(--surface-2); border-radius: var(--radius-sm); }
+.instance-library-meta { min-width: 0; overflow-wrap: anywhere; }
+.instance-library-meta strong { display: block; font-size: 12px; color: var(--ink); font-weight: 500; line-height: 1.7; }
+.instance-library-meta > span { display: block; margin-top: 3px; font-size: 12px; color: var(--ink-2); line-height: 1.7; }
+.instance-library-status { display: flex; flex-direction: column; gap: 5px; min-width: 0; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.instance-library-status progress { display: block; max-width: 145px; width: 100%; height: 5px; accent-color: var(--accent); }
+.instance-library-status small { display: inline-flex; align-items: center; gap: 5px; color: var(--ink-2); font-size: 11px; }
+.instance-library-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 3px; }
+.instance-library-actions > .icon-button, .instance-library-actions .row-menu > .icon-button { width: 32px; height: 32px; }
+.instance-library-actions .row-menu { position: relative; }
+.instance-library-actions .menu-popover { z-index: 30; }
+.instance-library-error { grid-column: 1 / -1; margin: 0; color: var(--danger); font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; }
+.instance-library-items.layout-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(290px, 100%), 1fr)); gap: 12px; border: 0; background: transparent; }
+.instance-library .layout-grid .instance-library-item { grid-template-columns: minmax(0, 1fr); gap: 12px; align-items: start; padding: 16px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+.instance-library .layout-grid .instance-library-item.selected { background: var(--accent-soft); }
+.instance-library .layout-grid .instance-library-actions { padding-top: 9px; border-top: 1px solid var(--line); }
+.instance-library.density-compact .instance-library-item { min-height: 60px; padding-top: 9px; padding-bottom: 9px; gap: 8px 12px; }
+.instance-library.density-compact .instance-library-symbol { width: 30px; height: 34px; }
+.instance-library.density-compact .layout-grid .instance-library-item { padding: 12px; gap: 8px; }
+.instance-library-pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 12px; margin-top: 18px; color: var(--ink-2); font-size: 12px; font-variant-numeric: tabular-nums; }
+.instance-library-pagination .button { min-height: 34px; }
+@media (max-width: 1150px) {
+  .instance-library-item { grid-template-columns: minmax(160px, 1.3fr) minmax(135px, 1fr) minmax(100px, .8fr); }
+  .instance-library-actions { grid-column: 1 / -1; justify-content: flex-end; padding-top: 5px; }
+}
+@media (max-width: 800px) {
+  .instance-library-item { grid-template-columns: minmax(0, 1fr); align-items: start; gap: 10px; }
+  .instance-library-actions { justify-content: flex-start; padding-top: 8px; border-top: 1px solid var(--line); }
+  .instance-library-control { flex: 1 1 130px; }
+  .instance-library-control select { max-width: none; }
+}

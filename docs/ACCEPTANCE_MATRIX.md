@@ -1,6 +1,6 @@
 # 验收矩阵
 
-更新：2026-10-24。公开版本为 [0.10.2 Alpha](https://github.com/XQGGCN/lua-launcher/releases/tag/v0.10.2)，0.10.3、0.10.4、0.11.0、0.11.1、0.11.2、0.12.0、0.12.1、0.13.0、0.14.0、0.15.0与0.15.1本地完成待发行。L1静态/类型、L2确定性测试、L3真实网络与文件、L4原生桌面、L5真实账户/游戏/联机分别记录；测试桥不代替原生，CI不代替游玩。
+更新：2026-10-24。公开版本为 [0.10.2 Alpha](https://github.com/XQGGCN/lua-launcher/releases/tag/v0.10.2)，0.10.3、0.10.4、0.11.0、0.11.1、0.11.2、0.12.0、0.12.1、0.13.0、0.14.0、0.15.0、0.15.1与0.16.0本地完成待发行。L1静态/类型、L2确定性测试、L3真实网络与文件、L4原生桌面、L5真实账户/游戏/联机分别记录；测试桥不代替原生，CI不代替游玩。
 
 W=Windows x64，M=macOS ARM64，L=Linux x64。新架构单独列证据，官方有 Java 包不等于 Lua 安装包或游戏已支持。每次结果关联版本/commit、平台、命令/步骤和证据路径；私有日志与截图留在被忽略目录，不保存令牌。
 
@@ -26,6 +26,7 @@ W=Windows x64，M=macOS ARM64，L=Linux x64。新架构单独列证据，官方�
 | 0.14.0本地完成 | 完整1056/1056（新增65：image16/layout9/library33/Core7）、独立112/112=65新受管+11原创探针+36旧相关、构建通过；两实际P2历史链接与NFC扩张红→绿。UI14注入+1NFC定向/实际Canvas分别记录，非生产后端证据 | 生产Electron真实main/preload/Core/PNG/图库/布局/原创FS7项通过，6源/state不变、实际12439B规范PNG导出/2blob保留；仅原生打开/保存回调注入，0HTTP/进程/Java/game，无真实认证/账户写入/纹理下载，920容器与只读重启确认深色通过。未签名macARM包版本/架构/hash/ASAR八文件与完整PNG许可核同，包未执行；当前提交CI/公开资产、OS选择/保存及真实图片游戏另验；没有账户纹理、账号写入/披风、外部图或Java/game，2D非实际游戏渲染 |
 | 0.15.0本地完成 | 完整1102/1102（新增46项）/构建通过，生产Electron源码bundle真实窗口/FS7组、3源/state不变与920五容器宽度通过；UI9注入单独记录 | 两实际P2关闭挂起/最大化中间矩形已修，原生用BrowserWindow脚本API，非按钮/拖动/双击/多屏；Java枚举3空替身、vm_stat3尝试阻止/0实际子进程，无网络/Java/game。独立84/84=46新受管+10原创探针+28不重叠旧相关通过；未签名macARM版本/架构/hash/Mach-O/ZIP-ASAR/DMG尾标及八文件核验通过，包未执行。无缩放/强制重启；实际系统按钮/三平台/多屏与本提交CI/公开资产另验 |
 | 0.15.1本地完成 | 1130/1130（新增28=store14/zoom14）、独立103/103（28新+8原创+67旧相关）和最终构建通过，主JS555.71/gzip166.97保留提示；UI12+最终标签1分记 | 原生6组/三尺寸四档12组合和3源/state不变；key/menu脚本、wheel/drift合成，3Java空枚举/3vm_stat尝试阻止，0实际子进程/网络/Java/game；未签名macARM版本/架构/hash/ZIP-ASAR/DMG尾标/8文件核同，包未执行。实际OS键盘/菜单鼠标/pinch/caption与WinLinux/多屏、当前CI/公开资产另验 |
+| 0.16.0本地完成 | 1153/1153（新增23）、独立59/59=23新受管+7原创纯探针+28旧相关+1UI焦点组（3守卫）与构建通过；最终UI11组/16布局复跑，焦点行刷新卸载实际P2已修 | 生产Electron真实main/preload/Core/renderer/本地存储/原创FS9组及1240/920/880DIP×四组合12个125%布局通过，初始化后52源/state不变；shell.openPath结果明确替身，配置的Java/runtime/update替身均0调用、0子进程尝试/网络/外部打开/实例内容写入/picker。未签名macARM版本/架构/hash/ZIP-ASAR/DMG尾标及八文件核同，包未执行；本提交CI/公开资产与实际OS输入/Finder/WinLinux/200%/屏幕阅读器/性能另验 |
 
 ## 历史快照说明
 
@@ -251,3 +252,16 @@ W=Windows x64，M=macOS ARM64，L=Linux x64。新架构单独列证据，官方�
 | AC-ZOOM-05 | 920/880窄窗布局、草稿/焦点、图标导航名称和恢复入口可达 | UI12既有流程及8布局组合（直接harnessfactor）通过；最终aria-label修复后1项重载704CSSpx回归通过，9入口可读；两段证据不同源码归属 | `.local/ui-window-zoom-implementation-v0151.json`，本地证据不随源码分发 |
 | AC-ZOOM-06 | 1240/920/880三尺寸×四档，实际factor读回、重载/新窗/原生→融合和DIP不变 | 实际mac原生12factor/布局组合、reload125和后继融合100/目标125通过，DIP几何不随factor变；截图只含client，真实OS输入/混合DPI另验 | 生产源码bundle原生6组/12组合报告 |
 | AC-ZOOM-07 | 全量/独立/build/包版本架构和精确ASAR、当前提交CI/公开资产分别记录 | 完整1130/1130、独立103/103、build含tsc与未签名macARM版本/架构/hash/ZIP-ASAR/DMG尾标/8文件核同，包未执行；公开0.10.2和当前CI/资产边界不变，无账户/Java/game/远端发布 | [开发](devlog/0.15.1.md)、[审核](reviews/0.15.1.md)与本地包证据 |
+
+
+## 0.16.0 实例库验收
+
+| ID | 场景与通过条件 | 当前结果与边界 | 证据 |
+| --- | --- | --- | --- |
+| AC-LIBRARY-01 | 1–3实例也有搜索；已知字段/精确加载器筛选，原始与NFC/大小写后200码点限制，非法查询明确可改 | helper23项包含纯0/1/3/4/24/25/200/1000对象，不当真实千实例磁盘或低配性能；无世界/JAR/路径扫描 | `src/instance-library.test.ts`；[范围](INSTANCE_LIBRARY.md) |
+| AC-LIBRARY-02 | 四类稳定升降排序、真实ISO日期与epoch0、未知始终后置、输入不变 | 版本名称仅自然显示次序；本机lastPlayed是启动器登记而非进入世界/时长；原目标未扩大为云端记录 | helper23与7原创纯探针 |
+| AC-LIBRARY-03 | list/grid、standard/compact及排序4KiB有限枚举；desktop/preview隔离，读取不覆盖未知记录，保存失败保持本次可用 | 仅显式控件/reset写该key；新helper不持久query/filter/page或改选中key，不写Core schema/实例/world | helper、App；生产原生重载localStorage |
+| AC-LIBRARY-04 | 搜索/排序/分页不换真实当前ID，隐藏/跨页选择有提示和定位；实例及全局草稿会话内保持，菜单/业务动作按ID | 最终UI11组与生产原生9组分别验；定位只改筛选/页面，复制/删除仅打开确认后取消，运行/安装锁不放宽 | `App.tsx`、`InstanceLibrary.tsx`；生产IPC与原创FS |
+| AC-LIBRARY-05 | 后台记录更新移走焦点行时有限回退，不抢仍连接行或工具栏焦点，不改选中/页码 | 独立实际P2红→修复绿，1组3守卫；最终whole-App11组/16布局重跑，非完整屏幕阅读器/OS输入验收 | 独立焦点探针；[审核](reviews/0.16.0.md) |
+| AC-LIBRARY-06 | 四布局密度保留长名/状态/版本/全部操作、未知进度无假0%，窄窗和两主题可读 | 注入UI920/880×两主题×四组合16布局；生产mac原生125%在1240/920/880×四组合12布局、32CSSpx动作和容器宽度通过，已查看1240浅色列表与880深色网格截图 | UI注入与生产原生报告分记，不当200%/WinLinux/真实Finder |
+| AC-LIBRARY-07 | 全量/独立/build/当前包精确核验及当前提交CI/资产分层 | 1153全量/59独立、构建含tsc、未签名macARM版本/架构/hash/ZIP-ASAR/DMG尾标/八文件核同；包未执行，公开仍0.10.2，本提交CI/资产另验 | [开发](devlog/0.16.0.md)、[审核](reviews/0.16.0.md) |
