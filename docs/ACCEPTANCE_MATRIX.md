@@ -1,6 +1,6 @@
 # 验收矩阵
 
-更新：2026-10-24。公开版本为 [0.10.2 Alpha](https://github.com/XQGGCN/lua-launcher/releases/tag/v0.10.2)，0.10.3、0.10.4、0.11.0、0.11.1、0.11.2、0.12.0、0.12.1、0.13.0、0.14.0、0.15.0、0.15.1、0.16.0与0.17.0本地完成待发行。L1静态/类型、L2确定性测试、L3真实网络与文件、L4原生桌面、L5真实账户/游戏/联机分别记录；测试桥不代替原生，CI不代替游玩。
+更新：2026-10-24。公开版本为 [0.10.2 Alpha](https://github.com/XQGGCN/lua-launcher/releases/tag/v0.10.2)，0.10.3、0.10.4、0.11.0、0.11.1、0.11.2、0.12.0、0.12.1、0.13.0、0.14.0、0.15.0、0.15.1、0.16.0、0.17.0与0.17.1本地完成待发行。L1静态/类型、L2确定性测试、L3真实网络与文件、L4原生桌面、L5真实账户/游戏/联机分别记录；测试桥不代替原生，CI不代替游玩。
 
 W=Windows x64，M=macOS ARM64，L=Linux x64。新架构单独列证据，官方有 Java 包不等于 Lua 安装包或游戏已支持。每次结果关联版本/commit、平台、命令/步骤和证据路径；私有日志与截图留在被忽略目录，不保存令牌。
 
@@ -28,6 +28,7 @@ W=Windows x64，M=macOS ARM64，L=Linux x64。新架构单独列证据，官方�
 | 0.15.1本地完成 | 1130/1130（新增28=store14/zoom14）、独立103/103（28新+8原创+67旧相关）和最终构建通过，主JS555.71/gzip166.97保留提示；UI12+最终标签1分记 | 原生6组/三尺寸四档12组合和3源/state不变；key/menu脚本、wheel/drift合成，3Java空枚举/3vm_stat尝试阻止，0实际子进程/网络/Java/game；未签名macARM版本/架构/hash/ZIP-ASAR/DMG尾标/8文件核同，包未执行。实际OS键盘/菜单鼠标/pinch/caption与WinLinux/多屏、当前CI/公开资产另验 |
 | 0.16.0本地完成 | 1153/1153（新增23）、独立59/59=23新受管+7原创纯探针+28旧相关+1UI焦点组（3守卫）与构建通过；最终UI11组/16布局复跑，焦点行刷新卸载实际P2已修 | 生产Electron真实main/preload/Core/renderer/本地存储/原创FS9组及1240/920/880DIP×四组合12个125%布局通过，初始化后52源/state不变；shell.openPath结果明确替身，配置的Java/runtime/update替身均0调用、0子进程尝试/网络/外部打开/实例内容写入/picker。未签名macARM版本/架构/hash/ZIP-ASAR/DMG尾标及八文件核同，包未执行；本提交CI/公开资产与实际OS输入/Finder/WinLinux/200%/屏幕阅读器/性能另验 |
 | 0.17.0本地完成 | 完整1180/1180（新增27）、独立66/66=27新+7原创纯+28旧相关+3搜索DOM+1计时器DOM（62Node/4DOM）和构建通过；最终UI12组/4布局+5虚拟计时器守卫另记，两个有限P3已修 | 生产Electron实际main/preload/Core/renderer/本地存储/原创FS8组、6个125%布局与12零新增IPC/存储写入阶段通过，初始化后4源/state不变；初设置三读取回调为替身，切B后两读取另计，无真实Java/网络/子进程/外部打开/实例写入/picker。未签名macARM版本架构hash/ZIP-ASAR/DMG尾标/8文件核同，包未执行；本提交CI/公开资产、OS键盘/屏幕阅读器/WinLinux另验 |
+| 0.17.1本地完成 | 完整1204/1204（新增24）、独立85/85=24新+3原创纯+55旧相关+3DOM（82Node/3DOM）与构建通过；最终UI11组/4布局，有限审核无产品P1/P2/P3 | 生产Electron实际main/preload/Core/renderer/本地存储/原创FS7组、10目标、6个125%布局和11零新增IPC/存储阶段通过，4post-init源/state不变；生产instanceOptions显式A/B共5读取，配置Java/内存/要求/update均0调用，0子进程尝试/网络/外部打开/picker/实例写入。未签名macARM版本架构hash/ZIP-ASAR/DMG尾标/8文件核同，包未执行；补拍2搜索列表只计视觉，本提交CI/公开资产、OS输入/屏幕阅读器/WinLinux另验 |
 
 ## 历史快照说明
 
@@ -279,3 +280,16 @@ W=Windows x64，M=macOS ARM64，L=Linux x64。新架构单独列证据，官方�
 | AC-SETTINGSSEARCH-05 | 920/880两主题125%布局、目标可见、无横向溢出，键盘语义保留 | UI4布局；生产mac1240/920/880×两主题6个实际125%布局通过，未加200%或全局快捷键 | 原生renderer/既有缩放控制器；实际OS输入/WinLinux另验 |
 | AC-SETTINGSSEARCH-06 | 既有自动检查开关关闭取消尚未开始的计时任务，重新开启唯一安排 | 独立真实4秒红→绿及1计时器DOM组，作者5虚拟守卫；生产原生关闭后4.2秒阶段零callback，非搜索触发/非中断已开始HTTP | 旧开关有限P3；[审核](reviews/0.17.0.md) |
 | AC-SETTINGSSEARCH-07 | 初设置既有读与搜索零增量分开；完整/独立/build/包/当前CI发行分别记录 | 完整1180/独立66、构建、生产原生8组/12零增量阶段与4源/state不变；未签名macARM版本架构hash/ZIP-ASAR/DMG尾标及8文件核同，包未执行。公开仍0.10.2，当前CI/资产另验 | [开发](devlog/0.17.0.md)、[审核](reviews/0.17.0.md) |
+
+
+## 0.17.1 当前实例设置搜索验收
+
+| ID | 场景与通过条件 | 当前结果与边界 | 证据 |
+| --- | --- | --- | --- |
+| AC-INSTANCESEARCH-01 | 独立10固定目标/100码点与16KiB DTO，复用原normalizer；无私密值/全局控件虚假索引 | 新增24与3独立原创纯探针通过；global27只计旧相关，不重算新增 | `src/instance-settings-search.test.ts`；[范围](INSTANCE_SETTINGS_SEARCH.md) |
+| AC-INSTANCESEARCH-02 | 仅显式高级命中展开原details，DOM提交后单次RAF；永久来源控件/恢复动作行不改override或执行动作 | 手动关高级/HTML模态/禁用时真实DOM核对通过；无循环等待或偷偷重开，输入Enter不保存 | `InstanceSettingsSearch.tsx`；独立3DOM与UI11组 |
+| AC-INSTANCESEARCH-03 | owner/挂载/query/ticket绑定，A/B/ABA与离页废止，查询/高级重置但逐ID草稿exact保留 | dirty=false潜伏路径/JVM/数值原串重显独立核对；不承诺搜索/草稿刷新或重启恢复 | 完整App原创A/B；生产原生7组 |
+| AC-INSTANCESEARCH-04 | save/pick/detect同步开始先废止导航；保原busy/current锁与保存校验错误焦点，迟到A保存只归A | picker/detect与迟到成功保存为作者明确替身；生产原生客户端width错误焦点/零backend save单列 | UI11组、独立3DOM；原生11零新增阶段 |
+| AC-INSTANCESEARCH-05 | 键盘/静态文字标记、长内容与920/880两主题125%无横向溢出 | 作者UI4布局；生产mac三尺寸×两主题6布局、原定位图与另补2张列表视图已看，补拍不算行为组 | 脚本DOM/HTMLdialog/RAF非OS键盘、picker或屏幕阅读器 |
+| AC-INSTANCESEARCH-06 | 现有选中/生效配置读取与搜索零增量分开，无后端/schema/存储新增 | 原App/global/后端字节未改；显式instanceOptions共5读取，Java/内存/要求/更新替身0调用，4源/state初始化后不变 | Core/main/preload生产原生与端口报告 |
+| AC-INSTANCESEARCH-07 | 完整/独立/build/包版本架构及当前提交CI/发行分层 | 1204/85、构建、未签名macARM版本架构hash/ZIP-ASAR/DMG尾标/8文件核同，包未执行；公开0.10.2，本提交CI/资产另验 | [开发](devlog/0.17.1.md)、[审核](reviews/0.17.1.md) |
