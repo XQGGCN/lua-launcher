@@ -85,8 +85,10 @@ export function recommendedMemory(context: MemoryContext = {}): number {
  * macOS keeps deliberately small (often a few hundred MB on a 16 GB Mac) because it uses
  * spare RAM as file cache. Activity Monitor counts memory as used only when it is wired,
  * compressed or app (anonymous, non-purgeable) memory; cached files are dropped on demand.
- * This follows the same accounting when `totalBytes` and those counters are present, and
- * otherwise counts free, inactive, speculative and purgeable pages.
+ * This uses that estimate when all counters are present. Purgeable pages overlap the
+ * active/inactive queues, so they must never be added to inactive pages again. When
+ * complete accounting is unavailable, free + inactive + speculative is a fallback
+ * estimate, not a promise that all of those pages can be reclaimed immediately.
  * Returns undefined when the output is not recognised.
  */
 export function parseVmStat(output: string, totalBytes?: number): number | undefined {
@@ -94,19 +96,30 @@ export function parseVmStat(output: string, totalBytes?: number): number | undef
   if (!Number.isSafeInteger(pageSize) || pageSize <= 0) return undefined
   const pages = (label: string) => {
     const match = new RegExp(`^${label}:\\s+(\\d+)\\.?\\s*$`, 'm').exec(output)
-    return match ? Number(match[1]) : undefined
+    if (!match) return undefined
+    const value = Number(match[1])
+    if (!Number.isSafeInteger(value)) throw new Error('invalid page count')
+    return value
   }
-  const free = pages('Pages free')
-  if (free === undefined) return undefined
-  const purgeable = pages('Pages purgeable') ?? 0
-  const reclaimable = (free + (pages('Pages inactive') ?? 0) + (pages('Pages speculative') ?? 0) + purgeable) * pageSize
-  const wired = pages('Pages wired down'), compressed = pages('Pages occupied by compressor'), anonymous = pages('Anonymous pages')
-  let notInUse = 0
-  if (totalBytes && Number.isSafeInteger(totalBytes) && wired !== undefined && compressed !== undefined && anonymous !== undefined) {
-    notInUse = totalBytes - (wired + compressed + Math.max(0, anonymous - purgeable)) * pageSize
+  try {
+    const free = pages('Pages free')
+    if (free === undefined) return undefined
+    const purgeable = pages('Pages purgeable')
+    const wired = pages('Pages wired down'), compressed = pages('Pages occupied by compressor'), anonymous = pages('Anonymous pages')
+    const hasTotal = totalBytes !== undefined && Number.isSafeInteger(totalBytes) && totalBytes > 0
+    let value: number
+    if (hasTotal && wired !== undefined && compressed !== undefined && anonymous !== undefined && purgeable !== undefined) {
+      // Do not max this with a queue sum: inactive anonymous pages may still be in use.
+      if (purgeable > anonymous) return undefined
+      value = totalBytes! - (wired + compressed + anonymous - purgeable) * pageSize
+    } else {
+      // vm_stat's displayed free count already excludes the separately shown speculative count.
+      value = (free + (pages('Pages inactive') ?? 0) + (pages('Pages speculative') ?? 0)) * pageSize
+    }
+    return Number.isSafeInteger(value) && value >= 0 && (!hasTotal || value <= totalBytes!) ? value : undefined
+  } catch {
+    return undefined
   }
-  const value = Math.max(reclaimable, notInUse)
-  return Number.isSafeInteger(value) && value >= 0 ? value : undefined
 }
 
 function darwinAvailable(system: MemorySystem, totalBytes: number): number | undefined {

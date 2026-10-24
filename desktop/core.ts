@@ -23,6 +23,7 @@ import { createMirrorFetch, defaultDownloadSource, isDownloadSource, type Downlo
 import { analyzeCrash, type CrashAnalysis } from './crash-analysis'
 import { readWorldMapInfo, renderRegionTile, type MapDimension, type WorldMapInfo } from './world-map'
 import { inspectWorldZip, restoreWorldFromBackup, restoreWorldFromZip, safeWorldFolderName, type WorldRestoreResult, type WorldZipInspection } from './world-restore'
+import { inspectWorldRestoreRecovery, WorldRestoreRecoveryError } from './world-restore-transaction'
 import { isGameVersionId, javaRequirementOf, launchArguments, legacyAssetCopies, needsRosetta, type AssetIndex } from './legacy-version'
 import { exportWorldBackupZip, listWorldBackupZips, verifyWorldBackupZip, worldBackupZipPath, WorldZipError } from './world-zip'
 import type { WorldZipList, WorldZipResult, WorldZipSummary, WorldZipTask } from './world-zip-types'
@@ -487,18 +488,27 @@ export class LauncherCore {
     this.instance(id)
     if (!['mods', 'resourcepacks', 'shaderpacks', 'worlds'].includes(kind)) throw new Error('无效的资源类型')
     if (this.installs.has(id)) throw new Error('此实例正在安装，请完成或取消后刷新资源清单')
+    const generation = this.mutationGeneration.get(id) || 0
     const key = `${id}:${kind}`
     const active = this.inventoryScans.get(key)
     if (active) return structuredClone(await active.promise)
     if (this.inventoryScans.size >= 4) throw new Error('资源扫描任务较多，请稍后刷新')
     const controller = new AbortController()
-    const promise = this.inventoryScanner(this.getInstancePath(id), kind, {
+    const scan = () => this.inventoryScanner(this.getInstancePath(id), kind, {
       signal: controller.signal,
       ...(kind === 'mods' ? { managedModsFile: safeJoin(this.instanceDirectory(id), 'managed-mods.json') } : {}),
       ...(kind === 'resourcepacks' || kind === 'shaderpacks' ? { managedResourcesFile: safeJoin(this.instanceDirectory(id), 'managed-resources.json') } : {}),
-    }).then(result => {
+    })
+    // Reserve the key/global slot before asynchronous recovery inspection, so
+    // installation invalidation and shutdown also reach scans waiting at the gate.
+    const pending = kind === 'worlds' ? Promise.resolve().then(async () => {
+      await this.assertWorldRestoreSafe(id, controller.signal)
+      if (generation !== (this.mutationGeneration.get(id) || 0) || this.installs.has(id)) throw new Error('实例已变化，请刷新世界清单')
+      return scan()
+    }) : scan()
+    const promise = pending.then(result => {
       controller.signal.throwIfAborted()
-      if (this.installs.has(id)) throw new Error('扫描期间此实例开始安装，请完成或取消后刷新资源清单')
+      if (this.installs.has(id) || generation !== (this.mutationGeneration.get(id) || 0)) throw new Error('扫描期间此实例已变化，请完成文件操作后刷新资源清单')
       return { ...result, instanceId: id }
     }).finally(() => { this.inventoryScans.delete(key) })
     this.inventoryScans.set(key, { instanceId: id, controller, promise })
@@ -531,6 +541,15 @@ export class LauncherCore {
         instance.status === 'running' || instance.status === 'installing') throw new Error('请先关闭游戏并等待此实例的文件操作或设置保存完成，再读取世界详情')
     // Error and uninstalled instances may still contain useful worlds. Never call
     // assertInstanceUsable here: its recovery cleanup would violate read-only access.
+  }
+
+  /** Read-only recovery inspection: unlike mod recovery this never changes files. */
+  private async assertWorldRestoreSafe(id: string, signal?: AbortSignal): Promise<void> {
+    this.instance(id)
+    signal?.throwIfAborted()
+    const recovery = await inspectWorldRestoreRecovery(safeJoin(this.instanceDirectory(id), '.restore-staging'), safeJoin(this.instanceDirectory(id), 'game/saves'))
+    signal?.throwIfAborted()
+    if (recovery.blocked) throw new WorldRestoreRecoveryError()
   }
 
   private worldSelection(input: unknown): WorldSelection {
@@ -588,6 +607,7 @@ export class LauncherCore {
     try {
       // Do not call mod recovery here: a backup must never repair/delete source
       // files, including an unrelated marker in an error instance.
+      await this.assertWorldRestoreSafe(id, controller.signal)
       const result = await this.worldBackupCreator(this.instanceDirectory(id), selection, {
         backupRoot: this.worldBackupRoot(), instanceId: id, operationId, signal: controller.signal,
         onProgress: progress => {
@@ -601,6 +621,10 @@ export class LauncherCore {
       task.status = 'complete'; task.result = structuredClone(result)
       return structuredClone(result)
     } catch (error) {
+      if (error instanceof WorldRestoreRecoveryError) {
+        task.status = 'error'; task.error = error.message
+        throw error
+      }
       const code = error instanceof WorldBackupError ? error.code : ''
       if (controller.signal.aborted && code !== 'RECOVERY_REQUIRED') {
         task.status = 'cancelled'
@@ -743,13 +767,26 @@ export class LauncherCore {
 
   /** Spawn point, player position and region lists for the read-only map preview. */
   async worldMap(id: string, input: unknown): Promise<WorldMapInfo> {
+    this.assertWorldReadable(id)
+    const generation = this.mutationGeneration.get(id) || 0
+    await this.assertWorldRestoreSafe(id)
+    this.assertWorldReadable(id)
+    if (generation !== (this.mutationGeneration.get(id) || 0)) throw new Error('实例已变化，请刷新地图')
     const folder = this.worldFolder(id, input)
     try { if (!(await fs.lstat(folder)).isDirectory()) throw new Error() } catch { throw new Error('找不到这个世界，请刷新列表') }
-    return readWorldMapInfo(folder)
+    const result = await readWorldMapInfo(folder)
+    this.assertWorldReadable(id)
+    if (generation !== (this.mutationGeneration.get(id) || 0)) throw new Error('实例已变化，请刷新地图')
+    return result
   }
 
   /** One 512×512 PNG tile. At most two regions render at a time; recent tiles are cached. */
   async worldMapTile(id: string, input: unknown, dimension: unknown, x: unknown, z: unknown): Promise<Uint8Array> {
+    this.assertWorldReadable(id)
+    const generation = this.mutationGeneration.get(id) || 0
+    await this.assertWorldRestoreSafe(id)
+    this.assertWorldReadable(id)
+    if (generation !== (this.mutationGeneration.get(id) || 0)) throw new Error('实例已变化，请刷新地图')
     if (dimension !== 'overworld' && dimension !== 'nether' && dimension !== 'end') throw new Error('维度无效')
     if (!Number.isInteger(x) || !Number.isInteger(z)) throw new Error('区域坐标无效')
     const folder = this.worldFolder(id, input)
@@ -759,13 +796,19 @@ export class LauncherCore {
       }
       return 'missing'
     })()
+    this.assertWorldReadable(id)
+    if (generation !== (this.mutationGeneration.get(id) || 0)) throw new Error('实例已变化，请刷新地图')
     const key = JSON.stringify([folder, dimension, x, z, regionFile])
     const cached = this.worldMapTiles.get(key)
     if (cached) { this.worldMapTiles.delete(key); this.worldMapTiles.set(key, cached); return cached }
     if (this.worldMapActive >= 2) await new Promise<void>(resolve => this.worldMapQueue.push(resolve))
     this.worldMapActive++
     try {
+      this.assertWorldReadable(id)
+      if (generation !== (this.mutationGeneration.get(id) || 0)) throw new Error('实例已变化，请刷新地图')
       const tile = await renderRegionTile(folder, dimension as MapDimension, x as number, z as number)
+      this.assertWorldReadable(id)
+      if (generation !== (this.mutationGeneration.get(id) || 0)) throw new Error('实例已变化，请刷新地图')
       this.worldMapTiles.set(key, tile.png)
       while (this.worldMapTiles.size > 64) this.worldMapTiles.delete(this.worldMapTiles.keys().next().value!)
       return tile.png
@@ -786,6 +829,7 @@ export class LauncherCore {
     this.invalidateInventory(id)
     const phases: Record<string, string> = { scan: '正在检查世界文件', copy: '正在恢复世界文件', commit: '正在完成恢复' }
     try {
+      await this.assertInstanceUsable(id, controller.signal)
       const result = await operation({
         saves: safeJoin(this.instanceDirectory(id), 'game/saves'), staging: safeJoin(this.instanceDirectory(id), '.restore-staging'), signal: controller.signal,
         onProgress: progress => this.emit({ type: 'progress', instanceId: id, phase: phases[progress.phase] ?? '正在恢复世界', completed: progress.bytesDone, total: progress.bytesTotal ?? 0, bytesDownloaded: progress.bytesDone, unit: 'bytes' }),
@@ -793,8 +837,15 @@ export class LauncherCore {
       this.log(id, 'info', `世界已恢复为 saves/${result.folderName}（${result.fileCount} 个文件）`)
       return result
     } catch (error) {
-      if (controller.signal.aborted) throw new Error('世界恢复已取消，没有创建新世界')
-      throw new Error(errorMessage(error))
+      const recovery = await inspectWorldRestoreRecovery(safeJoin(this.instanceDirectory(id), '.restore-staging'), safeJoin(this.instanceDirectory(id), 'game/saves'))
+      if (recovery.blocked) {
+        instance.status = 'error'
+        instance.error = new WorldRestoreRecoveryError().message
+      }
+      if (error instanceof WorldRestoreRecoveryError) throw error
+      if (controller.signal.aborted) throw new Error('世界恢复已取消；暂存和可能创建的新目录已保留，请检查 .restore-staging 后重启；原世界未被替换')
+      if (error instanceof Error && error.name === 'WorldRestoreError') throw new Error(error.message)
+      throw new Error('世界恢复未完成；已保留暂存和可能创建的新目录，请检查 .restore-staging、磁盘空间与权限后重启；原世界未被替换')
     } finally {
       if (this.installs.get(id) === controller) this.installs.delete(id)
       this.worldRestores.delete(id)
@@ -832,7 +883,12 @@ export class LauncherCore {
     if (this.worldReads.size >= 2) throw new Error('世界详情读取任务较多，请稍后重试')
     const generation = this.mutationGeneration.get(id) || 0, epoch = this.worldReadEpoch
     const controller = new AbortController()
-    const promise = Promise.resolve().then(() => this.worldDetailsReader(this.instanceDirectory(id), selection, { source, signal: controller.signal, includeSeed }))
+    const promise = Promise.resolve().then(async () => {
+      await this.assertWorldRestoreSafe(id, controller.signal)
+      this.assertWorldReadable(id)
+      if (epoch !== this.worldReadEpoch || generation !== (this.mutationGeneration.get(id) || 0)) throw new Error('实例已变化，请重新读取世界详情')
+      return this.worldDetailsReader(this.instanceDirectory(id), selection, { source, signal: controller.signal, includeSeed })
+    })
       .then(result => {
         controller.signal.throwIfAborted()
         if (epoch !== this.worldReadEpoch || generation !== (this.mutationGeneration.get(id) || 0)) throw new Error('实例已变化，请重新读取世界详情')
@@ -923,6 +979,15 @@ export class LauncherCore {
   /** Recovery evidence is checked independently of launcher.json's retryable status. */
   async assertInstanceUsable(id: string, signal?: AbortSignal): Promise<void> {
     const instance = this.instance(id)
+    try { await this.assertWorldRestoreSafe(id, signal) }
+    catch (error) {
+      if (signal?.aborted) throw error
+      this.invalidateModTokens(id)
+      instance.status = 'error'
+      instance.error = new WorldRestoreRecoveryError().message
+      this.emit({ type: 'state', snapshot: this.snapshot() })
+      throw new WorldRestoreRecoveryError()
+    }
     if (this.modRecoveryBlocked.has(id)) throw new Error(instance.error || '模组文件修改需要人工检查，请先保留恢复资料')
     let blocked = false
     try {
@@ -1102,6 +1167,7 @@ export class LauncherCore {
     const from = this.instanceDirectory(id), to = safeJoin(this.rootDir, `instances/${copy.id}`)
     this.installs.set(id, new AbortController())
     try {
+      await this.assertInstanceUsable(id)
       await fs.cp(from, to, {
         recursive: true, errorOnExist: true, force: false, verbatimSymlinks: true,
         filter: file => !/(^|[\\/])(\.restore-staging|\.mod-staging-[^\\/]*|\.mod-toggle-[^\\/]*)$/.test(path.relative(from, file)),

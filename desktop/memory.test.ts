@@ -188,14 +188,49 @@ Pages occupied by compressor:             60000.
 `
 
 test('vm_stat follows Activity Monitor: only wired, compressed and app memory are in use', () => {
-  // Without the total, fall back to free + inactive + speculative + purgeable pages.
-  assert.equal(parseVmStat(VM_STAT), (5000 + 440000 + 8000 + 12000) * 16384)
+  // Purgeable pages overlap the active/inactive queues; never add them again.
+  assert.equal(parseVmStat(VM_STAT), (5000 + 440000 + 8000) * 16384)
   const total = 16 * 1024 ** 3
   assert.equal(parseVmStat(VM_STAT, total), total - (150000 + 60000 + (338000 - 12000)) * 16384)
-  // Heavy app memory: the reclaimable-page estimate is used when it is larger.
-  assert.equal(parseVmStat(VM_STAT.replace('338000', '900000'), total), (5000 + 440000 + 8000 + 12000) * 16384)
+  // Contradictory accounting must fall back to the caller's native provider, not inflate the estimate.
+  assert.equal(parseVmStat(VM_STAT.replace('338000', '900000'), total), undefined)
   assert.equal(parseVmStat('garbage'), undefined)
   assert.equal(parseVmStat('Mach Virtual Memory Statistics: (page size of 4096 bytes)\nPages active: 1.\n'), undefined)
+})
+
+test('macOS does not count purgeable inactive pages twice or promote inactive anonymous pages to available', () => {
+  const mbPages = (mb: number) => mb * MIB / 4096
+  const fixture = `Mach Virtual Memory Statistics: (page size of 4096 bytes)
+Pages free: ${mbPages(512)}.
+Pages active: ${mbPages(1024)}.
+Pages inactive: ${mbPages(4096)}.
+Pages speculative: 0.
+Pages wired down: ${mbPages(2048)}.
+Pages occupied by compressor: ${mbPages(512)}.
+Anonymous pages: ${mbPages(5120)}.
+Pages purgeable: ${mbPages(3072)}.
+`
+  const mac: MemorySystem = { totalmem: () => 8192 * MIB, freemem: () => 512 * MIB, platform: () => 'darwin', vmStat: () => fixture }
+  assert.equal(parseVmStat(fixture, 8192 * MIB), 3584 * MIB)
+  const allocation = effectiveMemory({ memoryMb: 4096 }, runtime, mac)
+  assert.equal(allocation.availableMb, 3584)
+  assert.equal(allocation.effectiveMb, 2048)
+  // With missing full-accounting counters, fallback counts each queue at most once.
+  assert.equal(parseVmStat(fixture), 4608 * MIB)
+})
+
+test('macOS rejects unsafe counter sizes and contradictory accounting before native fallback', () => {
+  const invalid = [
+    VM_STAT.replace('5000.', '9007199254740993.'),
+    VM_STAT.replace('12000.', '900000.'),
+    VM_STAT.replace('page size of 16384', 'page size of 9007199254740993'),
+  ]
+  for (const fixture of invalid) {
+    assert.equal(parseVmStat(fixture, 16 * 1024 ** 3), undefined)
+    const mac: MemorySystem = { ...system(16384, 4096, 'darwin'), vmStat: () => fixture }
+    assert.equal(getMemoryInfo(runtime, mac).availableMb, 4096)
+    assert.equal(getMemoryInfo(runtime, mac).availableBasis, 'free-memory-conservative')
+  }
 })
 
 test('macOS uses reclaimable memory from vm_stat instead of the tiny free-page count', () => {

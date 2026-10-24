@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash } from 'node:crypto'
 import { constants as fsConstants } from 'node:fs'
 import * as fs from 'node:fs/promises'
 import path from 'node:path'
@@ -6,10 +6,13 @@ import { Readable } from 'node:stream'
 import zlib from 'node:zlib'
 import { BACKUP_LIMITS, backupSafeName, parseBackupManifest, type BackupManifest } from './world-backup-manifest'
 import { crc32 } from './world-zip'
+import { beginWorldRestoreTransaction, publishWorldRestore, type RestoreEntry, type RestoreTransaction } from './world-restore-transaction'
 
 /*
  * Restoring worlds never overwrites anything: files are written into a private staging
- * directory on the same volume, checked, and only then renamed to a new folder in saves/.
+ * directory, checked, then copied into an exclusively reserved new folder in saves/.
+ * Completion is committed in an external recovery journal. This is not atomic directory
+ * visibility to other launchers; incomplete/failed operations are retained and block Lua.
  *
  *  - From a completed directory backup: every file is re-hashed against the manifest.
  *  - From a ZIP (a Lua export or any downloaded map): entries are inflated one at a time
@@ -263,22 +266,12 @@ async function writeStream(target: string, chunks: AsyncIterable<Buffer>, hash?:
   return written
 }
 
-async function commit(staging: string, saves: string, preferred: string, signal?: AbortSignal): Promise<string> {
-  signal?.throwIfAborted()
-  await fs.mkdir(saves, { recursive: true })
-  const name = await availableWorldName(saves, preferred)
-  const target = path.join(saves, name)
-  try { await fs.lstat(target); return fail('目标世界已存在，未覆盖') } catch (error) { if (error instanceof WorldRestoreError) throw error }
-  await fs.rename(staging, target)
-  return name
-}
-
-async function withStaging<T>(options: RestoreOptions, work: (directory: string) => Promise<T>): Promise<T> {
-  await fs.mkdir(options.staging, { recursive: true })
-  const directory = path.join(options.staging, randomUUID())
-  await fs.mkdir(directory)
-  try { return await work(directory) }
-  finally { await fs.rm(directory, { recursive: true, force: true }).catch(() => {}) }
+async function withStaging<T>(options: RestoreOptions, work: (directory: string, transaction: RestoreTransaction) => Promise<T>): Promise<T> {
+  options.signal?.throwIfAborted()
+  const transaction = await beginWorldRestoreTransaction(options.staging)
+  // Failed, cancelled and completed transactions remain as evidence. Never recursively
+  // delete a path after an external process may have replaced or edited it.
+  return work(transaction.payload, transaction)
 }
 
 /** Restores a completed directory backup (`backupDirectory/world` + `manifest.json`) as a new world. */
@@ -286,13 +279,14 @@ export async function restoreWorldFromBackup(backupDirectory: string, options: R
   const manifest = parseBackupManifest(await fs.readFile(path.join(backupDirectory, 'manifest.json')))
   const preferred = options.folderName ?? manifest.worldFolderName
   if (!safeWorldFolderName(preferred)) fail('世界名称不能包含特殊字符')
-  return withStaging(options, async staging => {
+  return withStaging(options, async (staging, transaction) => {
+    const entries: RestoreEntry[] = []
     const progress: WorldRestoreProgress = { phase: 'copy', filesDone: 0, filesTotal: manifest.fileCount, bytesDone: 0, bytesTotal: manifest.totalBytes }
     options.onProgress?.({ ...progress })
     for (const entry of manifest.entries) {
       options.signal?.throwIfAborted()
       const target = path.join(staging, ...entry.path.split('/'))
-      if (entry.type === 'directory') { await fs.mkdir(target, { recursive: true }); continue }
+      if (entry.type === 'directory') { await fs.mkdir(target, { recursive: true }); entries.push({ type: 'directory', path: entry.path }); continue }
       await fs.mkdir(path.dirname(target), { recursive: true })
       const source = path.join(backupDirectory, 'world', ...entry.path.split('/'))
       const handle = await fs.open(source, readFlags)
@@ -310,12 +304,13 @@ export async function restoreWorldFromBackup(backupDirectory: string, options: R
         })()
         const written = await writeStream(target, chunks, hash)
         if (written !== entry.sizeBytes || hash.digest('hex') !== entry.sha256) fail(`备份文件 ${entry.path} 与清单不一致，未恢复`)
+        entries.push({ type: 'file', path: entry.path, size: entry.sizeBytes, sha256: entry.sha256 })
       } finally { await handle.close() }
       progress.filesDone++
       options.onProgress?.({ ...progress })
     }
     options.onProgress?.({ ...progress, phase: 'commit' })
-    const folderName = await commit(staging, options.saves, preferred, options.signal)
+    const folderName = await publishWorldRestore(transaction, options.saves, preferred, entries, options.signal)
     return { folderName, fileCount: manifest.fileCount, directoryCount: manifest.directoryCount, totalBytes: manifest.totalBytes, source: 'backup' as const }
   })
 }
@@ -331,7 +326,8 @@ export async function restoreWorldFromZip(file: string, options: RestoreOptions)
     const preferred = options.folderName ?? plan.suggestedName
     if (!safeWorldFolderName(preferred)) fail('世界名称不能包含特殊字符')
     const expected = plan.manifest ? new Map(plan.manifest.entries.flatMap(entry => entry.type === 'file' ? [[entry.path, entry.sha256] as const] : [])) : undefined
-    return await withStaging(options, async staging => {
+    return await withStaging(options, async (staging, transaction) => {
+      const entries: RestoreEntry[] = plan.directories.map(name => ({ type: 'directory', path: name }))
       const progress: WorldRestoreProgress = { phase: 'copy', filesDone: 0, filesTotal: plan.files.length, bytesDone: 0, bytesTotal: plan.totalBytes }
       for (const directory of plan.directories) await fs.mkdir(path.join(staging, ...directory.split('/')), { recursive: true })
       for (const entry of plan.files) {
@@ -340,13 +336,14 @@ export async function restoreWorldFromZip(file: string, options: RestoreOptions)
         await fs.mkdir(path.dirname(target), { recursive: true })
         const hash = createHash('sha256')
         const chunks = (async function* () { for await (const chunk of entryData(handle, entry, info.size, options.signal)) { progress.bytesDone += chunk.length; yield chunk } })()
-        await writeStream(target, chunks, hash)
-        if (expected && expected.get(entry.name) !== hash.digest('hex')) fail(`${entry.name} 与备份清单的 SHA-256 不一致`)
+        const size = await writeStream(target, chunks, hash), sha256 = hash.digest('hex')
+        if (expected && expected.get(entry.name) !== sha256) fail(`${entry.name} 与备份清单的 SHA-256 不一致`)
+        entries.push({ type: 'file', path: entry.name, size, sha256 })
         progress.filesDone++
         options.onProgress?.({ ...progress })
       }
       options.onProgress?.({ ...progress, phase: 'commit' })
-      const folderName = await commit(staging, options.saves, preferred, options.signal)
+      const folderName = await publishWorldRestore(transaction, options.saves, preferred, entries, options.signal)
       return { folderName, fileCount: plan.files.length, directoryCount: plan.directories.length, totalBytes: plan.totalBytes, source: plan.format }
     })
   } finally { await handle.close() }

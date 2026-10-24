@@ -11,7 +11,7 @@
 ## Implementation scope
 
 Electron, React and TypeScript. Original UI and launcher integration; no copied PCL, HMCL or Modrinth implementation or brand assets.
-The current local version is 0.7.1 Alpha: modern Vanilla, Fabric, Forge and NeoForge installation; isolated instances; verified automatic Mojang Java provisioning and manual selection; per-instance Java, memory, JVM and game-window overrides; read-only one-level instance inventories, bounded selected-world metadata and explicit seed reveal, validated local manual complete directory backups, with separately confirmed single-mod filename disable/restore actions; verified resource-pack and Iris/OptiFine shader ZIP placement; task progress; logs; Microsoft account flow; and Modrinth / experimental BBSMC discovery and `.mrpack` installation. Public downloads remain 0.3.0 until the new commits pass their own CI and release checks. Broader feature parity remains a roadmap.
+The current public version is [0.10.2 Alpha](https://github.com/XQGGCN/lua-launcher/releases/tag/v0.10.2). It includes the 0.5–0.7.1 instance/settings/content/world-backup milestones incorporated in 0.8, plus theme selection and official skin heads (0.8), verified streaming world ZIP export (0.8), read-only dimension maps, restore/import into a new world, legacy-version adapters, crash analysis and instance copy/recoverable deletion (0.9), and BMCLAPI preferences with GitHub-based launcher updates (0.10). Modern Forge/NeoForge and supported `.mrpack` packs remain limited to Minecraft 1.20.1+ releases. Implemented legacy adapters do not establish full compatibility for every version or platform. Broader feature parity remains a roadmap.
 
 Version 0.3.0 implements 19 official Modrinth mod categories, corresponding BBSMC Chinese search facets, and the category-filter UI. Real optimization-category searches on both sources returned matching category tags for the first 20 results checked per source. Categories describe upstream project tags, not locally inferred mod behavior; this sample does not validate every category or mod combination.
 
@@ -19,7 +19,17 @@ Gameplay requires an authenticated Microsoft account with Minecraft Java entitle
 
 Automatic memory is the default. It combines physical RAM, a fresh runtime/OS availability estimate, the game workload hint and the selected Java architecture. The runtime's `process.availableMemory()` is preferred, with `os.freemem()` as a fallback. Reclaimable-memory and process-limit accounting depends on the runtime and platform. Both automatic and manual allocations preserve OS and Java native headroom, are capped again before launch, and refuse an allocation below the minimum budget. The saved manual preference is retained when switching modes.
 
-## Validation snapshot — 2026-10-21
+## Current validation — 2026-10-24
+
+The 0.10.2 [release run39734466434](https://github.com/XQGGCN/lua-launcher/actions/runs/39734466434) targets `9432352ad31621fbcbeaf6d39494691d8f1630dc`; tests/build/package succeeded on Windows x64, macOS ARM64 and Linux x64. Four unsigned assets are public. Main `cad65ec` changes explanatory text and the website only; this iteration reran the baseline suite as 568/568. New patches need their own tests and CI.
+
+Minecraft API access was approved on 2026-10-22. Committed maintainer/user records report full macOS sign-in, ownership/profile validation, Vanilla 1.21.1 startup, restart/session restoration and another launch from the 0.10.0 packaged app. The updater also downloaded, verified and opened a 0.10.1 DMG. This iteration read those records rather than repeating authentication/gameplay. Windows/Linux gameplay, broad legacy/loader/modpack coverage, actual world restoration and multiplayer remain separate validation work. See [Microsoft records](docs/MICROSOFT_LOGIN.md).
+
+The existing Render static site has been synchronized to the public 0.10.2 entry; deployment live state and exact public HTML bytes were verified. It does not host credentials or Minecraft TCP relay. The 0.10.3 restore-publication and macOS memory fixes passed 585 local tests, 79 independent targeted tests, build and local unsigned macARM package checks. They await current-commit release CI and public asset verification. Dedicated historical devlog/review evidence remains missing for 0.8–0.10; release notes and CI must not be relabelled as those reviews.
+
+## Historical validation snapshot — 2026-10-21
+
+The following paragraphs retain the original milestone evidence and its then-pending work. References to public 0.3, pending API approval or an unfinished 0.4 upload describe that historical snapshot, not current instructions. Version 0.4 was published and 0.5–0.7.1 was incorporated in public 0.8; absent historical native tests are not invented retroactively.
 
 All 156 deterministic tests passed locally for 0.3.0. Windows, Linux and macOS test/build results must be read from the matching [GitHub Actions](https://github.com/XQGGCN/lua-launcher/actions) run; local success is not a claim that all platform builds have passed. Public downloads use the [0.3.0 Release](https://github.com/XQGGCN/lua-launcher/releases/tag/v0.3.0) and its actual published assets.
 

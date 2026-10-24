@@ -490,12 +490,18 @@ test('instances can be duplicated with their files and removed only when idle', 
   await core.install(instance.id)
   await fs.mkdir(path.join(directory, 'instances', instance.id, 'game', 'saves', 'World'), { recursive: true })
   await fs.writeFile(path.join(directory, 'instances', instance.id, 'game', 'saves', 'World', 'level.dat'), 'level')
-  await fs.mkdir(path.join(directory, 'instances', instance.id, '.restore-staging', 'junk'), { recursive: true })
   const copy = await core.duplicateInstance(instance.id, 'Copy of original')
   assert.notEqual(copy.id, instance.id); assert.equal(copy.status, 'ready'); assert.equal(copy.playtimeMs, 0)
   assert.equal(await fs.readFile(path.join(directory, 'instances', copy.id, 'game', 'saves', 'World', 'level.dat'), 'utf8'), 'level')
   await assert.rejects(fs.access(path.join(directory, 'instances', copy.id, '.restore-staging')))
   await assert.rejects(core.duplicateInstance(instance.id, ''), /1–64/)
+  // Unknown recovery evidence must block copying rather than silently omit a
+  // potentially incomplete restored world and publish it as a ready instance.
+  const evidence = path.join(directory, 'instances', instance.id, '.restore-staging', 'junk')
+  await fs.mkdir(evidence, { recursive: true })
+  await fs.writeFile(path.join(evidence, 'keep.txt'), 'retained evidence')
+  await assert.rejects(core.duplicateInstance(instance.id, 'Unsafe copy'), /恢复资料/)
+  assert.equal(await fs.readFile(path.join(evidence, 'keep.txt'), 'utf8'), 'retained evidence')
   core.detectJava = async () => [testRuntime]
   await core.launch(copy.id, microsoftAccount)
   assert.throws(() => core.removableInstancePath(copy.id), /关闭游戏/)

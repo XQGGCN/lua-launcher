@@ -8,6 +8,7 @@ import AdmZip from 'adm-zip'
 import { createWorldDirectoryBackup } from './world-backup'
 import { exportWorldBackupZip } from './world-zip'
 import { availableWorldName, inspectWorldZip, restoreWorldFromBackup, restoreWorldFromZip, safeWorldFolderName } from './world-restore'
+import { inspectWorldRestoreRecovery } from './world-restore-transaction'
 
 const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex')
 const selection = (name: string) => ({ name, itemId: `worlds:${hash(Buffer.from(name))}` })
@@ -51,16 +52,18 @@ test('a directory backup restores into another instance as a new verified world 
   // Restoring again never overwrites.
   const again = await restoreWorldFromBackup(f.backupDirectory, { saves: f.targetSaves, staging: f.staging })
   assert.equal(again.folderName, 'Survival (2)')
-  assert.deepEqual(await fs.readdir(f.staging), [])
+  assert.equal((await fs.readdir(f.staging)).length, 2)
+  assert.equal((await inspectWorldRestoreRecovery(f.staging, f.targetSaves)).blocked, false)
   await expectTree(f.world, f.files)
 })
 
-test('a tampered backup file stops the restore and leaves no partial world', async t => {
+test('a tampered backup file stops the restore, retains recovery evidence and leaves no target world', async t => {
   const f = await fixture(t)
   await fs.writeFile(path.join(f.backupDirectory, 'world', 'level.dat'), 'level byteZ')
   await assert.rejects(restoreWorldFromBackup(f.backupDirectory, { saves: f.targetSaves, staging: f.staging }), /不一致/)
   assert.deepEqual(await fs.readdir(f.targetSaves).catch(() => []), [])
-  assert.deepEqual(await fs.readdir(f.staging), [])
+  assert.equal((await fs.readdir(f.staging)).length, 1)
+  assert.equal((await inspectWorldRestoreRecovery(f.staging, f.targetSaves)).blocked, true)
 })
 
 test('a Lua ZIP export restores with SHA-256 checks and reports its format', async t => {
@@ -112,11 +115,12 @@ test('ZIPs without a world, with traversal paths or with corrupted data are reje
   assert.deepEqual(await fs.readdir(f.targetSaves).catch(() => []), [])
 })
 
-test('cancellation stops a restore and removes the staging directory', async t => {
+test('cancellation stops a restore and preserves the staging directory for manual inspection', async t => {
   const f = await fixture(t)
   const controller = new AbortController()
   await assert.rejects(restoreWorldFromBackup(f.backupDirectory, { saves: f.targetSaves, staging: f.staging, signal: controller.signal,
     onProgress: progress => { if (progress.filesDone === 1) controller.abort() } }), (error: Error) => error.name === 'AbortError')
-  assert.deepEqual(await fs.readdir(f.staging), [])
+  assert.equal((await fs.readdir(f.staging)).length, 1)
+  assert.equal((await inspectWorldRestoreRecovery(f.staging, f.targetSaves)).blocked, true)
   assert.deepEqual(await fs.readdir(f.targetSaves).catch(() => []), [])
 })

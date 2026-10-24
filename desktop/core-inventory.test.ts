@@ -30,12 +30,15 @@ function inventoryResult(kind: InventoryKind): ResourceInventory {
 function scannerGates() {
   const calls: Array<{ directory: string; kind: InventoryKind; options: InventoryScanOptions;
     result: ReturnType<typeof deferred<ResourceInventory>> }> = []
+  const waiters: Array<{ count: number; resolve: () => void }> = []
   const scanner: typeof scanResourceInventory = async (directory, kind, options = {}) => {
     const result = deferred<ResourceInventory>()
     calls.push({ directory, kind, options, result })
+    for (const waiter of waiters) if (calls.length >= waiter.count) waiter.resolve()
     return result.promise
   }
-  return { scanner, calls }
+  const waitForCalls = (count: number) => calls.length >= count ? Promise.resolve() : new Promise<void>(resolve => waiters.push({ count, resolve }))
+  return { scanner, calls, waitForCalls }
 }
 
 async function fixture(t: TestContext, overrides: CoreOptions = {}) {
@@ -206,8 +209,8 @@ test('at most four unique scans run globally while an existing key remains share
   const second = await f.create('Second')
   const pending = kinds.map(kind => f.core.inventory(first.id, kind))
   const duplicate = f.core.inventory(first.id, 'mods')
-  assert.equal(gates.calls.length, 4)
   await assert.rejects(f.core.inventory(second.id, 'mods'), /任务较多/)
+  await gates.waitForCalls(4)
   assert.equal(gates.calls.length, 4)
   gates.calls[0].result.resolve(inventoryResult('mods'))
   await Promise.all([pending[0], duplicate])
@@ -220,10 +223,12 @@ test('at most four unique scans run globally while an existing key remains share
 
 test('shutdown cancellation reaches every scanner and shared subscriber, then releases all scan slots', async t => {
   const signals: AbortSignal[] = []
+  const allStarted = deferred()
   let respond = false
   const f = await fixture(t, { inventoryScanner: async (_directory, kind, options = {}) => {
     assert.ok(options.signal)
     signals.push(options.signal)
+    if (signals.length === 4) allStarted.resolve()
     if (respond) return inventoryResult(kind)
     return new Promise<ResourceInventory>((_resolve, reject) => {
       options.signal!.throwIfAborted()
@@ -234,6 +239,7 @@ test('shutdown cancellation reaches every scanner and shared subscriber, then re
   const second = await f.create('Second')
   const pending = [...kinds.map(kind => f.core.inventory(first.id, kind)), f.core.inventory(first.id, 'mods')]
   const rejections = pending.map(result => assert.rejects(result, { name: 'AbortError' }))
+  await allStarted.promise
   assert.equal(signals.length, 4)
   f.core.cancelPendingOperations()
   assert.ok(signals.every(signal => signal.aborted))
