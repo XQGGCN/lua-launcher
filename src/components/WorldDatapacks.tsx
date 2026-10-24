@@ -3,6 +3,7 @@ import { FileArchive, FileSearch, Folder, RefreshCw, Search, X } from 'lucide-re
 import type { DatapackCompatibility, DatapackInventoryItem, DatapackMetadata, WorldDatapackInventory, WorldDatapackPreview } from '../../desktop/datapack-types'
 import { call, errorText, isDesktop, type Instance, type InventoryItem } from '../api'
 import { ErrorBox, Spinner } from './ui'
+import DatapackDiscovery from './DatapackDiscovery'
 import { escapeWorldText, worldDetailsBlockedReason } from './WorldDetails'
 import './WorldDatapacks.css'
 
@@ -67,13 +68,16 @@ function WorldDatapacksContext({ instance, item, busy, refreshRevision = 0, iden
   const [preview, setPreview] = useState<Preview>()
   const [error, setError] = useState<{ context: string; message: string }>()
   const [query, setQuery] = useState('')
+  const [discoveryQuery, setDiscoveryQuery] = useState('')
+  const discoveryOperations = useRef(new Set<string>())
+  const [discoveryBusy, setDiscoveryBusy] = useState(false)
   const [page, setPage] = useState(0)
   const [selectedId, setSelectedId] = useState('')
   const inventory = result?.context === context ? result.value : undefined
   const detail = preview?.context === context && preview.value.revision === inventory?.revision ? preview : undefined
   const currentOperation = operation?.context === context ? operation : undefined
   const message = error?.context === context ? error.message : ''
-  const working = Boolean(currentOperation)
+  const working = Boolean(currentOperation) || discoveryBusy
   const revision = useRef(inventory?.revision)
   revision.current = inventory?.revision
   const current = (key: string) => mounted.current && currentIdentity.current === identity && currentContext.current === key
@@ -101,7 +105,7 @@ function WorldDatapacksContext({ instance, item, busy, refreshRevision = 0, iden
     if (active.current === op) active.current = undefined
   }
   function refresh() {
-    if (reason || active.current) return
+    if (reason || active.current || discoveryOperations.current.size) return
     setPreview(undefined); setResult(undefined); setSelectedId(''); setError(undefined); setRetry(value => value + 1)
   }
   async function stop() {
@@ -137,7 +141,7 @@ function WorldDatapacksContext({ instance, item, busy, refreshRevision = 0, iden
 
   async function inspect(pack?: DatapackInventoryItem) {
     const selectedRevision = inventory?.revision
-    if (reason || !selectedRevision || active.current) return
+    if (reason || !selectedRevision || active.current || discoveryOperations.current.size) return
     const op = begin(pack ? 'item' : 'picker', pack?.name)
     setPreview(undefined); setSelectedId(pack?.itemId ?? '')
     try {
@@ -158,6 +162,14 @@ function WorldDatapacksContext({ instance, item, busy, refreshRevision = 0, iden
       {message && <ErrorBox message={message} retry={!working ? refresh : undefined} />}
       {currentOperation && <div className="world-datapack-loading" role="status"><span><Spinner size={16} />{stopping ? '正在停止读取，请等待文件操作结束…' : currentOperation.phase === 'inventory' ? '正在读取此世界的数据包列表…' : currentOperation.phase === 'picker' ? '正在选择或检查本地 ZIP…' : `正在检查「${escapeWorldText(currentOperation.name ?? '')}」…`}</span><button type="button" className="text-button" disabled={stopping} onClick={() => void stop()}><X size={14} aria-hidden="true" />{stopping ? '正在停止' : '停止读取'}</button></div>}
       {inventory && <>
+        <DatapackDiscovery instanceId={instance.id} world={{ itemId: item.id, name: item.name }} revision={inventory.revision} gameVersion={instance.version}
+          disabled={Boolean(reason) || Boolean(currentOperation)} queryDraft={discoveryQuery} setQueryDraft={setDiscoveryQuery} refreshWorld={refresh}
+          onActivityChange={(operationId, enabled) => {
+            if (enabled) discoveryOperations.current.add(operationId)
+            else discoveryOperations.current.delete(operationId)
+            if (mounted.current && currentIdentity.current === identity) setDiscoveryBusy(discoveryOperations.current.size > 0)
+          }} />
+        <h4 className="world-datapack-local-heading">此世界目录中的数据包</h4>
         <div className="world-datapack-toolbar"><label className="world-datapack-search"><Search size={15} aria-hidden="true" /><input aria-label="按数据包文件名搜索已读取列表" placeholder="搜索已读取的数据包文件名" value={query} disabled={working} onChange={event => { setQuery(event.target.value); setPage(0); setSelectedId(''); setPreview(undefined) }} /></label><span role="status">{query ? `${filtered.length} 个匹配 / ` : ''}已读取 {inventory.items.length} 项{inventory.truncated && ' · 非完整列表'}</span></div>
         {(inventory.truncated || inventory.warnings.length > 0) && <p className="world-datapack-notice">本次读取有提示，列表可能不完整，请展开查看。</p>}
         <Warnings warnings={inventory.warnings} />

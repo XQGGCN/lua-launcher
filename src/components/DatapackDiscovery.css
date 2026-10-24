@@ -1,0 +1,59 @@
+.datapack-discovery{border-top:1px solid var(--line);margin-top:22px;padding-top:16px;min-width:0;color:var(--ink);font-size:13px}
+.world-datapack-local-heading{font-size:13px;font-weight:500;line-height:1.8;border-top:1px solid var(--line);padding-top:16px;margin:20px 0 0}
+.datapack-discovery-heading,.datapack-discovery-project-heading,.datapack-discovery-loading,.datapack-discovery-pagination{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.datapack-discovery-heading{align-items:flex-start}
+.datapack-discovery-heading h4,.datapack-discovery-project-heading h5{font-size:14px;font-weight:500;line-height:1.8;margin:0;overflow-wrap:anywhere}
+.datapack-discovery-heading p{font-size:12px;line-height:1.8;color:var(--ink-2);margin:4px 0 0;overflow-wrap:anywhere}
+.datapack-discovery button,.datapack-discovery input,.datapack-discovery select{font-size:12px}
+.datapack-discovery button:focus-visible,.datapack-discovery input:focus-visible,.datapack-discovery select:focus-visible,.datapack-discovery summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.datapack-discovery-note,.datapack-discovery-warning,.datapack-discovery-empty,.datapack-discovery-result-count{font-size:12px;line-height:1.8;overflow-wrap:anywhere;margin:12px 0;max-width:84ch}
+.datapack-discovery-note,.datapack-discovery-empty,.datapack-discovery-result-count{color:var(--ink-2)}
+.datapack-discovery-warning{color:var(--warn)}
+.datapack-discovery-search{margin:16px 0}
+.datapack-discovery-search>label{display:block;font-size:12px;color:var(--ink-2);margin-bottom:7px}
+.datapack-discovery-search>div{display:flex;align-items:center;gap:10px}
+.datapack-discovery-search svg{color:var(--ink-2);flex-shrink:0}
+.datapack-discovery-search input{flex:1;min-width:0;color:var(--ink);background:var(--surface);border:1px solid var(--line-strong);border-radius:var(--radius-sm);padding:10px 12px}
+.datapack-discovery-search input::placeholder{color:var(--ink-2)}
+.datapack-discovery-search .button{flex-shrink:0;min-height:38px}
+.datapack-discovery-error{margin:12px 0}
+.datapack-discovery-error>.text-button{margin:8px 10px 0 0}
+.datapack-discovery-error>span{font-size:12px;line-height:1.8;color:var(--ink-2)}
+.datapack-discovery-loading{min-height:58px;font-size:12px;line-height:1.8}
+.datapack-discovery-loading>span{display:flex;align-items:center;gap:8px;min-width:0;overflow-wrap:anywhere}
+.datapack-discovery-loading svg{flex-shrink:0}
+.datapack-discovery-results{display:grid;border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden}
+.datapack-discovery-project{text-align:left;background:var(--surface);color:var(--ink);padding:13px 14px;border-bottom:1px solid var(--line);min-width:0}
+.datapack-discovery-project:last-child{border-bottom:0}
+.datapack-discovery-project:hover,.datapack-discovery-project.selected{background:var(--accent-soft)}
+.datapack-discovery-project>div{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.datapack-discovery-project strong{font-weight:500;font-size:13px;line-height:1.8;overflow-wrap:anywhere}
+.datapack-discovery-project small,.datapack-discovery-project>span{font-size:12px;line-height:1.8;color:var(--ink-2);overflow-wrap:anywhere}
+.datapack-discovery-project p{font-size:12px;line-height:1.8;color:var(--ink-2);margin:5px 0;overflow-wrap:anywhere}
+.datapack-discovery-pagination{margin:12px 0;font-size:12px;line-height:1.8;color:var(--ink-2)}
+.datapack-discovery-project-detail:empty{display:none}
+.datapack-discovery-project-detail{border-top:1px solid var(--line);padding-top:15px;margin-top:18px;min-width:0}
+.datapack-discovery-version-label{display:grid;gap:7px;color:var(--ink-2);font-size:12px;margin:14px 0;line-height:1.8;min-width:0}
+.datapack-discovery-version-label select{color:var(--ink);background:var(--surface);border:1px solid var(--line-strong);border-radius:var(--radius-sm);padding:9px 11px;width:100%;min-width:0}
+.datapack-discovery-fields,.datapack-discovery-files dl{display:grid;grid-template-columns:120px minmax(0,1fr);gap:7px 14px;font-size:12px;line-height:1.8}
+.datapack-discovery-fields dt,.datapack-discovery-files dt{color:var(--ink-2)}
+.datapack-discovery-fields dd,.datapack-discovery-files dd{margin:0;min-width:0;overflow-wrap:anywhere}
+.datapack-discovery-files code{font:12px/1.8 var(--mono);overflow-wrap:anywhere}
+.datapack-discovery-warnings{font-size:12px;line-height:1.8;color:var(--warn);margin:10px 0;padding-left:20px}
+.datapack-discovery-warnings li{margin:5px 0;overflow-wrap:anywhere}
+.datapack-discovery-file-details,.datapack-discovery-dependencies{font-size:12px;line-height:1.8;margin:14px 0}
+.datapack-discovery summary{cursor:pointer;min-height:34px;padding:6px 0}
+.datapack-discovery-files{list-style:none;padding:0;margin:7px 0;border:1px solid var(--line);border-radius:var(--radius-sm)}
+.datapack-discovery-files>li{padding:10px 12px;border-bottom:1px solid var(--line);min-width:0}
+.datapack-discovery-files>li:last-child{border-bottom:0}
+.datapack-discovery-files>li>div{display:flex;align-items:center;gap:8px;min-width:0}
+.datapack-discovery-files strong{font-weight:500;overflow-wrap:anywhere}
+.datapack-discovery-files p{font-size:12px;color:var(--ink-2);margin:5px 0;overflow-wrap:anywhere}
+.datapack-discovery-files .datapack-discovery-warning{color:var(--warn)}
+.datapack-discovery-dependencies ul{padding-left:20px;margin:7px 0}
+.datapack-discovery-dependencies li{margin:8px 0;overflow-wrap:anywhere}
+.datapack-discovery-dependencies li strong{font-weight:500;margin-right:10px}
+.datapack-discovery-dependencies li small{display:block;color:var(--ink-2)}
+.datapack-discovery-dependencies>p{color:var(--ink-2);max-width:80ch}
+@media(max-width:760px){.datapack-discovery-search>div{flex-wrap:wrap}.datapack-discovery-search input{flex-basis:calc(100% - 30px)}.datapack-discovery-search .button{margin-left:26px}.datapack-discovery-fields,.datapack-discovery-files dl{grid-template-columns:100px minmax(0,1fr);gap:6px 10px}}
+@media(max-width:480px){.datapack-discovery-fields,.datapack-discovery-files dl{grid-template-columns:minmax(0,1fr);gap:3px}.datapack-discovery-fields dd,.datapack-discovery-files dd{margin-bottom:6px}.datapack-discovery-pagination{gap:8px}}

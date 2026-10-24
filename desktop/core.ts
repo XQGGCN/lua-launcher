@@ -19,6 +19,8 @@ import { readWorldDetails, type WorldRead } from './world-details'
 import { captureDatapackWorld, inventoryDatapacks, verifyDatapackWorld, inspectDatapackItem, inspectDatapackZip, type DatapackWorldProof } from './datapack-inspect'
 import { datapackCompatibility } from './datapack-compatibility'
 import type { DatapackMetadata, DatapackPreview, WorldDatapackInventory, WorldDatapackPreview } from './datapack-types'
+import { searchDatapackCatalog, readDatapackProjectVersions } from './datapack-catalog'
+import type { DatapackCatalogFile, DatapackCatalogProject, DatapackCatalogVersion, WorldDatapackSearch, WorldDatapackVersions } from './datapack-discovery-types'
 import type { WorldSelection, WorldSource, WorldDetails, WorldSeed, WorldMetadata } from './world-types'
 import { createWorldDirectoryBackup, listWorldDirectoryBackups, worldBackupDirectory, WorldBackupError } from './world-backup'
 import type { WorldBackupTask, WorldBackupResult, WorldBackupList } from './world-backup-types'
@@ -250,6 +252,7 @@ interface CoreOptions {
   worldDetailsNow?: () => number
   datapackEngine?: { capture: typeof captureDatapackWorld; inventory: typeof inventoryDatapacks; verify: typeof verifyDatapackWorld;
     item: typeof inspectDatapackItem; zip: typeof inspectDatapackZip }
+  datapackCatalog?: { search: typeof searchDatapackCatalog; versions: typeof readDatapackProjectVersions }
   worldBackupCreator?: typeof createWorldDirectoryBackup
   worldBackupLister?: typeof listWorldDirectoryBackups
   worldBackupResolver?: typeof worldBackupDirectory
@@ -333,6 +336,22 @@ function publicDatapackPreview(value: DatapackPreview): DatapackPreview {
     archiveBytes: value.archiveBytes, sha512: value.sha512, fileCount: value.fileCount,
     metadata: publicDatapackMetadata(value.metadata), warnings: value.warnings })
 }
+function publicDatapackCatalogProject(value: DatapackCatalogProject): DatapackCatalogProject {
+  return structuredClone({ projectId: value.projectId, slug: value.slug, title: value.title, description: value.description,
+    projectTypes: value.projectTypes, projectUrl: value.projectUrl })
+}
+function publicDatapackCatalogFile(value: DatapackCatalogFile): DatapackCatalogFile {
+  return structuredClone({ filename: value.filename, primary: value.primary, role: value.role, size: value.size,
+    sha512: value.sha512, sha1: value.sha1, eligible: value.eligible, reason: value.reason })
+}
+function publicDatapackCatalogVersion(value: DatapackCatalogVersion): DatapackCatalogVersion {
+  return structuredClone({ id: value.id, projectId: value.projectId, name: value.name, versionNumber: value.versionNumber,
+    datePublished: value.datePublished, releaseType: value.releaseType, gameVersions: value.gameVersions, loaders: value.loaders,
+    declaresCurrentGameVersion: value.declaresCurrentGameVersion, declaresDatapack: value.declaresDatapack,
+    files: value.files.map(publicDatapackCatalogFile), mainFile: value.mainFile ? publicDatapackCatalogFile(value.mainFile) : undefined,
+    dependencies: value.dependencies.map(item => ({ type: item.type, projectId: item.projectId, versionId: item.versionId, filename: item.filename })),
+    externalOnly: value.externalOnly, reasons: value.reasons, warnings: value.warnings })
+}
 function validHash(hash: string | undefined): hash is string { return Boolean(hash && /^[a-f0-9]{40}$/i.test(hash)) }
 function sanitizeId(value: string): string {
   if (!/^[a-zA-Z0-9_.+\-]+$/.test(value) || value.includes('..')) throw new Error('无效的资源标识')
@@ -382,6 +401,8 @@ export class LauncherCore {
     revisionKey: string; generation: number; expiresAt: number; view: { instanceId: string; source: WorldSource } }>()
   private worldReadEpoch = 0
   private readonly datapackEngine: NonNullable<CoreOptions['datapackEngine']>
+  private readonly datapackCatalog: NonNullable<CoreOptions['datapackCatalog']>
+  private datapackCatalogViews = new Map<string, object>()
   private datapackReads = new Map<string, { instanceId: string; inspecting: boolean; controller: AbortController }>()
   private datapackOperationIds = new Set<string>()
   private datapackViews = new Map<string, object>()
@@ -441,6 +462,7 @@ export class LauncherCore {
     this.worldDetailsNow = options.worldDetailsNow ?? Date.now
     this.datapackEngine = options.datapackEngine ?? { capture: captureDatapackWorld, inventory: inventoryDatapacks,
       verify: verifyDatapackWorld, item: inspectDatapackItem, zip: inspectDatapackZip }
+    this.datapackCatalog = options.datapackCatalog ?? { search: searchDatapackCatalog, versions: readDatapackProjectVersions }
     this.worldBackupCreator = options.worldBackupCreator ?? createWorldDirectoryBackup
     this.worldBackupLister = options.worldBackupLister ?? listWorldDirectoryBackups
     this.worldBackupResolver = options.worldBackupResolver ?? worldBackupDirectory
@@ -605,6 +627,7 @@ export class LauncherCore {
     for (const [token, value] of this.worldRevisions) if (value.instanceId === id) this.worldRevisions.delete(token)
     for (const [key, value] of this.worldViews) if (value.instanceId === id) this.worldViews.delete(key)
     this.datapackViews.delete(id)
+    for (const key of this.datapackCatalogViews.keys()) if (key.startsWith(`${id}:`)) this.datapackCatalogViews.delete(key)
     for (const [token, value] of this.datapackRevisions) if (value.instanceId === id) this.datapackRevisions.delete(token)
     for (const read of this.datapackReads.values()) if (read.instanceId === id) read.controller.abort(new DOMException('实例已变化', 'AbortError'))
     for (const read of this.worldReads.values()) if (read.instanceId === id) {
@@ -652,7 +675,8 @@ export class LauncherCore {
   }
 
   private async withDatapackRead<T>(id: string, operationId: string, inspecting: boolean,
-    work: (signal: AbortSignal, check: () => void) => Promise<T>): Promise<T> {
+    work: (signal: AbortSignal, check: () => void) => Promise<T>,
+    failureMessage = '数据包读取未完成，目标可能已变化、忙碌或超出读取范围；请关闭游戏后刷新重试'): Promise<T> {
     const finish = this.beginLauncherOperation()
     let read: { instanceId: string; inspecting: boolean; controller: AbortController } | undefined
     try {
@@ -683,7 +707,7 @@ export class LauncherCore {
     } catch (error) {
       if (read?.controller.signal.aborted || error instanceof Error && error.name === 'AbortError') throw new DOMException('数据包读取已取消，请刷新后重试', 'AbortError')
       // Do not serialize OS errors with native selected paths over IPC.
-      throw new Error('数据包读取未完成，目标可能已变化、忙碌或超出读取范围；请关闭游戏后刷新重试')
+      throw new Error(failureMessage)
     } finally {
       if (read && this.datapackReads.get(operationId) === read) this.datapackReads.delete(operationId)
       finish()
@@ -703,6 +727,7 @@ export class LauncherCore {
     const view = {}
     // This view changes before any await, invalidating earlier reads of this instance.
     this.datapackViews.set(id, view)
+    for (const key of this.datapackCatalogViews.keys()) if (key.startsWith(`${id}:`)) this.datapackCatalogViews.delete(key)
     for (const [key, value] of this.datapackRevisions) if (value.instanceId === id) this.datapackRevisions.delete(key)
     return this.withDatapackRead(id, operationId, false, async (signal, check) => {
       const proof = await this.datapackEngine.capture(this.instanceDirectory(id), selection, { signal })
@@ -766,6 +791,52 @@ export class LauncherCore {
       await this.datapackEngine.verify(view.proof, { signal })
       return file ? this.datapackEngine.zip(file, { signal }) : null
     })
+  }
+
+  private async queryDatapackCatalog<T>(id: string, revision: string, operationId: string, kind: 'search' | 'versions',
+    query: (gameVersion: string, signal: AbortSignal) => Promise<T>): Promise<{ value: T; world: WorldSelection; gameVersion: string }> {
+    this.assertNoLauncherUpdate()
+    this.assertWorldReadable(id)
+    const view = this.datapackRevision(id, revision)
+    const key = `${id}:${revision}:${kind}`, ticket = {}
+    // Allocate before any await: a slow earlier request cannot become the current view.
+    this.datapackCatalogViews.set(key, ticket)
+    if (kind === 'search') this.datapackCatalogViews.delete(`${id}:${revision}:versions`)
+    while (this.datapackCatalogViews.size > 64) this.datapackCatalogViews.delete(this.datapackCatalogViews.keys().next().value!)
+    return this.withDatapackRead(id, operationId, false, async (signal, check) => {
+      const gameVersion = this.instance(id).version
+      await this.datapackEngine.verify(view.proof, { signal })
+      check()
+      if (this.datapackRevision(id, revision) !== view || this.datapackCatalogViews.get(key) !== ticket) throw new Error('站点查询已被更新的请求取代')
+      const value = await query(gameVersion, signal)
+      await this.datapackEngine.verify(view.proof, { signal })
+      check()
+      if (this.datapackRevision(id, revision) !== view || this.datapackCatalogViews.get(key) !== ticket || this.instance(id).version !== gameVersion) throw new Error('世界或查询已变化')
+      return { value, world: view.selection, gameVersion }
+    }, '数据包站点查询未完成，请检查网络并重试；世界或列表变化、过期时请先刷新世界列表')
+  }
+
+  async searchDatapacks(id: string, revision: string, input: unknown, operationId: string): Promise<WorldDatapackSearch> {
+    if (!input || typeof input !== 'object' || Array.isArray(input) ||
+        ![Object.prototype, null].includes(Object.getPrototypeOf(input)) || Reflect.ownKeys(input).some(key =>
+          typeof key !== 'string' || !['query', 'offset'].includes(key) || !('value' in Object.getOwnPropertyDescriptor(input, key)!))) throw new Error('数据包搜索参数无效')
+    const raw = input as { query?: unknown; offset?: unknown }
+    if (typeof raw.query !== 'string' || raw.query.length > 200 || /[\u0000-\u001f\u007f]/u.test(raw.query) ||
+        raw.offset !== undefined && (!Number.isSafeInteger(raw.offset) || Number(raw.offset) < 0 || Number(raw.offset) > 100000)) throw new Error('数据包搜索参数无效')
+    const query = raw.query, offset = raw.offset === undefined ? 0 : Number(raw.offset)
+    const { value, world, gameVersion } = await this.queryDatapackCatalog(id, revision, operationId, 'search', (gameVersion, signal) =>
+      this.datapackCatalog.search(query, { gameVersion, offset, signal, fetch: this.fetcher, userAgent: USER_AGENT }))
+    return { instanceId: id, revision, world, gameVersion, totalHits: value.totalHits, offset: value.offset, limit: value.limit,
+      omittedHits: value.omittedHits, hits: value.hits.map(item => ({ projectId: item.projectId, slug: item.slug, title: item.title,
+        description: item.description, author: item.author, downloads: item.downloads, projectTypes: [...item.projectTypes], projectUrl: item.projectUrl })) }
+  }
+
+  async datapackProjectVersions(id: string, revision: string, projectId: string, operationId: string): Promise<WorldDatapackVersions> {
+    if (typeof projectId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(projectId)) throw new Error('数据包项目标识无效')
+    const { value, world, gameVersion } = await this.queryDatapackCatalog(id, revision, operationId, 'versions', (gameVersion, signal) =>
+      this.datapackCatalog.versions(projectId, { gameVersion, signal, fetch: this.fetcher, userAgent: USER_AGENT }))
+    return { instanceId: id, revision, world, gameVersion, project: publicDatapackCatalogProject(value.project),
+      versions: value.versions.map(publicDatapackCatalogVersion), upstreamVersionCount: value.upstreamVersionCount, omittedVersions: value.omittedVersions }
   }
 
   worldBackupTasks(): WorldBackupTask[] { return structuredClone([...this.worldBackupHistory.values()]) }
@@ -2062,6 +2133,7 @@ export class LauncherCore {
     this.worldRevisions.clear()
     this.worldViews.clear()
     this.datapackViews.clear()
+    this.datapackCatalogViews.clear()
     this.datapackRevisions.clear()
     for (const read of this.datapackReads.values()) read.controller.abort(new DOMException('启动器正在退出', 'AbortError'))
     for (const controller of [...this.installs.values(), ...this.javaDownloads.values(), ...this.launchControllers.values(),

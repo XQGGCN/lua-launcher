@@ -256,6 +256,16 @@ if (hasLock) app.whenReady().then(async () => {
         })
       }
       case 'cancelDatapackRead': return core.cancelDatapackRead(text(args[0], 80), text(args[1], 80))
+      case 'searchDatapacks': {
+        const id = text(args[0], 80)
+        if (launches.has(id)) throw new Error('请先完成或取消启动准备，再查找数据包')
+        return core.searchDatapacks(id, text(args[1], 80), object(args[2]), text(args[3], 80))
+      }
+      case 'datapackProjectVersions': {
+        const id = text(args[0], 80)
+        if (launches.has(id)) throw new Error('请先完成或取消启动准备，再读取数据包版本')
+        return core.datapackProjectVersions(id, text(args[1], 80), text(args[2], 128), text(args[3], 80))
+      }
       case 'worldDetails': {
         const id = text(args[0], 80)
         if (launches.has(id)) throw new Error('请先完成或取消此实例的启动准备，再读取世界详情')

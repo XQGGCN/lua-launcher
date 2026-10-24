@@ -15,6 +15,7 @@ const methods = new Set([
   'prepareModToggle', 'setModEnabled',
   'worldDetails', 'worldDetailsWithSeed',
   'worldDatapacks', 'inspectWorldDatapack', 'chooseDatapackZip', 'cancelDatapackRead',
+  'searchDatapacks', 'datapackProjectVersions',
   'worldBackupTasks', 'worldBackups', 'backupWorld', 'cancelWorldBackup', 'openWorldBackup',
   'checkUpdate', 'installUpdate', 'deleteInstance', 'duplicateInstance', 'openCrashReports', 'minimizeWindow', 'setTitleBarTheme',
   'worldMap', 'worldMapTile', 'chooseWorldZip', 'importWorldZip', 'restoreWorldBackup', 'cancelWorldRestore',
