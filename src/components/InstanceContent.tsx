@@ -4,6 +4,7 @@ import type { InventoryItem, InventoryKind, ResourceInventory } from '../../desk
 import { call, errorText, isDesktop, loaderNames, type Instance, type ModTogglePreview, type ModToggleSelection, type ModToggleResult, type WorldDetails as WorldDetailsData, type WorldSeed, type WorldSelection, type WorldBackupTask, type WorldBackupList, type WorldBackupResult, type WorldZipList, type WorldZipResult, type WorldZipTask } from '../api'
 import ModToggleActions from './ModToggleActions'
 import WorldDetails, { escapeWorldText } from './WorldDetails'
+import WorldDatapacks from './WorldDatapacks'
 import WorldBackupActions from './WorldBackupActions'
 import WorldMap from './WorldMap'
 import { WorldImportDialog } from './WorldRestore'
@@ -210,6 +211,7 @@ export default function InstanceContent({ instances, selectedId, onSelect, onOpe
         {kind === 'worlds' && instance && selectedItem?.entryType === 'directory' && <WorldDetails instance={instance} item={selectedItem} busy={fileBusy || loading || installing} refreshRevision={refreshRevision}
           read={(selection, source) => call<WorldDetailsData>('worldDetails', instance.id, selection, { source })}
           reveal={revision => call<WorldSeed>('worldDetailsWithSeed', instance.id, revision)} />}
+        {kind === 'worlds' && instance && selectedItem?.entryType === 'directory' && <WorldDatapacks instance={instance} item={selectedItem} busy={fileBusy || loading || installing} refreshRevision={refreshRevision} />}
         {kind === 'worlds' && instance && selectedItem?.entryType === 'directory' && onBackupWorld && onCancelWorldBackup && <WorldBackupActions instance={instance} item={selectedItem} busy={fileBusy || loading || installing} tasks={backupTasks}
           list={() => call<WorldBackupList>('worldBackups', instance.id)}
           create={() => onBackupWorld(instance.id, { itemId: selectedItem.id, name: selectedItem.name })}
@@ -223,7 +225,7 @@ export default function InstanceContent({ instances, selectedId, onSelect, onOpe
           instances={instances} restored={() => { setRetry(value => value + 1) }} />}
         {kind === 'mods' && instance && selectedItem && onPrepareMod && onCommitMod && <ModToggleActions instance={instance} item={selectedItem} busy={fileBusy || loading || installing} prepare={(selection, enabled) => onPrepareMod(instance.id, selection, enabled)} commit={token => onCommitMod(instance.id, token)} completed={renamed} />}
       </>}
-      <p className="inventory-footer-note">{kind === 'worlds' ? '查看世界信息只会读取 level.dat，不会修改或升级世界。' : <>{kind === 'mods' ? '模组操作仅改变一个文件的名称，不自动联动依赖。禁用后下载来源登记不迁移，恢复原名后可重新显示历史来源。' : '不解压资源或推断兼容、启用和实际加载状态。'}“曾登记来源”不代表当前内容已通过哈希验证。</>}</p>
+      <p className="inventory-footer-note">{kind === 'worlds' ? '世界信息、地图和数据包预览只读文件，不会修改或升级世界；备份、恢复和导入另需明确操作。' : <>{kind === 'mods' ? '模组操作仅改变一个文件的名称，不自动联动依赖。禁用后下载来源登记不迁移，恢复原名后可重新显示历史来源。' : '不解压资源或推断兼容、启用和实际加载状态。'}“曾登记来源”不代表当前内容已通过哈希验证。</>}</p>
     </section>
   </div>
 }

@@ -236,6 +236,26 @@ if (hasLock) app.whenReady().then(async () => {
       }
       case 'instanceOptions': return core.instanceOptions(text(args[0], 80))
       case 'inventory': return core.inventory(text(args[0], 80), text(args[1], 20) as InventoryKind)
+      case 'worldDatapacks': {
+        const id = text(args[0], 80)
+        if (launches.has(id)) throw new Error('请先完成或取消启动准备，再查看数据包')
+        return core.worldDatapacks(id, object(args[1]), text(args[2], 80))
+      }
+      case 'inspectWorldDatapack': {
+        const id = text(args[0], 80)
+        if (launches.has(id)) throw new Error('请先完成或取消启动准备，再预览数据包')
+        return core.inspectWorldDatapack(id, text(args[1], 80), text(args[2], 120), text(args[3], 80))
+      }
+      case 'chooseDatapackZip': {
+        const id = text(args[0], 80)
+        if (launches.has(id)) throw new Error('请先完成或取消启动准备，再选择数据包')
+        return core.previewLocalDatapack(id, text(args[1], 80), text(args[2], 80), async () => {
+          const selected = await dialog.showOpenDialog(dialogWindow(), { title: '预览本地数据包 ZIP', properties: ['openFile'],
+            filters: [{ name: '数据包 ZIP', extensions: ['zip'] }] })
+          return selected.canceled ? undefined : selected.filePaths[0]
+        })
+      }
+      case 'cancelDatapackRead': return core.cancelDatapackRead(text(args[0], 80), text(args[1], 80))
       case 'worldDetails': {
         const id = text(args[0], 80)
         if (launches.has(id)) throw new Error('请先完成或取消此实例的启动准备，再读取世界详情')
@@ -272,12 +292,7 @@ if (hasLock) app.whenReady().then(async () => {
       case 'deleteInstance': {
         const id = text(args[0], 80)
         if (launches.has(id)) throw new Error('请先完成或取消此实例的启动准备')
-        const directory = core.removableInstancePath(id)
-        let archived = ''
-        try { await shell.trashItem(directory) }
-        catch { archived = await core.archiveInstanceFolder(id) }
-        await core.forgetInstance(id)
-        return { trashed: !archived }
+        return core.removeInstance(id, directory => shell.trashItem(directory))
       }
       case 'duplicateInstance': return core.duplicateInstance(text(args[0], 80), text(args[1], 80))
       case 'openCrashReports': {

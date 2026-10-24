@@ -14,6 +14,7 @@ const methods = new Set([
   'searchResources', 'resourceVersions', 'installResource', 'cancelResourceInstall',
   'prepareModToggle', 'setModEnabled',
   'worldDetails', 'worldDetailsWithSeed',
+  'worldDatapacks', 'inspectWorldDatapack', 'chooseDatapackZip', 'cancelDatapackRead',
   'worldBackupTasks', 'worldBackups', 'backupWorld', 'cancelWorldBackup', 'openWorldBackup',
   'checkUpdate', 'installUpdate', 'deleteInstance', 'duplicateInstance', 'openCrashReports', 'minimizeWindow', 'setTitleBarTheme',
   'worldMap', 'worldMapTile', 'chooseWorldZip', 'importWorldZip', 'restoreWorldBackup', 'cancelWorldRestore',

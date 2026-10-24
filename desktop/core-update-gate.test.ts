@@ -87,6 +87,7 @@ test('reserved update rejects every public write/start entry before network or f
     () => f.core.updateSettings({ memoryMb: 6144 }),
     () => f.core.duplicateInstance(f.id(), 'Copy'),
     () => f.core.forgetInstance(f.id()),
+    () => f.core.removeInstance(f.id(), async () => { throw new Error('Trash must not run during update') }),
     () => f.core.archiveInstanceFolder(f.id()),
     () => f.core.launch(f.id(), account),
     () => f.core.assertInstanceUsable(f.id()),

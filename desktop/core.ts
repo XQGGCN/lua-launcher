@@ -16,6 +16,9 @@ import { validateInstanceOptions, resolveInstanceOptions, type InstanceOptions, 
 import { applyGameWindowSettings } from './game-window'
 import { scanResourceInventory, type InventoryKind, type ResourceInventory } from './resource-inventory'
 import { readWorldDetails, type WorldRead } from './world-details'
+import { captureDatapackWorld, inventoryDatapacks, verifyDatapackWorld, inspectDatapackItem, inspectDatapackZip, type DatapackWorldProof } from './datapack-inspect'
+import { datapackCompatibility } from './datapack-compatibility'
+import type { DatapackMetadata, DatapackPreview, WorldDatapackInventory, WorldDatapackPreview } from './datapack-types'
 import type { WorldSelection, WorldSource, WorldDetails, WorldSeed, WorldMetadata } from './world-types'
 import { createWorldDirectoryBackup, listWorldDirectoryBackups, worldBackupDirectory, WorldBackupError } from './world-backup'
 import type { WorldBackupTask, WorldBackupResult, WorldBackupList } from './world-backup-types'
@@ -245,6 +248,8 @@ interface CoreOptions {
   modToggleNow?: () => number
   worldDetailsReader?: typeof readWorldDetails
   worldDetailsNow?: () => number
+  datapackEngine?: { capture: typeof captureDatapackWorld; inventory: typeof inventoryDatapacks; verify: typeof verifyDatapackWorld;
+    item: typeof inspectDatapackItem; zip: typeof inspectDatapackZip }
   worldBackupCreator?: typeof createWorldDirectoryBackup
   worldBackupLister?: typeof listWorldDirectoryBackups
   worldBackupResolver?: typeof worldBackupDirectory
@@ -317,6 +322,17 @@ export function mavenPath(coordinate: string): string {
   return `${group.replace(/\./g, '/')}/${artifact}/${version}/${artifact}-${version}${classifier ? `-${classifier}` : ''}.${extension}`
 }
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error) }
+function publicDatapackMetadata(value?: DatapackMetadata): DatapackMetadata | undefined {
+  if (!value) return undefined
+  return structuredClone({ description: value.description, formatSummary: value.formatSummary, packFormat: value.packFormat,
+    supportedFormats: value.supportedFormats, minFormat: value.minFormat, maxFormat: value.maxFormat,
+    features: value.features, overlays: value.overlays, warnings: value.warnings })
+}
+function publicDatapackPreview(value: DatapackPreview): DatapackPreview {
+  return structuredClone({ name: value.name, kind: value.kind, status: value.status, reason: value.reason,
+    archiveBytes: value.archiveBytes, sha512: value.sha512, fileCount: value.fileCount,
+    metadata: publicDatapackMetadata(value.metadata), warnings: value.warnings })
+}
 function validHash(hash: string | undefined): hash is string { return Boolean(hash && /^[a-f0-9]{40}$/i.test(hash)) }
 function sanitizeId(value: string): string {
   if (!/^[a-zA-Z0-9_.+\-]+$/.test(value) || value.includes('..')) throw new Error('无效的资源标识')
@@ -365,6 +381,12 @@ export class LauncherCore {
   private worldRevisions = new Map<string, { instanceId: string; selection: WorldSelection; source: WorldSource;
     revisionKey: string; generation: number; expiresAt: number; view: { instanceId: string; source: WorldSource } }>()
   private worldReadEpoch = 0
+  private readonly datapackEngine: NonNullable<CoreOptions['datapackEngine']>
+  private datapackReads = new Map<string, { instanceId: string; inspecting: boolean; controller: AbortController }>()
+  private datapackOperationIds = new Set<string>()
+  private datapackViews = new Map<string, object>()
+  private datapackRevisions = new Map<string, { instanceId: string; selection: WorldSelection; proof: DatapackWorldProof;
+    generation: number; epoch: number; expiresAt: number; itemIds: Set<string> }>()
   private readonly worldBackupCreator: typeof createWorldDirectoryBackup
   private readonly worldBackupLister: typeof listWorldDirectoryBackups
   private readonly worldBackupResolver: typeof worldBackupDirectory
@@ -417,6 +439,8 @@ export class LauncherCore {
     this.modToggleNow = options.modToggleNow ?? Date.now
     this.worldDetailsReader = options.worldDetailsReader ?? readWorldDetails
     this.worldDetailsNow = options.worldDetailsNow ?? Date.now
+    this.datapackEngine = options.datapackEngine ?? { capture: captureDatapackWorld, inventory: inventoryDatapacks,
+      verify: verifyDatapackWorld, item: inspectDatapackItem, zip: inspectDatapackZip }
     this.worldBackupCreator = options.worldBackupCreator ?? createWorldDirectoryBackup
     this.worldBackupLister = options.worldBackupLister ?? listWorldDirectoryBackups
     this.worldBackupResolver = options.worldBackupResolver ?? worldBackupDirectory
@@ -463,7 +487,7 @@ export class LauncherCore {
         this.installs.size || this.processes.size || this.launching.size || this.stopping.size ||
         this.launchControllers.size || this.instanceSettingsSaving.size || this.javaDownloads.size ||
         this.resourceDownloads.size || this.worldBackupOperations.size || this.worldExportOperation ||
-        this.worldRestores.size || this.inventoryScans.size || this.worldReads.size ||
+        this.worldRestores.size || this.inventoryScans.size || this.worldReads.size || this.datapackReads.size ||
         this.worldMapActive || this.worldMapQueue.length ||
         [...this.javaTasks.values()].some(task => ['queued', 'active', 'cancelling'].includes(task.status)) ||
         [...this.worldBackupHistory.values(), ...this.worldExportHistory.values()].some(task => ['active', 'cancelling'].includes(task.status)) ||
@@ -580,6 +604,9 @@ export class LauncherCore {
     for (const [token, value] of this.modToggleTokens) if (value.instanceId === id) this.modToggleTokens.delete(token)
     for (const [token, value] of this.worldRevisions) if (value.instanceId === id) this.worldRevisions.delete(token)
     for (const [key, value] of this.worldViews) if (value.instanceId === id) this.worldViews.delete(key)
+    this.datapackViews.delete(id)
+    for (const [token, value] of this.datapackRevisions) if (value.instanceId === id) this.datapackRevisions.delete(token)
+    for (const read of this.datapackReads.values()) if (read.instanceId === id) read.controller.abort(new DOMException('实例已变化', 'AbortError'))
     for (const read of this.worldReads.values()) if (read.instanceId === id) {
       read.controller.abort(new DOMException('实例状态已变化，请重新读取世界详情', 'AbortError'))
     }
@@ -620,6 +647,127 @@ export class LauncherCore {
 
   private worldBackupRoot(): string { return safeJoin(this.rootDir, 'backups/worlds') }
 
+  private assertDatapackIdle(id: string): void {
+    if ([...this.datapackReads.values()].some(read => read.instanceId === id)) throw new Error('请先完成或取消数据包预览，等待读取结束后再操作此实例')
+  }
+
+  private async withDatapackRead<T>(id: string, operationId: string, inspecting: boolean,
+    work: (signal: AbortSignal, check: () => void) => Promise<T>): Promise<T> {
+    const finish = this.beginLauncherOperation()
+    let read: { instanceId: string; inspecting: boolean; controller: AbortController } | undefined
+    try {
+      this.assertWorldReadable(id)
+      if (typeof operationId !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(operationId) || this.datapackOperationIds.has(operationId)) throw new Error('数据包读取标识无效或已使用，请重新操作')
+      if (this.datapackReads.size >= 2 || inspecting && [...this.datapackReads.values()].some(item => item.inspecting)) throw new Error('数据包读取任务较多，请等待结束后重试')
+      read = { instanceId: id, inspecting, controller: new AbortController() }
+      this.datapackOperationIds.add(operationId)
+      while (this.datapackOperationIds.size > 256) {
+        const candidate = [...this.datapackOperationIds].find(key => !this.datapackReads.has(key))
+        if (!candidate) break
+        this.datapackOperationIds.delete(candidate)
+      }
+      this.datapackReads.set(operationId, read)
+      const generation = this.mutationGeneration.get(id) || 0, epoch = this.worldReadEpoch
+      const controller = read.controller
+      const check = () => {
+        controller.signal.throwIfAborted()
+        this.assertNoLauncherUpdate()
+        this.assertWorldReadable(id)
+        if (generation !== (this.mutationGeneration.get(id) || 0) || epoch !== this.worldReadEpoch) throw new Error('实例已变化，请刷新数据包列表')
+      }
+      await this.assertWorldRestoreSafe(id, controller.signal)
+      check()
+      const result = await work(controller.signal, check)
+      check()
+      return structuredClone(result)
+    } catch (error) {
+      if (read?.controller.signal.aborted || error instanceof Error && error.name === 'AbortError') throw new DOMException('数据包读取已取消，请刷新后重试', 'AbortError')
+      // Do not serialize OS errors with native selected paths over IPC.
+      throw new Error('数据包读取未完成，目标可能已变化、忙碌或超出读取范围；请关闭游戏后刷新重试')
+    } finally {
+      if (read && this.datapackReads.get(operationId) === read) this.datapackReads.delete(operationId)
+      finish()
+    }
+  }
+
+  cancelDatapackRead(id: string, operationId: string): void {
+    this.instance(id)
+    const read = this.datapackReads.get(operationId)
+    if (read?.instanceId === id) read.controller.abort(new DOMException('数据包读取已取消', 'AbortError'))
+  }
+
+  async worldDatapacks(id: string, input: unknown, operationId: string): Promise<WorldDatapackInventory> {
+    this.assertNoLauncherUpdate()
+    this.assertWorldReadable(id)
+    const selection = this.worldSelection(input)
+    const view = {}
+    // This view changes before any await, invalidating earlier reads of this instance.
+    this.datapackViews.set(id, view)
+    for (const [key, value] of this.datapackRevisions) if (value.instanceId === id) this.datapackRevisions.delete(key)
+    return this.withDatapackRead(id, operationId, false, async (signal, check) => {
+      const proof = await this.datapackEngine.capture(this.instanceDirectory(id), selection, { signal })
+      const result = await this.datapackEngine.inventory(proof, { signal })
+      await this.datapackEngine.verify(proof, { signal })
+      check()
+      if (this.datapackViews.get(id) !== view) throw new Error('世界选择已变化')
+      const revision = randomUUID()
+      this.datapackRevisions.set(revision, { instanceId: id, selection, proof, generation: this.mutationGeneration.get(id) || 0,
+        epoch: this.worldReadEpoch, expiresAt: this.worldDetailsNow() + 120_000, itemIds: new Set(result.items.map(item => item.itemId)) })
+      while (this.datapackRevisions.size > 32) this.datapackRevisions.delete(this.datapackRevisions.keys().next().value!)
+      return { observedAt: result.observedAt, directoryPresent: result.directoryPresent, truncated: result.truncated,
+        warnings: [...result.warnings], items: result.items.map(item => ({ itemId: item.itemId, name: item.name, kind: item.kind,
+          modifiedAt: item.modifiedAt, sizeBytes: item.sizeBytes, activation: item.activation, warnings: [...item.warnings],
+          metadata: publicDatapackMetadata(item.metadata) })), instanceId: id, world: selection, revision }
+    })
+  }
+
+  private datapackRevision(id: string, revision: string) {
+    const value = this.datapackRevisions.get(revision)
+    if (!value || value.instanceId !== id || value.expiresAt <= this.worldDetailsNow() || value.epoch !== this.worldReadEpoch ||
+        value.generation !== (this.mutationGeneration.get(id) || 0)) throw new Error('数据包列表已过期，请刷新后重新选择')
+    return value
+  }
+
+  private async datapackPreview(id: string, revision: string, operationId: string,
+    inspect: (view: ReturnType<LauncherCore['datapackRevision']>, signal: AbortSignal) => Promise<DatapackPreview | null>): Promise<WorldDatapackPreview | null> {
+    return this.withDatapackRead(id, operationId, true, async (signal, check) => {
+      const view = this.datapackRevision(id, revision)
+      await this.datapackEngine.verify(view.proof, { signal })
+      const result = await inspect(view, signal)
+      signal.throwIfAborted()
+      if (!result) return null
+      // Saved-world format is assessed separately. A missing/unsupported NBT field
+      // stays unknown, and never falls back to the instance version or old copy.
+      let worldVersion: string | undefined
+      try { worldVersion = (await this.readSelectedWorld(id, view.selection, 'level.dat', false)).details.metadata.savedVersionName }
+      catch { signal.throwIfAborted() }
+      await this.datapackEngine.verify(view.proof, { signal })
+      check()
+      if (this.datapackRevision(id, revision) !== view) throw new Error('数据包列表已变化')
+      return { ...publicDatapackPreview(result), instanceId: id, world: view.selection, revision, previewId: randomUUID(),
+        instanceCompatibility: datapackCompatibility(result.metadata, this.instance(id).version, result.status),
+        worldCompatibility: datapackCompatibility(result.metadata, worldVersion, result.status) }
+    })
+  }
+
+  async inspectWorldDatapack(id: string, revision: string, itemId: string, operationId: string): Promise<WorldDatapackPreview> {
+    return (await this.datapackPreview(id, revision, operationId, (view, signal) => {
+      if (!view.itemIds.has(itemId)) throw new Error('数据包条目不属于当前列表')
+      return this.datapackEngine.item(view.proof, itemId, { signal })
+    }))!
+  }
+
+  /** Main-only picker callback; neither absolute path nor callable comes from IPC. */
+  async previewLocalDatapack(id: string, revision: string, operationId: string,
+    chooseFile: () => Promise<string | undefined>): Promise<WorldDatapackPreview | null> {
+    return this.datapackPreview(id, revision, operationId, async (view, signal) => {
+      const file = await chooseFile()
+      signal.throwIfAborted()
+      await this.datapackEngine.verify(view.proof, { signal })
+      return file ? this.datapackEngine.zip(file, { signal }) : null
+    })
+  }
+
   worldBackupTasks(): WorldBackupTask[] { return structuredClone([...this.worldBackupHistory.values()]) }
 
   private publishWorldBackupTask(task: WorldBackupTask): void {
@@ -629,6 +777,7 @@ export class LauncherCore {
 
   async backupWorld(id: string, input: unknown, options: unknown): Promise<WorldBackupResult> {
     this.assertNoLauncherUpdate()
+    this.assertDatapackIdle(id)
     this.assertWorldReadable(id)
     const selection = this.worldSelection(input)
     if (!options || typeof options !== 'object' || Array.isArray(options) ||
@@ -740,6 +889,7 @@ export class LauncherCore {
   /** Exports a completed directory backup as a verified ZIP. Reads only the backup, never the live world. */
   async exportWorldBackup(id: string, backupId: string, operationId: string): Promise<WorldZipResult> {
     this.assertNoLauncherUpdate()
+    this.assertDatapackIdle(id)
     this.instance(id)
     const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/
     if (typeof backupId !== 'string' || !uuid.test(backupId)) throw new Error('备份标识无效')
@@ -875,6 +1025,7 @@ export class LauncherCore {
 
   private async runWorldRestore(id: string, operation: (options: { saves: string; staging: string; signal: AbortSignal; onProgress: (progress: { phase: string; filesDone: number; filesTotal?: number; bytesDone: number; bytesTotal?: number }) => void }) => Promise<WorldRestoreResult>): Promise<WorldRestoreResult> {
     this.assertNoLauncherUpdate()
+    this.assertDatapackIdle(id)
     const instance = this.instance(id)
     if (this.installs.has(id)) throw new Error('此实例正在安装、备份或恢复，请稍后再试')
     if (this.processes.has(id) || this.launching.has(id) || instance.status === 'running') throw new Error('请先关闭此实例的游戏，再恢复或导入世界')
@@ -1075,6 +1226,7 @@ export class LauncherCore {
 
   private assertModToggleIdle(id: string): Instance {
     this.assertNoLauncherUpdate()
+    this.assertDatapackIdle(id)
     const instance = this.instance(id)
     if (instance.status !== 'ready' || instance.loader === 'vanilla') throw new Error('请先安装模组加载器并关闭游戏，再修改模组文件')
     if (this.installs.has(id) || this.launching.has(id) || this.processes.has(id) || this.instanceSettingsSaving.has(id)) {
@@ -1086,6 +1238,7 @@ export class LauncherCore {
 
   assertLaunchAvailable(id: string): void {
     this.assertNoLauncherUpdate()
+    this.assertDatapackIdle(id)
     const instance = this.instance(id)
     if (this.installs.has(id) || this.launching.has(id) || this.processes.has(id) || this.instanceSettingsSaving.has(id)) {
       throw new Error('请等待此实例的文件操作、启动或设置保存结束')
@@ -1167,6 +1320,7 @@ export class LauncherCore {
 
   async updateInstanceSettings(id: string, input: { name: string; options: unknown }): Promise<LauncherSnapshot> {
     this.assertNoLauncherUpdate()
+    this.assertDatapackIdle(id)
     const instance = this.instance(id)
     if (this.instanceSettingsSaving.has(id)) throw new Error('此实例的设置正在保存')
     if (this.installs.has(id) || this.launching.has(id) || this.processes.has(id)) {
@@ -1194,6 +1348,7 @@ export class LauncherCore {
 
   private assertInstanceIdle(id: string): Instance {
     this.assertNoLauncherUpdate()
+    this.assertDatapackIdle(id)
     const instance = this.instance(id)
     if (this.installs.has(id) || this.launching.has(id) || this.processes.has(id) || instance.status === 'running' || instance.status === 'installing') {
       throw new Error('请先关闭游戏并等待安装、备份等操作完成')
@@ -1206,6 +1361,47 @@ export class LauncherCore {
   removableInstancePath(id: string): string {
     this.assertInstanceIdle(id)
     return this.instanceDirectory(id)
+  }
+
+  /** Main-only native trash port. Reserve before its first await, through record save. */
+  async removeInstance(id: string, trash: (directory: string) => Promise<void>): Promise<{ trashed: boolean }> {
+    const finish = this.beginLauncherOperation()
+    let controller: AbortController | undefined
+    try {
+      this.assertInstanceIdle(id)
+      controller = new AbortController()
+      this.installs.set(id, controller)
+      this.invalidateInventory(id)
+      const directory = this.instanceDirectory(id)
+      const [original, parent] = await Promise.all([fs.lstat(directory, { bigint: true }), fs.lstat(path.dirname(directory), { bigint: true })])
+      if (!original.isDirectory() || original.isSymbolicLink() || !parent.isDirectory() || parent.isSymbolicLink()) throw new Error('实例目录或父目录不安全，请检查后重试')
+      const assertOriginal = async () => {
+        const [current, currentParent] = await Promise.all([fs.lstat(directory, { bigint: true }).catch(() => undefined), fs.lstat(path.dirname(directory), { bigint: true }).catch(() => undefined)])
+        if (!current || !currentParent || !current.isDirectory() || current.isSymbolicLink() ||
+            current.dev !== original.dev || current.ino !== original.ino || current.mode !== original.mode ||
+            currentParent.dev !== parent.dev || currentParent.ino !== parent.ino || currentParent.mode !== parent.mode) {
+          throw new Error('实例目录在移除期间发生变化，已保留记录；请检查回收站和原目录后再操作')
+        }
+      }
+      let trashed = true
+      try { await trash(directory) }
+      catch {
+        await assertOriginal()
+        const target = safeJoin(this.rootDir, `deleted-instances/${id}-${randomUUID()}`)
+        await fs.mkdir(path.dirname(target), { recursive: true })
+        await assertOriginal()
+        await fs.rename(directory, target)
+        trashed = false
+      }
+      await this.save(() => {
+        const instances = this.instances.filter(item => item.id !== id)
+        return { instances, commit: () => { this.instances = instances } }
+      })
+      return { trashed }
+    } finally {
+      if (controller && this.installs.get(id) === controller) this.installs.delete(id)
+      finish()
+    }
   }
 
   /** Removes the instance record. The caller has already trashed or archived its folder. */
@@ -1498,6 +1694,7 @@ export class LauncherCore {
 
   async install(id: string): Promise<LauncherSnapshot> {
     this.assertNoLauncherUpdate()
+    this.assertDatapackIdle(id)
     const instance = this.instance(id)
     if (this.instanceSettingsSaving.has(id)) throw new Error('请等待此实例的设置保存完成')
     if (this.installs.has(id)) throw new Error('该实例正在安装')
@@ -1864,6 +2061,9 @@ export class LauncherCore {
     this.worldReadEpoch++
     this.worldRevisions.clear()
     this.worldViews.clear()
+    this.datapackViews.clear()
+    this.datapackRevisions.clear()
+    for (const read of this.datapackReads.values()) read.controller.abort(new DOMException('启动器正在退出', 'AbortError'))
     for (const controller of [...this.installs.values(), ...this.javaDownloads.values(), ...this.launchControllers.values(),
       ...[...this.inventoryScans.values()].map(scan => scan.controller), ...[...this.worldReads.values()].map(read => read.controller), ...(this.worldExportOperation ? [this.worldExportOperation.controller] : [])]) {
       controller.abort(new DOMException('启动器正在退出', 'AbortError'))
@@ -1948,6 +2148,7 @@ export class LauncherCore {
 
   async launch(id: string, account: LaunchAccount, beforeSpawn?: () => void): Promise<{ pid: number | undefined }> {
     this.assertNoLauncherUpdate()
+    this.assertDatapackIdle(id)
     if (this.installs.has(id)) throw new Error('请等待此实例的安装或文件操作完成')
     if (this.instanceSettingsSaving.has(id)) throw new Error('请等待此实例的设置保存完成')
     if (this.launching.has(id)) throw new Error('该实例正在启动')
@@ -2252,6 +2453,7 @@ export class LauncherCore {
 
   async installResource(instanceId: string, selection: unknown, operationId: string): Promise<ResourceInstallResult> {
     this.assertNoLauncherUpdate()
+    this.assertDatapackIdle(instanceId)
     const instance = this.instance(instanceId)
     const input = validateResourceSelection(selection)
     if (typeof operationId !== 'string' || !/^[a-f0-9-]{36}$/.test(operationId)) throw new Error('资源任务标识无效')
@@ -2599,6 +2801,7 @@ export class LauncherCore {
   /** Installs required dependencies too; rejects incompatible versions instead of guessing. */
   async installMod(instanceId: string, versionId: string, source: ResourceSource = 'modrinth'): Promise<LauncherSnapshot> {
     this.assertNoLauncherUpdate()
+    this.assertDatapackIdle(instanceId)
     if (this.instanceSettingsSaving.has(instanceId)) throw new Error('请等待此实例的设置保存完成')
     const provider = resourceProvider(source)
     const instance = this.instance(instanceId)
