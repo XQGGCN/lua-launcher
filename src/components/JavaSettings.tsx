@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { Check, CheckCircle2, Cpu, Download, FolderOpen, RefreshCw, Search, Square } from 'lucide-react'
 import { errorText, type JavaRuntime } from '../api'
 import { bytes, ErrorBox, Spinner } from './ui'
+import type { SettingsSearchTarget } from './SettingsSearch'
 
 export type JavaDownloadMajor = 17 | 21 | 25
 export interface JavaRuntimeView extends JavaRuntime {
@@ -22,6 +23,7 @@ export interface JavaRuntimeTaskView {
   path?: string
 }
 export interface JavaSettingsProps {
+  searchTarget?: SettingsSearchTarget
   javaPath: string
   manualJavaPath: string
   onChangeJavaPath: (path: string, manualPath: string) => void
@@ -121,7 +123,7 @@ export default function JavaSettings(props: JavaSettingsProps) {
   const downloadingSelected = pendingMajors.includes(selectedMajor) || tasks.some(task => task.major === selectedMajor && isActive(task))
 
   return <section className="java-settings" aria-labelledby={`${pathId}-heading`}>
-    <div className="setting-row">
+    <div {...props.searchTarget?.('game.java')} className="setting-row">
       <div><h3 id={`${pathId}-heading`}>Java 运行环境</h3><p>自动匹配游戏所需版本，也可指定本机 Java。</p></div>
       <select aria-label="Java 选择方式" value={manual ? 'manual' : 'auto'} disabled={picking} onChange={event => {
         const nextManual = event.target.value === 'manual'
@@ -146,14 +148,14 @@ export default function JavaSettings(props: JavaSettingsProps) {
       {desktop && props.requirementError && <ErrorBox message={props.requirementError} retry={props.onRetryRequirement} />}
     </div>
 
-    <div className="java-section-heading"><h4>本机可用 Java</h4><button type="button" className="text-button" disabled={!desktop || props.detecting} onClick={() => void detectJava()}>{props.detecting ? <Spinner size={14} /> : <Search size={14} />}重新检测</button></div>
+    <div {...props.searchTarget?.('game.java-detect')} className="java-section-heading"><h4>本机可用 Java</h4><button type="button" className="text-button" disabled={!desktop || props.detecting} onClick={() => void detectJava()}>{props.detecting ? <Spinner size={14} /> : <Search size={14} />}重新检测</button></div>
     {props.detectError && <ErrorBox message={props.detectError} retry={desktop ? () => void detectJava() : undefined} />}
     {props.detecting ? <p className="java-list-message" role="status">正在检查系统与 Lua 管理的运行时…</p> : runtimes.length ? <div className="java-runtime-list">{runtimes.map(runtime => <button type="button" key={runtime.path} className={`runtime-item ${manual && javaPath === runtime.path ? 'selected' : ''}`} disabled={!desktop || picking} aria-pressed={manual && javaPath === runtime.path} onClick={() => choosePath(runtime.path)} aria-label={`指定 Java ${runtime.major}，${runtime.arch}，${runtime.path}`}>
       <Cpu size={18} /><span><strong>Java {runtime.major} · {runtime.version} · {runtime.arch}</strong><small>{sourceLabel(runtime.source)}{runtime.component ? ` · ${runtime.component}` : ''}</small><small className="java-runtime-path">{runtime.path}</small></span>{manual && javaPath === runtime.path && <Check size={17} />}
     </button>)}</div> : <p className="java-list-message">{desktop ? props.detectError ? '检测未完成，可重试或浏览 Java 可执行文件。' : '没有检测到可用 Java。可保持自动管理，或在下方提前下载。' : '运行时检测需要桌面版。'}</p>}
 
     <div className="java-section-heading"><h4>提前下载 Java</h4><button type="button" className="text-button" disabled={!desktop || refreshing} onClick={() => void refresh()}>{refreshing ? <Spinner size={14} /> : <RefreshCw size={14} />}刷新状态</button></div>
-    <div className="java-download-controls">
+    <div {...props.searchTarget?.('game.java-download')} className="java-download-controls">
       <label htmlFor={`${pathId}-download`}>Java 版本</label><select id={`${pathId}-download`} value={selectedMajor} onChange={event => setSelectedMajor(Number(event.target.value) as JavaDownloadMajor)} disabled={!desktop}>{([17, 21, 25] as const).map(major => <option key={major} value={major}>Java {major}{requirement?.major === major ? ' · 当前实例需要' : ''}</option>)}</select>
       <button type="button" className="button secondary" disabled={!desktop || downloadingSelected} onClick={() => void install(selectedMajor)}>{downloadingSelected ? <Spinner size={15} /> : <Download size={15} />}{downloadingSelected ? '正在准备…' : '下载 Java'}</button>
     </div>

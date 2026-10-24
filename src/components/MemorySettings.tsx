@@ -2,10 +2,12 @@ import { useEffect, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import { call, errorText, isDesktop, type MemoryInfo, type Settings } from '../api'
 import { ErrorBox, Spinner } from './ui'
+import type { SettingsSearchTarget } from './SettingsSearch'
 
 const gigabytes = (value: number) => `${(value / 1024).toFixed(1)} GB`
 
-export default function MemorySettings({ settings, change, instanceId, instanceName }: {
+export default function MemorySettings({ settings, change, instanceId, instanceName, searchTarget }: {
+  searchTarget?: SettingsSearchTarget
   settings: Settings
   change: (settings: Settings) => void
   instanceId?: string
@@ -28,7 +30,7 @@ export default function MemorySettings({ settings, change, instanceId, instanceN
   const automatic = settings.memoryMode !== 'manual'
   const rangeMax = Math.min(65536, Math.max(16384, settings.memoryMb, Math.ceil((info?.totalMb || 0) / 512) * 512))
   return <div className="memory-settings">
-    <div className="setting-row"><div><h3>内存分配</h3><p>自动模式会在每次启动前，根据游戏和本机内存重新计算。</p></div><select aria-label="内存分配方式" value={automatic ? 'auto' : 'manual'} onChange={event => change({ ...settings, memoryMode: event.target.value as Settings['memoryMode'] })}><option value="auto">自动分配（推荐）</option><option value="manual">手动设置</option></select></div>
+    <div {...searchTarget?.('game.memory')} className="setting-row"><div><h3>内存分配</h3><p>自动模式会在每次启动前，根据游戏和本机内存重新计算。</p></div><select aria-label="内存分配方式" value={automatic ? 'auto' : 'manual'} onChange={event => change({ ...settings, memoryMode: event.target.value as Settings['memoryMode'] })}><option value="auto">自动分配（推荐）</option><option value="manual">手动设置</option></select></div>
     <div className="memory-allocation"><div><strong>{automatic ? '当前建议' : '手动分配上限'}</strong><p>{automatic ? instanceName ? `根据当前实例：${instanceName}` : '根据默认游戏配置估算' : '切换到自动模式后，手动数值仍会保留。'}</p></div><div className="memory-value">{automatic ? loading ? <Spinner size={19} /> : info?.canLaunch ? (info.recommendedMb / 1024).toFixed(1) : '—' : (settings.memoryMb / 1024).toFixed(1)}{(!automatic || (!loading && info?.canLaunch)) && <span>GB</span>}</div></div>
     {!automatic && <div className="range-control"><input aria-label="手动分配内存 MB" type="range" min="1024" max={rangeMax} step="512" value={settings.memoryMb} onChange={event => change({ ...settings, memoryMb: Number(event.target.value) })} /><div><span>1 GB</span><span>{gigabytes(rangeMax / 2)}</span><span>{gigabytes(rangeMax)}</span></div></div>}
     {!isDesktop ? <p className="form-hint">浏览器预览无法读取本机内存。桌面版会在启动前计算实际分配量。</p> : <>
