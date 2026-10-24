@@ -46,7 +46,7 @@ test('maximize-only state saves preserve normal bounds; explicit undefined clear
 })
 test('invalid renderer preference patches reject without getters/prototype execution or poisoning queued good work', async t => {
   const f = await fixture(t); let touched = false
-  for (const bad of [null, [], true, { titleBarStyle: 'frameless' }, { rememberBounds: 'true' }, { titleBarStyle: undefined }, { zoomPercent: 125 }, { x: 1 }, Object.create({ rememberBounds: true }), { get rememberBounds() { touched = true; return true } }]) await assert.rejects(f.store.updatePreferences(bad), /窗口偏好参数无效/)
+  for (const bad of [null, [], true, { titleBarStyle: 'frameless' }, { rememberBounds: 'true' }, { titleBarStyle: undefined }, { zoomPercent: 126 }, { x: 1 }, Object.create({ rememberBounds: true }), { get rememberBounds() { touched = true; return true } }]) await assert.rejects(f.store.updatePreferences(bad), /窗口偏好参数无效/)
   assert.equal(touched, false); assert.equal((await f.store.updatePreferences({ titleBarStyle: 'native' })).preferences.titleBarStyle, 'native')
 })
 test('state only accepts finite integer exact rectangles/boolean and invalid saves do not reach disk', async t => {
@@ -138,4 +138,103 @@ test('unrelated instance/account files and unknown old temp files remain byte an
   for (const name of names) { const file = path.join(f.root, name); await fs.writeFile(file, 'original inert sentinel ' + name); before.set(file, await proof(file)) }
   await f.store.updatePreferences({ titleBarStyle: 'native' }); await f.store.saveWindowState({ normalBounds: rect, maximized: true }); await f.store.flush()
   for (const [file, expected] of before) assert.deepEqual(await proof(file), expected)
+})
+
+const body2 = (zoomPercent: unknown) => ({ ...body(), schema: 2, preferences: { ...body().preferences, zoomPercent } })
+test('schema1 read/state/titlebar autosaves retain exact legacy preferences without adding default zoom', async t => {
+  const f = await fixture(t); await fs.writeFile(f.file, JSON.stringify(body(), null, 2)); const before = await proof(f.file)
+  await f.store.initialize(); assert.equal(Object.hasOwn(f.store.snapshot().preferences, 'zoomPercent'), false); assert.equal(f.store.snapshot().preferences.zoomPercent ?? 100, 100); assert.deepEqual(await proof(f.file), before)
+  await f.store.saveWindowState({ maximized: false }); await f.store.updatePreferences({ titleBarStyle: 'integrated' })
+  const stored = JSON.parse(await fs.readFile(f.file, 'utf8')); assert.equal(stored.schema, 1); assert.equal(Object.hasOwn(stored.preferences, 'zoomPercent'), false); assert.deepEqual(stored.windowState.normalBounds, rect)
+})
+test('explicit100 on legacy/default data is a no-op; combined patch still writes only schema1', async t => {
+  const empty = await fixture(t); assert.equal(Object.hasOwn((await empty.store.updatePreferences({ zoomPercent: 100 })).preferences, 'zoomPercent'), false); await assert.rejects(fs.stat(empty.file), { code: 'ENOENT' })
+  const f = await fixture(t); await fs.writeFile(f.file, encode(body())); await f.store.initialize(); const before = await proof(f.file)
+  await f.store.updatePreferences({ zoomPercent: 100 }); assert.deepEqual(await proof(f.file), before)
+  await f.store.updatePreferences({ zoomPercent: 100, rememberBounds: false }); const stored = JSON.parse(await fs.readFile(f.file, 'utf8'))
+  assert.equal(stored.schema, 1); assert.deepEqual(stored.preferences, { titleBarStyle: 'native', rememberBounds: false })
+})
+test('each nondefault explicit zoom promotes to required schema2 and restores on a new store', async t => {
+  for (const zoomPercent of [90, 110, 125] as const) {
+    const f = await fixture(t), result = await f.store.updatePreferences({ zoomPercent })
+    assert.equal(result.preferences.zoomPercent, zoomPercent); assert.equal(result.issue, undefined)
+    const stored = JSON.parse(await fs.readFile(f.file, 'utf8')); assert.equal(stored.schema, 2); assert.equal(stored.preferences.zoomPercent, zoomPercent)
+    const again = new WindowPreferenceStore(f.root); await again.initialize(); assert.deepEqual(again.snapshot(), result)
+  }
+})
+test('schema2 exact four enums including100 restore read-only without rewriting human formatting', async t => {
+  for (const zoomPercent of [90, 100, 110, 125]) {
+    const f = await fixture(t); await fs.writeFile(f.file, JSON.stringify(body2(zoomPercent), null, 2)); const before = await proof(f.file)
+    await f.store.initialize(); const snapshot = f.store.snapshot(); assert.equal(snapshot.preferences.zoomPercent, zoomPercent); assert.deepEqual(snapshot.state.normalBounds, rect); assert.equal(snapshot.issue, undefined); assert.deepEqual(await proof(f.file), before)
+  }
+})
+test('all later state/style writes and reset100 retain an already committed schema2', async t => {
+  const f = await fixture(t); await fs.writeFile(f.file, encode(body2(125))); await f.store.initialize()
+  await f.store.saveWindowState({ maximized: false }); await f.store.updatePreferences({ titleBarStyle: 'integrated', rememberBounds: false }); assert.equal(JSON.parse(await fs.readFile(f.file, 'utf8')).preferences.zoomPercent, 125)
+  await f.store.updatePreferences({ zoomPercent: 100 }); await f.store.saveWindowState({ normalBounds: { ...rect, y: 120 }, maximized: true })
+  const stored = JSON.parse(await fs.readFile(f.file, 'utf8')); assert.equal(stored.schema, 2); assert.equal(stored.preferences.zoomPercent, 100); assert.equal(stored.windowState.normalBounds.y, 120)
+  const before = await proof(f.file); await f.store.updatePreferences({ zoomPercent: 100 }); assert.deepEqual(await proof(f.file), before)
+})
+test('zoom enum validation rejects undefined/NaN/fractional/string/object/unknown fields before persistence', async t => {
+  const f = await fixture(t); let touched = false
+  for (const zoomPercent of [undefined, null, NaN, Infinity, -Infinity, 0, 89, 91, 101, 124, 126, 1.25, '110', 110n, {}, []]) await assert.rejects(f.store.updatePreferences({ zoomPercent }), /窗口偏好参数无效/)
+  await assert.rejects(f.store.updatePreferences({ zoomLevel: 1 })); await assert.rejects(f.store.updatePreferences({ get zoomPercent() { touched = true; return 110 } })); assert.equal(touched, false)
+  assert.deepEqual(f.store.snapshot(), defaults); await assert.rejects(fs.stat(f.file), { code: 'ENOENT' })
+})
+test('schema1 with zoom and malformed/unknown schema2 never downgrade to writable defaults', async t => {
+  const records = [
+    { ...body2(110), schema: 1 }, { ...body(), schema: 2 }, body2(105), body2('110'), body2(null),
+    { ...body2(110), preferences: { ...body2(110).preferences, future: true } }, { ...body2(110), schema: 3 },
+    { ...body2(110), preferences: { zoomPercent: 110, titleBarStyle: 'native' } },
+  ]
+  for (const record of records) {
+    const f = await fixture(t); await fs.writeFile(f.file, encode(record)); const before = await proof(f.file); await f.store.initialize()
+    assert.ok(f.store.snapshot().issue); assert.equal(Object.hasOwn(f.store.snapshot().preferences, 'zoomPercent'), false)
+    await f.store.updatePreferences({ zoomPercent: 100 }); await f.store.saveWindowState({ maximized: true }); assert.deepEqual(await proof(f.file), before)
+  }
+})
+test('duplicate or escaped duplicate zoom keys remain invalid persisted input', async t => {
+  for (const key of ['zoomPercent', 'zoom\\u0050ercent']) {
+    const f = await fixture(t), raw = Buffer.from('{"schema":2,"preferences":{"titleBarStyle":"native","rememberBounds":true,"zoomPercent":110,"' + key + '":125},"windowState":{"maximized":false}}')
+    await fs.writeFile(f.file, raw); const before = await proof(f.file); await f.store.initialize(); assert.ok(f.store.snapshot().issue); await f.store.updatePreferences({ zoomPercent: 90 }); assert.deepEqual(await proof(f.file), before)
+  }
+})
+test('queued110 then100 plus state/style patches resolve lazy schema from latest committed state', async t => {
+  const entered = gate(), release = gate(); let first = true
+  const f = await fixture(t, { hooks: { beforePublish: async () => { if (first) { first = false; entered.resolve(); await release.promise } } } })
+  const promote = f.store.updatePreferences({ zoomPercent: 110 }), reset = f.store.updatePreferences({ zoomPercent: 100 }), state = f.store.saveWindowState({ normalBounds: rect, maximized: true }), style = f.store.updatePreferences({ titleBarStyle: 'native', rememberBounds: false })
+  await entered.promise; assert.equal(Object.hasOwn(f.store.snapshot().preferences, 'zoomPercent'), false); release.resolve(); await Promise.all([promote, reset, state, style]); await f.store.flush()
+  const stored = JSON.parse(await fs.readFile(f.file, 'utf8')); assert.equal(stored.schema, 2); assert.deepEqual(stored.preferences, { titleBarStyle: 'native', rememberBounds: false, zoomPercent: 100 }); assert.deepEqual(stored.windowState, { normalBounds: rect, maximized: true })
+})
+test('failed promotion preserves schema1/value and later state autosave does not accidentally migrate', async t => {
+  let fail = true
+  const f = await fixture(t, { hooks: { rename: async (from, to) => { if (fail) { fail = false; throw new Error('injected transient promotion failure') } await fs.rename(from, to) } } })
+  await fs.writeFile(f.file, encode(body())); await f.store.initialize(); const before = await proof(f.file)
+  const failed = await f.store.updatePreferences({ zoomPercent: 110 }); assert.ok(failed.issue); assert.equal(Object.hasOwn(failed.preferences, 'zoomPercent'), false); assert.deepEqual(await proof(f.file), before)
+  await f.store.saveWindowState({ maximized: false }); assert.equal(JSON.parse(await fs.readFile(f.file, 'utf8')).schema, 1)
+  await f.store.updatePreferences({ zoomPercent: 125 }); assert.equal(JSON.parse(await fs.readFile(f.file, 'utf8')).schema, 2)
+})
+test('failed first zoom creation is not remembered as migrated when a later geometry save succeeds', async t => {
+  let fail = true
+  const f = await fixture(t, { hooks: { link: async (from, to) => { if (fail) { fail = false; throw new Error('injected first-creation failure') } await fs.link(from, to) } } })
+  const failed = await f.store.updatePreferences({ zoomPercent: 90 }); assert.ok(failed.issue); await assert.rejects(fs.stat(f.file), { code: 'ENOENT' })
+  await f.store.saveWindowState({ normalBounds: rect, maximized: true }); const legacy = JSON.parse(await fs.readFile(f.file, 'utf8')); assert.equal(legacy.schema, 1); assert.equal(Object.hasOwn(legacy.preferences, 'zoomPercent'), false)
+})
+test('failed schema2 reset keeps old zoom/schema and unrelated saves cannot forget that value', async t => {
+  let fail = true
+  const f = await fixture(t, { hooks: { rename: async (from, to) => { if (fail) { fail = false; throw new Error('injected reset failure') } await fs.rename(from, to) } } })
+  await fs.writeFile(f.file, encode(body2(110))); await f.store.initialize(); const failed = await f.store.updatePreferences({ zoomPercent: 100 })
+  assert.ok(failed.issue); assert.equal(failed.preferences.zoomPercent, 110)
+  await f.store.updatePreferences({ titleBarStyle: 'integrated' }); assert.equal(JSON.parse(await fs.readFile(f.file, 'utf8')).preferences.zoomPercent, 110)
+  await f.store.updatePreferences({ zoomPercent: 100 }); const stored = JSON.parse(await fs.readFile(f.file, 'utf8')); assert.equal(stored.schema, 2); assert.equal(stored.preferences.zoomPercent, 100)
+})
+test('promotion/reset with lost publication acknowledgements retain checked schema2 and finite enum values', async t => {
+  const f = await fixture(t, { hooks: { link: async (from, to) => { await fs.link(from, to); throw new Error('first ACK lost') }, rename: async (from, to) => { await fs.rename(from, to); throw new Error('rename ACK lost') } } })
+  assert.equal((await f.store.updatePreferences({ zoomPercent: 90 })).preferences.zoomPercent, 90)
+  assert.equal((await f.store.updatePreferences({ zoomPercent: 100 })).preferences.zoomPercent, 100)
+  const stored = JSON.parse(await fs.readFile(f.file, 'utf8')); assert.equal(stored.schema, 2); assert.equal(stored.preferences.zoomPercent, 100); assert.equal(f.store.snapshot().issue, undefined)
+})
+test('schema2 target behind a static symlink is not adopted or overwritten during reset100', async t => {
+  const f = await fixture(t), target = path.join(f.root, 'unknown-settings.json'); await fs.writeFile(target, encode(body2(125))); await fs.symlink(target, f.file); const before = await proof(target)
+  await f.store.initialize(); assert.ok(f.store.snapshot().issue); await f.store.updatePreferences({ zoomPercent: 100 }); assert.deepEqual(await proof(target), before); assert.equal((await fs.lstat(f.file)).isSymbolicLink(), true)
 })

@@ -4,8 +4,8 @@ import * as fs from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
 import path from 'node:path'
 import { isWindowRect } from './window-geometry'
-import type { WindowPreferences, WindowPreferencesSnapshot, WindowState } from './window-preferences-types'
-export type { WindowPreferences, WindowPreferencesSnapshot, WindowPreferencesStatus, WindowRect, WindowState } from './window-preferences-types'
+import type { WindowPreferences, WindowPreferencesSnapshot, WindowState, ZoomPercent } from './window-preferences-types'
+export type { WindowPreferences, WindowPreferencesSnapshot, WindowPreferencesStatus, WindowRect, WindowState, WindowZoomStatus, ZoomPercent } from './window-preferences-types'
 
 export const WINDOW_PREFERENCE_LIMITS = Object.freeze({ bytes: 16 * 1024, retainedFailures: 32, path: 4096 })
 export const DEFAULT_WINDOW_PREFERENCES: Readonly<WindowPreferences> = Object.freeze({ titleBarStyle: 'integrated', rememberBounds: true })
@@ -19,7 +19,8 @@ export interface WindowPreferenceHooks {
 export interface WindowPreferenceStoreOptions { hooks?: WindowPreferenceHooks }
 type Chain = Map<string, string>
 type Proof = { identity: string; node: string; hash: string; bytes: Buffer }
-type Persisted = { schema: 1; preferences: WindowPreferences; windowState: WindowState }
+type Persisted = { schema: 1; preferences: Omit<WindowPreferences, 'zoomPercent'>; windowState: WindowState } |
+  { schema: 2; preferences: WindowPreferences & { zoomPercent: ZoomPercent }; windowState: WindowState }
 type Temp = { file: string; node?: string; written: number; bytes: Buffer }
 const identity = (s: BigIntStats) => [s.dev, s.ino, s.mode, s.size, s.mtimeNs, s.ctimeNs, s.nlink].map(String).join(':')
 const node = (s: BigIntStats) => [s.dev, s.ino, s.mode].map(String).join(':')
@@ -28,7 +29,7 @@ const encode = (value: unknown) => Buffer.from(JSON.stringify(value) + '\n')
 const READ_ISSUE = '窗口偏好文件无法验证，已使用默认设置；原文件已保留，当前暂停写入。'
 const WRITE_ISSUE = '窗口偏好未能保存，仍使用上次已保存的设置；准备文件已保留或安全移除。'
 const CHANGED_ISSUE = '窗口偏好文件或目录已变化，保留上次设置并暂停写入；请检查原文件。'
-class InvalidWindowPreferences extends Error { constructor() { super('窗口偏好参数无效，请使用受支持的标题栏样式、记忆开关和有限窗口尺寸。'); this.name = 'InvalidWindowPreferences' } }
+class InvalidWindowPreferences extends Error { constructor() { super('窗口偏好参数无效，请使用受支持的标题栏样式、记忆开关、缩放档位和有限窗口尺寸。'); this.name = 'InvalidWindowPreferences' } }
 const invalid = (): never => { throw new InvalidWindowPreferences() }
 function fields(value: unknown, keys: string[], required: string[] = []): asserts value is Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) invalid()
@@ -36,8 +37,9 @@ function fields(value: unknown, keys: string[], required: string[] = []): assert
   if (own.some(key => typeof key !== 'string' || !keys.includes(key) || !('value' in Object.getOwnPropertyDescriptor(object, key)!)) || required.some(key => !Object.hasOwn(object, key))) invalid()
 }
 function preferencePatch(value: unknown): Partial<WindowPreferences> {
-  fields(value, ['titleBarStyle', 'rememberBounds'])
-  if (Object.hasOwn(value, 'titleBarStyle') && value.titleBarStyle !== 'integrated' && value.titleBarStyle !== 'native' || Object.hasOwn(value, 'rememberBounds') && typeof value.rememberBounds !== 'boolean') invalid()
+  fields(value, ['titleBarStyle', 'rememberBounds', 'zoomPercent'])
+  if (Object.hasOwn(value, 'titleBarStyle') && value.titleBarStyle !== 'integrated' && value.titleBarStyle !== 'native' || Object.hasOwn(value, 'rememberBounds') && typeof value.rememberBounds !== 'boolean' ||
+      Object.hasOwn(value, 'zoomPercent') && (typeof value.zoomPercent !== 'number' || ![90, 100, 110, 125].includes(value.zoomPercent))) invalid()
   return { ...value } as Partial<WindowPreferences>
 }
 function statePatch(value: unknown): WindowState {
@@ -100,8 +102,9 @@ export class WindowPreferenceStore {
         const proof = await this.readOptional(this.file)
         if (!proof) return
         const raw = parseJSON(proof.bytes); fields(raw, ['schema', 'preferences', 'windowState'], ['schema', 'preferences', 'windowState'])
-        if (raw.schema !== 1) invalid()
-        fields(raw.preferences, ['titleBarStyle', 'rememberBounds'], ['titleBarStyle', 'rememberBounds'])
+        if (raw.schema !== 1 && raw.schema !== 2) invalid()
+        const preferenceKeys = raw.schema === 1 ? ['titleBarStyle', 'rememberBounds'] : ['titleBarStyle', 'rememberBounds', 'zoomPercent']
+        fields(raw.preferences, preferenceKeys, preferenceKeys)
         const preferences = preferencePatch(raw.preferences) as WindowPreferences, state = statePatch(raw.windowState)
         this.expected = proof; this.value = { preferences, state }
       } catch { this.blocked = true; this.value.issue = READ_ISSUE }
@@ -113,7 +116,13 @@ export class WindowPreferenceStore {
   updatePreferences(value: unknown): Promise<WindowPreferencesSnapshot> {
     let patch: Partial<WindowPreferences>
     try { patch = preferencePatch(value) } catch { return Promise.reject(new InvalidWindowPreferences()) }
-    return this.enqueue(current => ({ preferences: { ...current.preferences, ...patch }, state: current.state }))
+    return this.enqueue(current => {
+      const applied = { ...patch }
+      // Decide lazily inside the serialized merge. A queued non100 ->100 reset must
+      // remain schema2, while old data/default100 never migrates merely by reading/moving.
+      if (current.preferences.zoomPercent === undefined && applied.zoomPercent === 100) delete applied.zoomPercent
+      return { preferences: { ...current.preferences, ...applied }, state: current.state }
+    })
   }
   saveWindowState(value: unknown): Promise<WindowPreferencesSnapshot> {
     let patch: WindowState
@@ -139,7 +148,10 @@ export class WindowPreferenceStore {
     return pending
   }
   private async persist(next: WindowPreferencesSnapshot): Promise<void> {
-    const persisted: Persisted = { schema: 1, preferences: next.preferences, windowState: next.state }, bytes = encode(persisted),
+    const persisted: Persisted = next.preferences.zoomPercent === undefined
+      ? { schema: 1, preferences: next.preferences, windowState: next.state }
+      : { schema: 2, preferences: { ...next.preferences, zoomPercent: next.preferences.zoomPercent }, windowState: next.state }
+    const bytes = encode(persisted),
       temp: Temp = { file: path.join(this.root, '.window-preferences-' + randomUUID() + '.tmp'), written: 0, bytes }
     if (bytes.length > WINDOW_PREFERENCE_LIMITS.bytes || this.retainedFailures >= WINDOW_PREFERENCE_LIMITS.retainedFailures) { this.value.issue = WRITE_ISSUE; return }
     let published = false

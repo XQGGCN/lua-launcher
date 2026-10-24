@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { app, BrowserWindow, dialog, ipcMain, Notification, safeStorage, screen, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, safeStorage, screen, shell } from 'electron'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { spawn } from 'node:child_process'
@@ -16,6 +16,7 @@ import { resourceKind } from './resource-catalog'
 import { WindowPreferenceStore } from './window-preferences'
 import { resolveWindowPlacement } from './window-geometry'
 import { boundedWindowFlush, WindowController } from './window-controller'
+import { initialZoom, shortcutZoom, WindowZoomController } from './window-zoom'
 
 declare const __LUA_MICROSOFT_CLIENT_ID__: string
 
@@ -42,6 +43,7 @@ const devURL = process.env.LUA_DEV_URL
 const root = process.env.LUA_DATA_DIR || path.join(app.getPath('userData'), 'launcher')
 const windowPreferences = new WindowPreferenceStore(root)
 let windowController: WindowController | undefined
+let windowZoomController: WindowZoomController | undefined
 let windowCreation: Promise<void> | undefined
 let quitting = false
 let quitFlushed = false
@@ -109,6 +111,37 @@ function openExternal(input: unknown) {
 function displayAreas() {
   return { workAreas: screen.getAllDisplays().map(display => display.workArea), primary: screen.getPrimaryDisplay().workArea }
 }
+function windowStatus() {
+  if (!windowController || !windowZoomController) throw new Error('启动器窗口尚未准备好')
+  return { ...windowController.status(), zoom: windowZoomController.status() }
+}
+function announceWindow() {
+  if (!quitting && window && !window.isDestroyed() && windowController && windowZoomController) send({ type: 'windowPreferences', status: windowStatus() })
+  const menu = Menu.getApplicationMenu(), status = windowZoomController?.status()
+  for (const id of ['lua-zoom-in', 'lua-zoom-out']) {
+    const item = menu?.getMenuItemById(id)
+    if (item) item.enabled = !!status && !status.busy && status.supportedPercents.length > 1
+  }
+  const reset = menu?.getMenuItemById('lua-zoom-reset')
+  if (reset) reset.enabled = !!status && !status.busy
+}
+function menuZoom(action: 'in' | 'out' | 'reset') {
+  const zoom = windowZoomController
+  if (!zoom || quitting) return
+  void updateActivity.operation(() => zoom.step(action)).catch(() => { announceWindow() })
+}
+function installMenu() {
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    ...(process.platform === 'darwin' ? [{ role: 'appMenu' as const }] : []),
+    { role: 'fileMenu' }, { role: 'editMenu' },
+    { label: '显示', submenu: [
+      { id: 'lua-zoom-in', label: '放大界面', accelerator: 'CmdOrCtrl+=', click: () => menuZoom('in') },
+      { id: 'lua-zoom-out', label: '缩小界面', accelerator: 'CmdOrCtrl+-', click: () => menuZoom('out') },
+      { id: 'lua-zoom-reset', label: '恢复100%', accelerator: 'CmdOrCtrl+0', click: () => menuZoom('reset') },
+      { type: 'separator' }, { role: 'reload' }, { role: 'togglefullscreen' },
+    ] }, { role: 'windowMenu' },
+  ]))
+}
 async function createWindow() {
   if (quitting || (window && !window.isDestroyed())) return
   if (windowCreation) return windowCreation
@@ -130,6 +163,7 @@ async function createWindow() {
     backgroundColor: '#f3f4f8', title: 'Lua · 未央', ...chrome,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
+      zoomMode: 'isolated', zoomFactor: initialZoom(snapshot.preferences, process.platform, effective) / 100,
       nodeIntegration: false, contextIsolation: true, sandbox: true,
       webSecurity: true,
     },
@@ -138,9 +172,24 @@ async function createWindow() {
   const controller = new WindowController({ store: windowPreferences, window: localWindow, platform: process.platform,
     effectiveTitleBarStyle: effective, positionManagedByDesktop, displays: displayAreas,
     background: work => updateActivity.operation(work), changed: status => {
-      if (window === localWindow && !localWindow.isDestroyed()) localWindow.webContents.send('launcher:event', { type: 'windowPreferences', status })
+      if (window === localWindow && !localWindow.isDestroyed()) announceWindow()
     } })
   windowController = controller
+  const zoom = new WindowZoomController({ platform: process.platform, chrome: effective, port: localWindow.webContents,
+    store: windowPreferences, changed: () => { if (window === localWindow) announceWindow() } })
+  windowZoomController = zoom
+  let zoomTimer: ReturnType<typeof setTimeout> | undefined
+  localWindow.webContents.on('did-finish-load', () => { if (!quitting) zoom.start() })
+  localWindow.webContents.on('zoom-changed', () => {
+    if (zoomTimer) clearTimeout(zoomTimer)
+    zoomTimer = setTimeout(() => { zoomTimer = undefined; if (!quitting) zoom.reconcile() }, 30)
+  })
+  localWindow.webContents.on('before-input-event', (event, input) => {
+    const action = shortcutZoom(input, process.platform)
+    if (!action) return
+    event.preventDefault()
+    if (!input.isAutoRepeat && !quitting && window === localWindow) menuZoom(action)
+  })
   localWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   localWindow.webContents.on('will-navigate', (event, url) => {
     const allowed = devURL ? new URL(url).origin === new URL(devURL).origin : url === pathToFileURL(entryFile).href
@@ -166,9 +215,12 @@ async function createWindow() {
     }
   })
   localWindow.on('closed', () => {
+    zoom.stop(); if (zoomTimer) clearTimeout(zoomTimer)
     controller.stop()
     if (window === localWindow) window = null
     if (windowController === controller) windowController = undefined
+    if (windowZoomController === zoom) windowZoomController = undefined
+    announceWindow()
   })
   if (snapshot.preferences.rememberBounds && snapshot.state.maximized) localWindow.maximize()
   if (devURL) {
@@ -268,14 +320,25 @@ if (hasLock) app.whenReady().then(async () => {
     if (method === 'cancelUpdate') { updates.cancel(); return }
     const dispatch = async () => {
     switch (method) {
-      case 'windowPreferences': return windowController?.status()
+      case 'windowPreferences': return windowStatus()
       case 'updateWindowPreferences': {
         const patch = object(args[0])
+        if (Reflect.ownKeys(patch).some(key => !['titleBarStyle', 'rememberBounds'].includes(String(key)))) throw new Error('窗口偏好参数无效')
         if (process.platform === 'linux' && 'titleBarStyle' in patch) throw new Error('此平台当前使用系统原生标题栏')
         await windowPreferences.updatePreferences(patch)
-        return windowController?.preferencesChanged()
+        await windowController?.preferencesChanged()
+        return windowStatus()
       }
-      case 'resetWindowPlacement': return windowController?.resetPlacement()
+      case 'resetWindowPlacement': { await windowController?.resetPlacement(); return windowStatus() }
+      case 'setInterfaceZoom':
+      case 'restoreInterfaceZoom': {
+        const owner = windowZoomController, controller = windowController
+        if (!owner || !controller) throw new Error('启动器窗口尚未准备好')
+        if (method === 'setInterfaceZoom') await owner.setPercent(args[0])
+        else await owner.restore()
+        if (windowZoomController !== owner || windowController !== controller) throw new Error('启动器窗口已变化，请在当前窗口查看缩放状态')
+        return windowStatus()
+      }
       case 'snapshot': return core.snapshot()
       case 'versions': return core.versions()
       case 'fabricVersions': return core.fabricVersions(text(args[0], 80))
@@ -640,6 +703,7 @@ if (hasLock) app.whenReady().then(async () => {
     }
     return updateActivity.dispatch(method, dispatch)
   })
+  installMenu()
   await createWindow()
   const displayChanged = () => {
     if (quitting) return

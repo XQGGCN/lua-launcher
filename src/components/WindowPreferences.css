@@ -12,8 +12,15 @@
 .window-preferences-feedback { min-height: 22px; margin-top: 19px; color: var(--ink-2); font-size: 12px; line-height: 1.8; }
 .window-preferences-progress { display: inline-flex; align-items: center; gap: 8px; color: var(--ink-2); font-size: 12px; }
 .window-preferences > .error-box { margin-top: 15px; }
+.window-zoom-status { display: flex; flex-direction: column; gap: 5px; margin-top: 11px; color: var(--ink-2); font-size: 12px; line-height: 1.8; }
+.window-zoom-status strong { color: var(--ink); font-weight: 500; }
+.window-zoom-controls { display: flex; flex-direction: column; align-items: stretch; gap: 9px; width: 164px; flex-shrink: 0; }
+.window-zoom-controls select { max-width: 100%; width: 100%; }
+.window-zoom-controls small { color: var(--ink-2); font-size: 11px; line-height: 1.8; text-align: center; }
+.window-zoom-controls kbd { font: inherit; }
 @media (max-width: 1050px) {
   .window-preference-row:not(label) { align-items: flex-start; flex-direction: column; gap: 12px; }
   .window-preference-row select { width: 100%; max-width: 250px; }
   .window-preference-row > .button { max-width: 100%; white-space: normal; text-align: left; }
+  .window-zoom-controls { width: 190px; max-width: 100%; }
 }

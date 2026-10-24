@@ -7,6 +7,7 @@ const methods = new Set([
   'openInstance', 'openExternal', 'account', 'login', 'cancelLogin', 'logout',
   'logs',
   'windowPreferences', 'updateWindowPreferences', 'resetWindowPlacement',
+  'setInterfaceZoom', 'restoreInterfaceZoom',
   'fabricVersions', 'loaderVersions', 'memoryInfo', 'searchModpacks',
   'skinLibrary', 'prepareSkin', 'saveSkin', 'skinDetails', 'updateSkin', 'removeSkin', 'exportSkin', 'cancelSkinOperation',
   'prepareModpackLocal', 'prepareModpackOnline', 'modpackPlanPage', 'commitModpackPlan', 'cancelModpackPreparation',

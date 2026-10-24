@@ -1,6 +1,6 @@
 # 验收矩阵
 
-更新：2026-10-24。公开版本为 [0.10.2 Alpha](https://github.com/XQGGCN/lua-launcher/releases/tag/v0.10.2)，0.10.3、0.10.4、0.11.0、0.11.1、0.11.2、0.12.0、0.12.1、0.13.0、0.14.0与0.15.0本地完成待发行。L1静态/类型、L2确定性测试、L3真实网络与文件、L4原生桌面、L5真实账户/游戏/联机分别记录；测试桥不代替原生，CI不代替游玩。
+更新：2026-10-24。公开版本为 [0.10.2 Alpha](https://github.com/XQGGCN/lua-launcher/releases/tag/v0.10.2)，0.10.3、0.10.4、0.11.0、0.11.1、0.11.2、0.12.0、0.12.1、0.13.0、0.14.0、0.15.0与0.15.1本地完成待发行。L1静态/类型、L2确定性测试、L3真实网络与文件、L4原生桌面、L5真实账户/游戏/联机分别记录；测试桥不代替原生，CI不代替游玩。
 
 W=Windows x64，M=macOS ARM64，L=Linux x64。新架构单独列证据，官方有 Java 包不等于 Lua 安装包或游戏已支持。每次结果关联版本/commit、平台、命令/步骤和证据路径；私有日志与截图留在被忽略目录，不保存令牌。
 
@@ -25,6 +25,7 @@ W=Windows x64，M=macOS ARM64，L=Linux x64。新架构单独列证据，官方�
 | 0.13.0本地完成 | 完整991/991（新增63项）与构建通过；生产Electron真实main/preload/Core/parser/selector/installer/FS验7项，准备不创建实例/下载内容/调用Java属性，确认selected[]仅写必需+客户端覆盖，保存选择/schema/hash/digest/操作ID，3源/无关文件hash与BigInt身份不变 | HTTP与picker全部原创注入；提交阶段9次Java属性回调及2次空系统枚举为替身，不是实际Java/加载器/游戏执行。独立139/139（63新受管+9原创探针+67不重叠旧相关）通过；未签名macARM包版本/架构/hash与ASAR六文件精确匹配，包未执行；1240浅色/920深色完整视口及modal/内容/工具/表格宽度无横向溢出。当前提交CI/资产、OS选择/真实整合包另验；原全包事务不冒充单JAR或完整崩溃/断电保证 |
 | 0.14.0本地完成 | 完整1056/1056（新增65：image16/layout9/library33/Core7）、独立112/112=65新受管+11原创探针+36旧相关、构建通过；两实际P2历史链接与NFC扩张红→绿。UI14注入+1NFC定向/实际Canvas分别记录，非生产后端证据 | 生产Electron真实main/preload/Core/PNG/图库/布局/原创FS7项通过，6源/state不变、实际12439B规范PNG导出/2blob保留；仅原生打开/保存回调注入，0HTTP/进程/Java/game，无真实认证/账户写入/纹理下载，920容器与只读重启确认深色通过。未签名macARM包版本/架构/hash/ASAR八文件与完整PNG许可核同，包未执行；当前提交CI/公开资产、OS选择/保存及真实图片游戏另验；没有账户纹理、账号写入/披风、外部图或Java/game，2D非实际游戏渲染 |
 | 0.15.0本地完成 | 完整1102/1102（新增46项）/构建通过，生产Electron源码bundle真实窗口/FS7组、3源/state不变与920五容器宽度通过；UI9注入单独记录 | 两实际P2关闭挂起/最大化中间矩形已修，原生用BrowserWindow脚本API，非按钮/拖动/双击/多屏；Java枚举3空替身、vm_stat3尝试阻止/0实际子进程，无网络/Java/game。独立84/84=46新受管+10原创探针+28不重叠旧相关通过；未签名macARM版本/架构/hash/Mach-O/ZIP-ASAR/DMG尾标及八文件核验通过，包未执行。无缩放/强制重启；实际系统按钮/三平台/多屏与本提交CI/公开资产另验 |
+| 0.15.1本地完成 | 1130/1130（新增28=store14/zoom14）、独立103/103（28新+8原创+67旧相关）和最终构建通过，主JS555.71/gzip166.97保留提示；UI12+最终标签1分记 | 原生6组/三尺寸四档12组合和3源/state不变；key/menu脚本、wheel/drift合成，3Java空枚举/3vm_stat尝试阻止，0实际子进程/网络/Java/game；未签名macARM版本/架构/hash/ZIP-ASAR/DMG尾标/8文件核同，包未执行。实际OS键盘/菜单鼠标/pinch/caption与WinLinux/多屏、当前CI/公开资产另验 |
 
 ## 历史快照说明
 
@@ -237,3 +238,16 @@ W=Windows x64，M=macOS ARM64，L=Linux x64。新架构单独列证据，官方�
 | AC-WINDOW-05 | 初始读/事件与迟到响应、串行锁等实际Promise、游戏设置草稿和浏览器能力隔离 | 整App UI9注入检查通过、0pageerror、最大并发1；1240浅色/920深色截图与宽度查看，不含生产main/存储/OS | `.local/ui-window-implementation-v0150.json`，本地证据不随源码分发 |
 | AC-WINDOW-06 | 旧窗口回调不影响后继，关闭等待有限且不把超时当保存成功 | 挂起flush实际P2红→绿；生产mac正常关闭再activate通过。约2秒最佳努力等待，不取消底层I/O/不承诺断电耐久或通用任务退出等待 | controller测试；生产macOS源码bundle生命周期7组 |
 | AC-WINDOW-07 | 当前全量/build/独立/本地包版本架构与精确ASAR、CI与实际三平台分层记录 | 完整1102/1102、独立84/84、构建含tsc与生产原生7组通过；未签名macARM版本/架构/hash/Mach-O/ZIP-ASAR/DMG尾标与ASAR八文件核同，包未执行。公开仍0.10.2，当前提交CI/资产与实际系统矩阵另验；缩放另拆0.15.1 | [开发](devlog/0.15.0.md)、[审核](reviews/0.15.0.md)与本地包证据 |
+
+
+## 0.15.1 有限界面缩放验收
+
+| ID | 场景与通过条件 | 当前结果与边界 | 证据 |
+| --- | --- | --- | --- |
+| AC-ZOOM-01 | 有限主进程能力表、当前effective标题栏决定档位、actual/requested/null真实区分 | 四档只开放mac原生内容/布局，其他100并保留目标/原因；生产原生6组含12实际factor组合，不按首选标题栏猜能力 | `window-zoom.test.ts`；[范围](INTERFACE_ZOOM.md) |
+| AC-ZOOM-02 | schema1精确旧形状不自动迁移、非100升级2、reset100保2、真正旧0.15读取2保留/阻写 | 新增store14/zoom14及独立相关通过，旧版探针保留原文件/默认/阻写；未知配置live100不作为成功保存 | store/zoom与旧版隔离探针 |
+| AC-ZOOM-03 | 有界专用IPC、内建网页缩放role移除、有限快捷键/重复/IME、ctrl-wheel仅默认取消 | 主进程30ms事件合并/忙碌一位待复核；没有VisualLimits调用；真实OS键盘/滚轮/pinch另验 | main/preload、zoom；UI DOM注入不代替OS手势 |
+| AC-ZOOM-04 | 保存/应用与读回、忙碌漂移、窗口代次/重载与100恢复、未知状态无假成功 | 忙碌漏复核实际P2已修、独立/原生复验通过；恢复live显示不覆盖未知配置，不承诺任意漂移永远阻止 | 独立探针/生产原生6组（脚本/合成） |
+| AC-ZOOM-05 | 920/880窄窗布局、草稿/焦点、图标导航名称和恢复入口可达 | UI12既有流程及8布局组合（直接harnessfactor）通过；最终aria-label修复后1项重载704CSSpx回归通过，9入口可读；两段证据不同源码归属 | `.local/ui-window-zoom-implementation-v0151.json`，本地证据不随源码分发 |
+| AC-ZOOM-06 | 1240/920/880三尺寸×四档，实际factor读回、重载/新窗/原生→融合和DIP不变 | 实际mac原生12factor/布局组合、reload125和后继融合100/目标125通过，DIP几何不随factor变；截图只含client，真实OS输入/混合DPI另验 | 生产源码bundle原生6组/12组合报告 |
+| AC-ZOOM-07 | 全量/独立/build/包版本架构和精确ASAR、当前提交CI/公开资产分别记录 | 完整1130/1130、独立103/103、build含tsc与未签名macARM版本/架构/hash/ZIP-ASAR/DMG尾标/8文件核同，包未执行；公开0.10.2和当前CI/资产边界不变，无账户/Java/game/远端发布 | [开发](devlog/0.15.1.md)、[审核](reviews/0.15.1.md)与本地包证据 |

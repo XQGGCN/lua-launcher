@@ -1,7 +1,7 @@
 import { categoryFacet } from './mod-categories'
 import { resolveInstanceOptions, validateInstanceOptions, type InstanceOptions } from '../desktop/instance-options'
 export type { InstanceOptions, ResolvedInstanceOptions } from '../desktop/instance-options'
-export type { WindowTitleBarStyle, WindowPreferences, WindowPreferencesStatus } from '../desktop/window-preferences-types'
+export type { WindowTitleBarStyle, WindowPreferences, WindowPreferencesStatus, ZoomPercent, WindowZoomStatus } from '../desktop/window-preferences-types'
 export type { PackPlanCounts, PackPlanSummary, PackPlanRow, PackPlanPage, PackPlanPageOptions } from '../desktop/modpack-plan-types'
 export type { InventoryKind, InventoryItem, ResourceInventory } from '../desktop/resource-inventory'
 export type { InstanceInventory } from '../desktop/core'

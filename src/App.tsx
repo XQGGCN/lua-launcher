@@ -15,7 +15,7 @@ import type { PackPlanSummary } from '../desktop/modpack-plan-types'
 import MemorySettings from './components/MemorySettings'
 import JavaSettings from './components/JavaSettings'
 import WindowPreferences, { type WindowPreferencesControl } from './components/WindowPreferences'
-import type { WindowPreferences as LauncherWindowPreferences, WindowPreferencesStatus } from './api'
+import type { WindowPreferences as LauncherWindowPreferences, WindowPreferencesStatus, ZoomPercent } from './api'
 import InstanceSettings, { createInstanceSettingsDraft, parseInstanceJvmArgs, type InstanceSettingsDraft } from './components/InstanceSettings'
 import InstanceContent from './components/InstanceContent'
 import ResourcesView, { type ResourceInstallTask } from './components/ResourcesView'
@@ -89,7 +89,7 @@ export default function App() {
   const windowRequest = useRef(false)
   const windowStatusRevision = useRef(0)
   const windowMounted = useRef(false)
-  const runWindowPreference = useCallback(async (action: 'read' | 'update' | 'reset', patch?: Partial<LauncherWindowPreferences>) => {
+  const runWindowPreference = useCallback(async (action: 'read' | 'update' | 'reset' | 'zoom' | 'zoom-reset', patch?: Partial<LauncherWindowPreferences>, zoomPercent?: ZoomPercent) => {
     if (!isDesktop || windowRequest.current) return
     windowRequest.current = true
     setWindowBusy(true); setWindowError(''); setWindowNotice('')
@@ -97,12 +97,15 @@ export default function App() {
     try {
       const status = action === 'update'
         ? await call<WindowPreferencesStatus>('updateWindowPreferences', patch)
-        : await call<WindowPreferencesStatus>(action === 'reset' ? 'resetWindowPlacement' : 'windowPreferences')
+        : action === 'zoom' ? await call<WindowPreferencesStatus>('setInterfaceZoom', zoomPercent)
+          : await call<WindowPreferencesStatus>(action === 'reset' ? 'resetWindowPlacement' : action === 'zoom-reset' ? 'restoreInterfaceZoom' : 'windowPreferences')
       // Main-process events may describe a newer window or save failure than
       // the response to this request. A late read must not replace that state.
       if (windowMounted.current && revision === windowStatusRevision.current) {
         setWindowStatus(status)
-        if (!status.issue && action !== 'read') setWindowNotice(action === 'reset'
+        if (!status.issue && (!(action === 'zoom' || action === 'zoom-reset') || !status.zoom?.issue) && action !== 'read') setWindowNotice(action === 'zoom' || action === 'zoom-reset'
+          ? status.zoom?.effectivePercent == null ? '' : `界面缩放现为 ${status.zoom.effectivePercent}%。`
+          : action === 'reset'
           ? status.positionManagedByDesktop ? '已恢复默认窗口大小，位置由桌面环境安排。' : '已恢复默认大小，并将窗口移回可见区域。'
           : '窗口偏好已保存。')
       }
@@ -123,6 +126,14 @@ export default function App() {
     void runWindowPreference('read')
     return () => { windowMounted.current = false; unsubscribe() }
   }, [runWindowPreference])
+  useEffect(() => {
+    if (!isDesktop) return
+    // Chromium may treat Ctrl+wheel (including trackpad pinch wheel events) as
+    // arbitrary page zoom. Main remains the authority for finite zoom values.
+    const preventWheelZoom = (event: WheelEvent) => { if (event.ctrlKey) event.preventDefault() }
+    window.addEventListener('wheel', preventWheelZoom, { capture: true, passive: false })
+    return () => window.removeEventListener('wheel', preventWheelZoom, { capture: true })
+  }, [])
   const windowChrome = windowStatus?.effectiveTitleBarStyle ?? 'native'
   useEffect(() => { document.documentElement.dataset.windowChrome = windowChrome }, [windowChrome])
   useEffect(() => {
@@ -560,13 +571,13 @@ export default function App() {
   return <div className="app-shell" data-window-chrome={windowChrome}>
     <aside className="sidebar">
       <a className="brand" href="#library" onClick={event => { event.preventDefault(); changeView('library') }} aria-label="Lua 未央，返回启动页"><Logo /><span>Lua<small>未央</small></span></a>
-      <nav aria-label="主导航">{navigation.map(item => <button key={item.id} className={`nav-item ${view === item.id ? 'active' : ''}`} onClick={() => changeView(item.id)} aria-current={view === item.id ? 'page' : undefined}><item.icon size={18} /><span>{item.label}</span>{item.id === 'downloads' && downloadCount > 0 && <span className="nav-count">{downloadCount}</span>}</button>)}</nav>
+      <nav aria-label="主导航">{navigation.map(item => <button key={item.id} aria-label={item.label} title={item.label} className={`nav-item ${view === item.id ? 'active' : ''}`} onClick={() => changeView(item.id)} aria-current={view === item.id ? 'page' : undefined}><item.icon size={18} /><span>{item.label}</span>{item.id === 'downloads' && downloadCount > 0 && <span className="nav-count">{downloadCount}</span>}</button>)}</nav>
       <div className="sidebar-bottom">
-        <button className={`nav-item ${view === 'logs' ? 'active' : ''}`} onClick={() => changeView('logs')} aria-current={view === 'logs' ? 'page' : undefined}><Terminal size={18} /><span>运行日志</span></button>
-        <button className={`nav-item ${view === 'settings' ? 'active' : ''}`} onClick={() => changeView('settings')} aria-current={view === 'settings' ? 'page' : undefined}><Settings2 size={18} /><span>设置</span></button>
+        <button aria-label="运行日志" title="运行日志" className={`nav-item ${view === 'logs' ? 'active' : ''}`} onClick={() => changeView('logs')} aria-current={view === 'logs' ? 'page' : undefined}><Terminal size={18} /><span>运行日志</span></button>
+        <button aria-label="设置" title="设置" className={`nav-item ${view === 'settings' ? 'active' : ''}`} onClick={() => changeView('settings')} aria-current={view === 'settings' ? 'page' : undefined}><Settings2 size={18} /><span>设置</span></button>
         <button className="nav-item theme-toggle" onClick={() => setTheme(nextTheme)} title={`外观：${themeLabels[theme]}，点击切换为${themeLabels[nextTheme]}`} aria-label={`外观：${themeLabels[theme]}，切换为${themeLabels[nextTheme]}`}>{theme === 'dark' ? <Moon size={18} /> : theme === 'light' ? <Sun size={18} /> : <SunMoon size={18} />}<span>{themeLabels[theme]}</span></button>
         {update && <button className="update-pill" onClick={() => setUpdateOpen(true)}><Sparkles size={16} /><span><strong>新版本 {update.version}</strong><small>点击查看并更新</small></span></button>}
-        <button className={`profile-button ${view === 'account' ? 'selected' : ''}`} onClick={() => changeView('account')}><SkinHead account={account} size={34} /><span><strong>{account?.username || '登录账户'}</strong><small>{account ? '正版 · Microsoft' : '使用 Microsoft 登录'}</small></span></button>
+        <button aria-label={account ? `账户：${account.username}` : '登录账户'} title={account ? `账户：${account.username}` : '登录账户'} className={`profile-button ${view === 'account' ? 'selected' : ''}`} onClick={() => changeView('account')}><SkinHead account={account} size={34} /><span><strong>{account?.username || '登录账户'}</strong><small>{account ? '正版 · Microsoft' : '使用 Microsoft 登录'}</small></span></button>
         <div className="sidebar-note">{isDesktop ? `版本 ${APP_VERSION}` : '浏览器预览'}</div>
       </div>
     </aside>
@@ -636,7 +647,7 @@ export default function App() {
         {view === 'downloads' && <DownloadsView tab={downloadTab} setTab={setDownloadTab} instances={instances} progress={progress} busy={busy} taskErrors={taskErrors} packTasks={packTasks} javaTasks={javaTasks} resourceTasks={resourceTasks} cancelResource={cancelResource} backupTasks={backupTasks} cancelBackup={cancelWorldBackup} openBackup={openWorldBackup} showContent={showInstanceContent} cancelJava={async id => { await call('cancelJavaInstall', id) }} retryJava={async major => { await call('installJava', major) }} download={downloadGame} install={installInstance} cancel={cancelDownload} showGame={id => { setSelectedId(id); changeView('library') }} showLogs={id => { setSelectedId(id); changeView('logs') }} showPacks={source => { if (source && source !== 'local') setResourceSource(source); changeView('modpacks') }} />}
         {view === 'skins' && <Suspense fallback={<div role="status"><Spinner />正在读取本地皮肤页面…</div>}><SkinsView /></Suspense>}
         {view === 'modpacks' && <ModpacksView source={resourceSource} setSource={setResourceSource} tasks={packTasks} progress={progress} commitPlan={commitPackPlan} cancel={cancelDownload} showTasks={showTasks} openUrl={openUrl} />}
-        {settingsOpened && snapshot && <div hidden={view !== 'settings'}><SettingsView windowPreferences={{ status: windowStatus, desktop: isDesktop, busy: windowBusy, error: windowError, notice: windowNotice, read: () => runWindowPreference('read'), update: patch => runWindowPreference('update', patch), resetPlacement: () => runWindowPreference('reset') }} autoUpdate={autoUpdate} setAutoUpdate={setAutoUpdate} checkUpdate={() => checkUpdate(true)} update={update} openUpdate={() => setUpdateOpen(true)} theme={theme} setTheme={setTheme} minimizeOnLaunch={minimizeOnLaunch} setMinimizeOnLaunch={setMinimizeOnLaunch} instance={selectedInstance} settings={snapshot.settings} rootDir={snapshot.rootDir} javaTasks={javaTasks} save={async settings => {
+        {settingsOpened && snapshot && <div hidden={view !== 'settings'}><SettingsView windowPreferences={{ status: windowStatus, desktop: isDesktop, busy: windowBusy, error: windowError, notice: windowNotice, read: () => runWindowPreference('read'), update: patch => runWindowPreference('update', patch), resetPlacement: () => runWindowPreference('reset'), setZoom: percent => runWindowPreference('zoom', undefined, percent), restoreZoom: () => runWindowPreference('zoom-reset') }} autoUpdate={autoUpdate} setAutoUpdate={setAutoUpdate} checkUpdate={() => checkUpdate(true)} update={update} openUpdate={() => setUpdateOpen(true)} theme={theme} setTheme={setTheme} minimizeOnLaunch={minimizeOnLaunch} setMinimizeOnLaunch={setMinimizeOnLaunch} instance={selectedInstance} settings={snapshot.settings} rootDir={snapshot.rootDir} javaTasks={javaTasks} save={async settings => {
           const next = await call<Snapshot>('updateSettings', settings)
           // This response owns global settings only. Instance state may have
           // advanced through an event while this request was in flight.
