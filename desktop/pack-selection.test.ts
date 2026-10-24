@@ -258,6 +258,8 @@ test('source and source-ancestor static symlinks are rejected without reading or
 })
 
 test('a source ancestor exchanged while copying is rejected and both foreign and original files remain', async t => {
+  // Windows cannot rename a directory that holds an open file, so this POSIX-only exchange scenario is skipped there.
+  if (process.platform === 'win32') { t.skip('POSIX-only directory exchange'); return }
   let switched = false
   const { root, bytes, selection } = await fixture(t, { afterCopyChunk: async ({ source }) => {
     if (!switched) {

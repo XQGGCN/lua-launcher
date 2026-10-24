@@ -204,7 +204,7 @@ export class PackSelections<T> {
 
   private sameArchive(a: PackSelectionArchive, b: PackSelectionArchive): boolean { return a.bytes === b.bytes && a.sha1 === b.sha1 && a.sha512 === b.sha512 }
   private validatePath(file: string): void {
-    if (typeof file !== 'string' || !path.isAbsolute(file) || file.length > 4096 || /[\p{Cc}\p{Cf}]/u.test(file) || path.resolve(file) === path.parse(file).root) throw new Error('整合包路径无效')
+    if (typeof file !== 'string' || !path.isAbsolute(file) || file.length > 4096 || /[\p{Cc}\p{Cf}]/u.test(file) || path.resolve(file) === path.parse(path.resolve(file)).root) throw new Error('整合包路径无效')
   }
   private checkArchiveStat(stat: BigIntStats): void {
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size < 1n || stat.size > BigInt(PACK_SELECTION_LIMITS.archiveBytes)) throw new Error('请选择不超过 256 MB 的普通整合包文件，不能使用链接')

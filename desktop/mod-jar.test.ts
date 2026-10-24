@@ -135,6 +135,8 @@ test('source content mutation during read is detected even if the requested size
   await assert.rejects(withReadHook(file, async () => { const changed = Buffer.from(bytes); changed[50] ^= 1; await fs.writeFile(file, changed) }, () => inspectModJar(file)))
 })
 test('ancestor replacement during read never returns metadata from a displaced source', async t => {
+  // Windows cannot rename a directory that holds an open file, so this POSIX-only replacement scenario is skipped there.
+  if (process.platform === 'win32') { t.skip('POSIX-only directory replacement'); return }
   const f = await fixture(t), file = path.join(f.directory, 'Original.jar'), bytes = jar(); await fs.writeFile(file, bytes)
   await assert.rejects(withReadHook(file, async () => { await fs.rename(f.directory, f.directory + '-old'); await fs.mkdir(f.directory); await fs.writeFile(file, bytes) }, () => inspectModJar(file)), /变化/)
 })
