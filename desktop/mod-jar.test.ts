@@ -6,7 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { deflateRawSync } from 'node:zlib'
 import { crc32 } from './world-zip'
-import { inspectModJar, inspectInstalledMod, MOD_JAR_LIMITS, ModJarReadError } from './mod-jar'
+import { inspectModJar, inspectInstalledMod, inspectModJarForImport, isModJarImportInspection, MOD_JAR_LIMITS, ModJarReadError } from './mod-jar'
 import { scanResourceInventory } from './resource-inventory'
 
 interface Entry {
@@ -174,6 +174,31 @@ test('bad selected CRC is invalid with no hash or trusted declarations', async t
 test('nonmetadata class CRC/body is deliberately not certified or decompressed', async t => {
   const result = await read(t, zip([metadata, { ...classEntry, deflate: true, badCrc: true, compressedTail: Buffer.from('original trailing bytes') }]))
   assert.equal(result.status, 'metadata-read'); assert.ok(result.sha512); assert.match(result.warnings.join(''), /只校验选定声明/)
+})
+test('main-only import inspection validates every payload CRC, size and complete deflate consumption', async t => {
+  for (const invalid of [{ ...classEntry, badCrc: true }, { ...classEntry, deflate: true, size: 1 }, { ...classEntry, deflate: true, compressedTail: Buffer.from('tail') }]) {
+    const f = await fixture(t), file = path.join(f.root, 'Original.jar'); await fs.writeFile(file, zip([metadata, invalid]))
+    assert.equal((await inspectModJar(file)).status, 'metadata-read')
+    const full = await inspectModJarForImport(file)
+    assert.equal(isModJarImportInspection(full), true); assert.equal(full.fullPayloadChecked, false); assert.equal(full.details.sha512, undefined); assert.equal(full.metadata.size, 0)
+  }
+})
+test('valid full inspection retains private raw metadata and paths without exposing them in details', async t => {
+  const f = await fixture(t), file = path.join(f.root, 'Original.jar'), bytes = zip([{ name: 'META-INF/', data: '', deflate: true }, { ...metadata, deflate: true, descriptor: true }, { ...classEntry, deflate: true }]); await fs.writeFile(file, bytes)
+  const before = await fingerprint(file), full = await inspectModJarForImport(file)
+  assert.equal(full.fullPayloadChecked, true); assert.equal(full.details.sha512, createHash('sha512').update(bytes).digest('hex'))
+  assert.equal(Buffer.from(full.metadata.get('fabric.mod.json')!).toString(), fabric); assert.ok(full.archivePaths.includes(classEntry.name)); assert.ok(full.sourceIdentity)
+  assert.equal(isModJarImportInspection({ ...full }), false); assert.deepEqual(await fingerprint(file), before)
+  assert.ok(!JSON.stringify(full.details).includes('sourceIdentity')); assert.match(full.details.warnings[0], /全部当前受支持/)
+})
+test('full import expanded entry budget is separate from metadata and rejects huge declared payload before decode', async t => {
+  const f = await fixture(t), file = path.join(f.root, 'Original.jar'); await fs.writeFile(file, zip([metadata, { ...classEntry, size: MOD_JAR_LIMITS.fullEntryBytes + 1 }]))
+  const full = await inspectModJarForImport(file); assert.equal(full.fullPayloadChecked, false); assert.equal(full.details.status, 'unsupported'); assert.match(full.details.warnings.join(''), /累计展开预算/)
+})
+test('full import actual payload cancellation awaits teardown and preserves the original source', async t => {
+  const f = await fixture(t), file = path.join(f.root, 'Original.jar'); await fs.writeFile(file, jar()); const before = await fingerprint(file), controller = new AbortController()
+  await assert.rejects(withReadHook(file, async () => controller.abort(), () => inspectModJarForImport(file, { signal: controller.signal })), { name: 'AbortError' })
+  assert.deepEqual(await fingerprint(file), before)
 })
 test('metadata actual size, bad deflate and trailing compressed bytes fail without a hash', async t => {
   for (const entry of [{ ...metadata, size: fabric.length + 1 }, { ...metadata, deflate: true, compressedTail: Buffer.from('junk') }, { ...metadata, method: 8 }]) {

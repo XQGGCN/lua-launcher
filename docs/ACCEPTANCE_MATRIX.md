@@ -1,6 +1,6 @@
 # 验收矩阵
 
-更新：2026-10-24。公开版本为 [0.10.2 Alpha](https://github.com/XQGGCN/lua-launcher/releases/tag/v0.10.2)，0.10.3、0.10.4、0.11.0、0.11.1、0.11.2与0.12.0本地完成待发行。L1静态/类型、L2确定性测试、L3真实网络与文件、L4原生桌面、L5真实账户/游戏/联机分别记录；测试桥不代替原生，CI不代替游玩。
+更新：2026-10-24。公开版本为 [0.10.2 Alpha](https://github.com/XQGGCN/lua-launcher/releases/tag/v0.10.2)，0.10.3、0.10.4、0.11.0、0.11.1、0.11.2、0.12.0与0.12.1本地完成待发行。L1静态/类型、L2确定性测试、L3真实网络与文件、L4原生桌面、L5真实账户/游戏/联机分别记录；测试桥不代替原生，CI不代替游玩。
 
 W=Windows x64，M=macOS ARM64，L=Linux x64。新架构单独列证据，官方有 Java 包不等于 Lua 安装包或游戏已支持。每次结果关联版本/commit、平台、命令/步骤和证据路径；私有日志与截图留在被忽略目录，不保存令牌。
 
@@ -21,6 +21,7 @@ W=Windows x64，M=macOS ARM64，L=Linux x64。新架构单独列证据，官方�
 | 0.12.0本地完成 | 完整850/850、独立176/176、构建/未签名macARM版本架构及ASAR5构建+notice共6文件；生产Electron IPC/FS验11项，11源/state不变，0网络/子进程/外部打开，BSD文本核对 | picker明确原创回调注入，非OS对话框、真实模组/游戏/签名或非元数据全CRC；当前提交CI/公开发行及三平台游玩另验。语义ID与实际清单时间合同P2已修；viewId无导入授权 |
 | 0.11.2本地完成 | 完整777/777、独立205/205、构建/本地包/ASAR5文件核对；生产Electron IPC/FS验本地及站点准备/确认/备份安装，2回执和6备份文件独立重算，8原文件及state不变；官方2metadata GET和准确格式文件校验分记 | HTTP元数据/ZIP及picker明确原创替身，非真实数据包、OS窗口、用户世界或游戏；本版CI/公开资产/签名/三平台实机另验。保留缓存/暂存/备份，结果不明重启保护，无清理或恢复向导 |
 | 0.11.1本地完成 | 完整701/701、独立新增34/34及相关60/60、构建/本地包核对；最终生产Core真实官方metadata3GET，20hit/3version及7源/state不变；隔离Electron真实IPC验发现/分页/版本/取消/刷新保留/A→B/11源state不变 | 原生UI的HTTP与shell打开端口明确注入，不冒充真实网络或站点窗口；无ZIP下载/安装/游戏/用户世界，当前提交CI/公开资产/签名及性能矩阵另验，构建500kB提示保留 |
+| 0.12.1本地完成 | 完整928/928、独立254/254=78新增受管+9原创探针+167不重叠旧相关、构建及未签名macARM版本/架构/ASAR六文件核验通过；生产Electron真实IPC/FS验11项，Fabric/Forge2次导入/回执与hardlink独立重建，11源/state文件不变 | 仅picker回调注入，原创惰性JAR及ready/profile记录非实际游戏安装；0网络/子进程/外部打开，进程已关，包未执行。真实OS picker/第三方模组/游戏、当前提交CI与公开资产另验；CRC/hash非代码安全或全语法兼容 |
 
 ## 历史快照说明
 
@@ -175,3 +176,18 @@ W=Windows x64，M=macOS ARM64，L=Linux x64。新架构单独列证据，官方�
 | AC-WORLDBACKUP-09 | 本版全量/check/build、最终包内容/hash与当前提交三平台CI/Release | L1/L2/本地包；L4/L5另验 | 全仓517/517、build及最终包版本/架构/hash/内容核对通过；当前提交CI、原生、签名/公证、真实世界、不同卷和游戏未验 | `.local/test-v071.log`、`build-v071.log`、`local-packages-v071.json` |
 
 只交付手动目录备份。ZIP、恢复、自动备份、删除、保留策略和世界写入未实现；退出信号、文件/目录 sync 不是任意断电耐久保证。公开仍为 0.3.0，Minecraft API 待审不变；本轮没有执行认证、Java 或游戏。
+
+
+## 0.12.1 本地模组导入验收
+
+只新增一个已检查的本地JAR，不替换、删除或联动启用其他文件。完整928项、独立254项与生产构建通过。生产Electron真实IPC/FS与未签名macARM包/ASAR六文件核验通过；不借用0.12.0只读测试。原生用生产源码bundle，包未执行；picker回调明确注入，原创ready/profile记录不代表实际游戏安装。
+
+| ID | 场景与通过条件 | 当前结果与边界 | 证据 |
+| --- | --- | --- | --- |
+| AC-MODIMPORT-01 | 明确实例、重新选择源与独立一次性能力；不接受renderer路径或旧viewId | Core13项覆盖120秒过期、重放、跨实例、刷新/源或profile变更与退出；实际Java未知，不以安装需求冒充运行时 | `desktop/core-mod-import.test.ts` |
+| AC-MODIMPORT-02 | 完整受支持JAR载荷CRC/实际size、源与磁盘hash/身份，不执行代码 | 读者4项新增及相关33项、事务31项通过；ZIP64/加密/多卷/超限拒绝，不是签名认证 | `desktop/mod-jar.test.ts`、`desktop/mod-import.test.ts` |
+| AC-MODIMPORT-03 | 当前启用/禁用ID和provides、历史禁用伙伴、有限语法/依赖双向核对 | policy30项及9独立原创探针；禁用只参与身份，不施加未启用要求；未知/坏/截断索引不当无重复证明 | `desktop/mod-import-policy.test.ts`；[独立审核](reviews/0.12.1.md) |
+| AC-MODIMPORT-04 | 首await前实例/更新/启动/写入互斥；精确停止等worker，迟到完成按真实提交返回 | Core与事务回归通过；native picker等待也占预留；通用退出只请求abort，不承诺原生等全部I/O | Core13与事务31项；main/preload源码 |
+| AC-MODIMPORT-05 | wx暂存、短写、独立读回、同卷hardlink无覆盖、提交不明保留/重启阻断 | 事务31项及Core重启回归通过；PREPARING→INTENT→COMPLETE→FINALIZED有界检查，不删除源/现有模组/历史登记 | `desktop/mod-import.test.ts`、[用法](LOCAL_MOD_IMPORT.md) |
+| AC-MODIMPORT-06 | 确认目标/关闭外部游戏声明、停止、A/B迟到、结果保留、窄窗与主题 | 生产Electron实际11项：阻断/停止等待/A→B/确认重置/两实例真实文件导入/刷新保留/两主题920px；11源/state文件不变，2回执独立核对。picker回调注入，非OS窗口或游戏运行 | `src/components/LocalModImport.tsx`、`InstanceContent.tsx` |
+| AC-MODIMPORT-07 | 全量/build/包精确版本架构内容、本提交三平台CI和发行 | 全量928与独立254、build、未签名macARM版本/架构/hash及ASAR六文件精确核对通过；包未执行，CI/签名/公证/公开资产待 | [开发记录](devlog/0.12.1.md) |

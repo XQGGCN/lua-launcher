@@ -1,0 +1,43 @@
+.local-mod-import{border-top:1px solid var(--line);margin:22px 0 0;padding:18px 0 4px;min-width:0;font-size:12px;line-height:1.85}
+.local-mod-import-heading,.local-mod-import-confirmation-heading,.local-mod-import-confirmation-actions,.local-mod-import-loading{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.local-mod-import-heading{align-items:flex-start}
+.local-mod-import h3,.local-mod-import h4{font-weight:500;margin:0;line-height:1.8}
+.local-mod-import h3{font-size:14px}
+.local-mod-import h4{font-size:13px;display:flex;align-items:center;gap:8px}
+.local-mod-import-heading p,.local-mod-import-note,.local-mod-import-footnote{font-size:12px;color:var(--ink-2);margin:5px 0 0;overflow-wrap:anywhere}
+.local-mod-import-heading>.button,.local-mod-import-loading>.text-button{min-height:36px;flex-shrink:0}
+.local-mod-import-confirmation{border:1px solid var(--line-strong);background:var(--surface);border-radius:var(--radius-sm);padding:16px;margin:16px 0;min-width:0}
+.local-mod-import-confirmation-heading .text-button{min-height:34px}
+.local-mod-import-fields{display:grid;grid-template-columns:120px minmax(0,1fr);gap:8px 16px;margin:16px 0;min-width:0}
+.local-mod-import-fields dt{color:var(--ink-2);overflow-wrap:anywhere}
+.local-mod-import-fields dd{margin:0;min-width:0;overflow-wrap:anywhere}
+.local-mod-import-fields dd>code+code{margin-left:10px}
+.local-mod-import-fields small{display:block;color:var(--ink-2);font-size:12px;margin-top:3px}
+.local-mod-import details{min-width:0;overflow-wrap:anywhere}
+.local-mod-import summary{padding:6px 0;min-height:34px;cursor:pointer}
+.local-mod-import code{font-size:12px;overflow-wrap:anywhere;white-space:pre-wrap}
+.local-mod-import-digest>code,.local-mod-import-result details>code{display:block;color:var(--ink-2)}
+.local-mod-import details p{color:var(--ink-2);margin:6px 0}
+.local-mod-import-declarations ul,.local-mod-import-reasons,.local-mod-import-warnings ul{padding-left:20px;margin:6px 0}
+.local-mod-import-declarations li{margin:8px 0;overflow-wrap:anywhere}
+.local-mod-import-declarations strong{font-weight:500;display:block}
+.local-mod-import-declarations span,.local-mod-import-declarations small{display:block;color:var(--ink-2);font-size:12px}
+.local-mod-import-reasons,.local-mod-import-blocked{color:var(--warn);overflow-wrap:anywhere}
+.local-mod-import-blocked{margin:12px 0 0}
+.local-mod-import-confirmation>.local-mod-import-note{border-top:1px solid var(--line);padding-top:12px;margin-top:12px;max-width:92ch}
+.local-mod-import-checkbox{display:flex;align-items:flex-start;gap:9px;cursor:pointer;margin:16px 0;min-height:36px;overflow-wrap:anywhere}
+.local-mod-import-checkbox input{margin:4px 0 0;flex-shrink:0;accent-color:var(--accent-strong);width:16px;height:16px}
+.local-mod-import-confirmation-actions{justify-content:flex-start;align-items:flex-start}
+.local-mod-import-confirmation-actions>span{color:var(--ink-2);flex:1;min-width:160px;padding-top:6px;overflow-wrap:anywhere}
+.local-mod-import-loading{padding:12px 0;color:var(--ink-2)}
+.local-mod-import-loading>span{display:flex;align-items:center;gap:8px;min-width:0}
+.local-mod-import-loading>.text-button{display:flex;align-items:center;gap:5px}
+.local-mod-import-result{display:flex;align-items:flex-start;gap:9px;border-top:1px solid var(--line);padding-top:14px;margin-top:16px;min-width:0}
+.local-mod-import-result>svg{flex-shrink:0;color:var(--ok);margin-top:3px}
+.local-mod-import-result>div{min-width:0}
+.local-mod-import-result strong{font-weight:500;overflow-wrap:anywhere}
+.local-mod-import-result p{margin:5px 0;color:var(--ink-2);overflow-wrap:anywhere}
+.local-mod-import-footnote{margin-top:14px}
+.local-mod-import button:focus-visible,.local-mod-import input:focus-visible,.local-mod-import summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+@media(max-width:760px){.local-mod-import-confirmation{padding:12px}.local-mod-import-fields{grid-template-columns:100px minmax(0,1fr);gap:7px 10px}}
+@media(max-width:480px){.local-mod-import-fields{grid-template-columns:minmax(0,1fr);gap:3px}.local-mod-import-fields dd{margin-bottom:7px}.local-mod-import-confirmation-actions>span{min-width:0;flex-basis:100%}}

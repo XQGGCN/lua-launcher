@@ -12,7 +12,7 @@ import type { InstalledModSelection, ModJarDetails } from './mod-details-types'
 
 export const MOD_JAR_LIMITS = Object.freeze({
   archiveBytes: 512 * 1024 ** 2, entries: 20000, centralDirectoryBytes: 16 * 1024 ** 2,
-  metadataBytes: 256 * 1024, metadataTotalBytes: 1024 ** 2, pathBytes: 1024, pathDepth: 32,
+  metadataBytes: 256 * 1024, metadataTotalBytes: 1024 ** 2, fullEntryBytes: 256 * 1024 ** 2, fullExpandedBytes: 1024 ** 3, pathBytes: 1024, pathDepth: 32,
   directoryEntries: 5000, prefixIndexBytes: 32 * 1024 ** 2, dtoBytes: 1024 ** 2, durationMs: 30000,
 })
 export class ModJarReadError extends Error {
@@ -113,13 +113,13 @@ function extraFields(bytes: Buffer): void {
   }
 }
 interface Entry { name: string; raw: Buffer; offset: number; method: number; flags: number; crc: number; compressed: number; size: number; directory: boolean }
-async function selectedPayload(handle: fs.FileHandle, entry: Entry, start: number, b: Budget, signal: AbortSignal | undefined): Promise<Buffer> {
+async function selectedPayload(handle: fs.FileHandle, entry: Entry, start: number, b: Budget, signal: AbortSignal | undefined, retain = true): Promise<Buffer> {
   let count = 0, crc = 0
   const chunks: Buffer[] = []
   const consume = (bytes: Buffer) => {
     b.check(); count += bytes.length
-    if (count > entry.size || count > MOD_JAR_LIMITS.metadataBytes) fail('limit', 'JAR元数据实际展开大小超过上限')
-    crc = crc32(bytes, crc); chunks.push(Buffer.from(bytes))
+    if (count > entry.size || count > (retain ? MOD_JAR_LIMITS.metadataBytes : MOD_JAR_LIMITS.fullEntryBytes)) fail('limit', 'JAR载荷实际展开大小超过上限')
+    crc = crc32(bytes, crc); if (retain) chunks.push(Buffer.from(bytes))
   }
   async function* sourceBytes() {
     for (let offset = 0; offset < entry.compressed; offset += 65536) yield await exact(handle, Math.min(65536, entry.compressed - offset), start + offset, b)
@@ -146,7 +146,7 @@ async function selectedPayload(handle: fs.FileHandle, entry: Entry, start: numbe
   if (count !== entry.size || crc !== entry.crc) fail('invalid', 'JAR元数据实际大小或CRC不一致')
   return Buffer.concat(chunks)
 }
-async function readArchive(handle: fs.FileHandle, size: number, b: Budget, signal?: AbortSignal): Promise<Map<string, Uint8Array>> {
+async function readArchive(handle: fs.FileHandle, size: number, b: Budget, signal?: AbortSignal, fullPayload = false, archivePaths?: string[]): Promise<Map<string, Uint8Array>> {
   if (size < 22) fail('invalid', 'JAR缺少ZIP结束记录')
   const tailBytes = Math.min(size, 65557), tail = await exact(handle, tailBytes, size - tailBytes, b)
   let eocd = -1
@@ -159,7 +159,7 @@ async function readArchive(handle: fs.FileHandle, size: number, b: Budget, signa
   if (count !== tail.readUInt16LE(eocd + 8) || centralStart + centralBytes !== end) fail('invalid', 'JAR中央目录数量或范围无效')
   if (count > MOD_JAR_LIMITS.entries || centralBytes > MOD_JAR_LIMITS.centralDirectoryBytes) fail('limit', 'JAR条目或中央目录超过读取上限')
   const cd = await exact(handle, centralBytes, centralStart, b), entries: Entry[] = [], names = new Map<string, boolean>()
-  let cursor = 0, metadataTotal = 0
+  let cursor = 0, metadataTotal = 0, expandedTotal = 0
   for (let i = 0; i < count; i++) {
     b.check()
     if (cursor + 46 > cd.length || cd.readUInt32LE(cursor) !== 0x02014b50) fail('invalid', 'JAR中央目录条目无效')
@@ -177,6 +177,7 @@ async function readArchive(handle: fs.FileHandle, size: number, b: Budget, signa
     const compressed = cd.readUInt32LE(cursor + 20), entrySize = cd.readUInt32LE(cursor + 24), offset = cd.readUInt32LE(cursor + 42)
     if ([compressed, entrySize, offset].includes(0xffffffff)) fail('unsupported', '当前模组检查器暂不支持ZIP64')
     if (directory && (entrySize || cd.readUInt32LE(cursor + 16) || method === 0 && compressed)) fail('invalid', 'JAR目录条目不能含展开载荷')
+    if (fullPayload) { expandedTotal += entrySize; if (entrySize > MOD_JAR_LIMITS.fullEntryBytes || expandedTotal > MOD_JAR_LIMITS.fullExpandedBytes) fail('limit', 'JAR完整载荷超过单项或累计展开预算') }
     const key = fold(directory ? name.slice(0, -1) : name)
     if (names.has(key)) fail('invalid', 'JAR存在重复或大小写Unicode等价的条目')
     names.set(key, directory)
@@ -184,6 +185,7 @@ async function readArchive(handle: fs.FileHandle, size: number, b: Budget, signa
       metadataTotal += entrySize
       if (entrySize > MOD_JAR_LIMITS.metadataBytes || metadataTotal > MOD_JAR_LIMITS.metadataTotalBytes) fail('limit', 'JAR选定元数据大小超过单项或累计上限')
     }
+    archivePaths?.push(name)
     entries.push({ name, raw, offset, flags, method, crc: cd.readUInt32LE(cursor + 16), compressed, size: entrySize, directory }); cursor = stop
     if ((i & 255) === 255) await new Promise<void>(resolve => setImmediate(resolve))
   }
@@ -223,10 +225,11 @@ async function readArchive(handle: fs.FileHandle, size: number, b: Budget, signa
       previousEnd += length
     }
     if (!entry.directory && metadataNames.has(entry.name)) result.set(entry.name, await selectedPayload(handle, entry, dataStart, b, signal))
+    else if (fullPayload) await selectedPayload(handle, entry, dataStart, b, signal, false)
   }
   return result
 }
-async function inspect(file: string, options: ModJarReadOptions, installed: boolean, expected?: InstalledModSelection, sharedBudget?: Budget): Promise<ModJarDetails> {
+async function inspect(file: string, options: ModJarReadOptions, installed: boolean, expected?: InstalledModSelection, sharedBudget?: Budget, full?: (raw: ReadonlyMap<string, Uint8Array>, identity: string, archivePaths: string[]) => void): Promise<ModJarDetails> {
   const selected = absoluteFile(file), name = path.basename(selected), disabledSuffix = /\.jar\.disabled$/i.test(name), b = sharedBudget ?? budget(options)
   if (!safeName(name) || !(installed ? /\.jar(?:\.disabled)?$/i : /\.jar$/i).test(name)) fail('unsafe-path', installed ? '所选条目必须是普通JAR或禁用后缀文件' : '请选择本地普通.jar文件，预览不导入或启用它')
   const observedAt = new Date().toISOString()
@@ -247,7 +250,8 @@ async function inspect(file: string, options: ModJarReadOptions, installed: bool
       if (!sameFile(before, await handle.stat({ bigint: true }))) fail('changed', '模组文件在打开期间发生变化')
       await verifyChain(ancestors, b)
       const size = Number(before.size), beforeHash = await hash(handle, size, b)
-      const raw = await readArchive(handle, size, b, options.signal)
+      const archivePaths: string[] = []
+      const raw = await readArchive(handle, size, b, options.signal, Boolean(full), full ? archivePaths : undefined)
       const documents = parseModMetadata(raw)
       b.check()
       const afterHash = await hash(handle, size, b)
@@ -258,9 +262,10 @@ async function inspect(file: string, options: ModJarReadOptions, installed: bool
       const status = documents.some(d => d.status === 'invalid') ? 'invalid' : documents.some(d => d.format !== 'manifest' && d.status === 'read') ? 'metadata-read' : documents.some(d => d.status === 'unsupported') ? 'unsupported' : 'no-metadata'
       const result: ModJarDetails = { name, disabledSuffix, observedAt, status, archiveBytes: size,
         ...(status === 'invalid' || status === 'unsupported' ? {} : { sha512: afterHash }), documents,
-        warnings: ['只校验选定声明条目；外层SHA-512不等于全部JAR载荷、签名、模组代码安全或实际加载已验证',
+        warnings: [full ? '已校验全部当前受支持 JAR 载荷的大小和 CRC；不等于来源、签名、代码安全或实际加载已验证' : '只校验选定声明条目；外层SHA-512不等于全部JAR载荷、签名、模组代码安全或实际加载已验证',
           ...(!documents.some(d => d.format !== 'manifest' && d.status === 'read') ? ['未取得当前支持的模组声明；此文件可能是普通库、使用其他加载器或不受支持的元数据'] : [])] }
       if (Buffer.byteLength(JSON.stringify(result)) > MOD_JAR_LIMITS.dtoBytes) fail('limit', '模组详情超过返回大小预算')
+      full?.(raw, [before.dev, before.ino, before.mode, before.size, before.mtimeNs, before.ctimeNs, before.nlink].map(String).join(':'), archivePaths)
       return result
     } catch (error) {
       // A changed file can first look like a malformed ZIP. Do not mint even a
@@ -291,5 +296,30 @@ export async function inspectInstalledMod(instanceDirectory: string, selection: 
   await unique(directory, selection.name, b)
   const result = await inspect(path.join(directory, selection.name), options, true, selection, b)
   await verifyChain(ancestors, b); await unique(directory, selection.name, b); b.check()
+  return result
+}
+
+/** Main-only full-payload observation. Never expose metadata bytes or proof via IPC. */
+export interface ModJarImportInspection {
+  details: ModJarDetails
+  metadata: ReadonlyMap<string, Uint8Array>
+  sourceIdentity: string
+  fullPayloadChecked: boolean
+  archivePaths: readonly string[]
+}
+const importInspections = new WeakSet<object>()
+export function isModJarImportInspection(value: unknown): value is ModJarImportInspection {
+  return !!value && typeof value === 'object' && importInspections.has(value)
+}
+export async function inspectModJarForImport(file: string, options: ModJarReadOptions = {}): Promise<ModJarImportInspection> {
+  let metadata: ReadonlyMap<string, Uint8Array> = new Map(), sourceIdentity = '', fullPayloadChecked = false, archivePaths: readonly string[] = []
+  // Private index reads may include disabled JARs. Candidate admission separately
+  // refuses a disabled-suffix source rather than silently changing its intent.
+  const details = await inspect(file, options, true, undefined, undefined, (raw, identity, paths) => {
+    metadata = new Map([...raw].map(([name, bytes]) => [name, Buffer.from(bytes)]))
+    sourceIdentity = identity; archivePaths = [...paths]; fullPayloadChecked = true
+  })
+  const result: ModJarImportInspection = { details, metadata, sourceIdentity, fullPayloadChecked, archivePaths }
+  importInspections.add(result)
   return result
 }

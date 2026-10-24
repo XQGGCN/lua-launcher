@@ -250,6 +250,20 @@ if (hasLock) app.whenReady().then(async () => {
         })
       }
       case 'cancelModDetails': return core.cancelModDetails(text(args[0], 80), text(args[1], 80))
+      case 'prepareLocalModImport': {
+        const id = text(args[0], 80)
+        if (launches.has(id)) throw new Error('请先完成或取消启动准备，再准备本地模组导入')
+        return core.prepareLocalModImport(id, text(args[1], 80), async () => {
+          const selected = await dialog.showOpenDialog(dialogWindow(), { title: '选择准备导入的本地模组 JAR', properties: ['openFile'], filters: [{ name: '模组 JAR', extensions: ['jar'] }] })
+          return selected.canceled ? undefined : selected.filePaths[0]
+        })
+      }
+      case 'commitLocalModImport': {
+        const id = text(args[0], 80)
+        if (launches.has(id)) throw new Error('请先完成或取消启动准备，再导入本地模组')
+        return core.commitLocalModImport(id, text(args[1], 80), object(args[2]))
+      }
+      case 'cancelLocalModImport': return core.cancelLocalModImport(text(args[0], 80), text(args[1], 80))
       case 'worldDatapacks': {
         const id = text(args[0], 80)
         if (launches.has(id)) throw new Error('请先完成或取消启动准备，再查看数据包')

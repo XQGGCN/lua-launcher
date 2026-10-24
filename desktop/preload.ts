@@ -12,6 +12,7 @@ const methods = new Set([
   'instanceOptions', 'updateInstanceSettings',
   'inventory',
   'inspectInstanceMod', 'chooseLocalModJar', 'cancelModDetails',
+  'prepareLocalModImport', 'commitLocalModImport', 'cancelLocalModImport',
   'searchResources', 'resourceVersions', 'installResource', 'cancelResourceInstall',
   'prepareModToggle', 'setModEnabled',
   'worldDetails', 'worldDetailsWithSeed',

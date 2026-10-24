@@ -2,7 +2,7 @@
 
 一个面向 Windows、macOS 和 Linux 的独立开源 Minecraft Java 启动器。夜色侧栏加「启动台」首页：选中实例、看一眼账户和 Java，按下月光色按钮就开始游戏。
 
-**当前公开版本：0.10.2 Alpha**（[下载](https://github.com/XQGGCN/lua-launcher/releases/tag/v0.10.2)）。0.10.3、0.10.4、0.11.0、0.11.1、0.11.2 与 0.12.0 本地实现和独立审核已完成，待各自提交的三平台发行验收。
+**当前公开版本：0.10.2 Alpha**（[下载](https://github.com/XQGGCN/lua-launcher/releases/tag/v0.10.2)）。0.10.3、0.10.4、0.11.0、0.11.1、0.11.2、0.12.0 与 0.12.1 本地实现和独立源码审核已完成，待各自提交的三平台发行验收。
 
 ### 0.10 有什么
 
@@ -272,3 +272,6 @@ Electron 禁用 renderer Node 集成、启用 context isolation / sandbox、验�
 0.11.2 新增本地/Modrinth数据包的明确世界安装：文件检查、一次性确认、完整新备份、无覆盖归位与重启保护。完整777项、独立205项、构建与本地包通过；原创夹具的生产Electron IPC/文件系统流程已验，HTTP/ZIP/picker明确注入，没有运行游戏。新增准确1.20.1/1.21.1官方格式证据，其余未知范围不强制安装。见[安装用法](docs/DATAPACK_INSTALL.md)、[开发](docs/devlog/0.11.2.md)和[审核](docs/reviews/0.11.2.md)；本版尚未公开。
 
 0.12.0 新增已安装/禁用后缀JAR的模组声明和本地只读预览：Fabric/Quilt JSON、Forge/NeoForge TOML、多模组、依赖与外层摘要分别展示，不导入或执行。完整850项、独立176项、构建及本地包通过；生产Electron原创夹具流程11项源/state不变，picker注入，尚无本提交CI或公开资产。见[用法](docs/MOD_DETAILS.md)、[开发](docs/devlog/0.12.0.md)及[审查](docs/reviews/0.12.0.md)。
+
+
+0.12.1 新增明确实例的单个本地模组导入：选择JAR后完整检查受支持载荷、核对当前启用/禁用ID与别名、依赖和历史禁用伙伴，再确认关闭游戏并仅新增到 `game/mods`。首版只接纳可解释的Fabric1、Forge javafml数字版本条件；未知Java要求、NeoForge/Quilt、嵌套与复杂声明会阻止导入，无强制绕过或自动前置求解。928项完整测试、254项独立相关测试/探针、构建及未签名macARM包核验通过。生产Electron原生IPC/真实文件系统完成Fabric与Forge导入、2份回执独立重建，11个源/state文件保持不变；仅picker回调注入，原创惰性JAR与安装profile记录不是实际游戏安装、OS对话框或游戏验证。本提交CI/公开资产仍待。保留暂存与完成凭据占额外空间，不覆盖原文件、不替换已有模组，也不将CRC/hash当代码或签名认证。见[导入用法](docs/LOCAL_MOD_IMPORT.md)、[开发](docs/devlog/0.12.1.md)及[审查](docs/reviews/0.12.1.md)。

@@ -263,3 +263,4 @@ export function errorText(error: unknown) {
   return text.replace(/^Error invoking remote method '[^']+': (Error: )?/, '')
 }
 export type { ModDependencyDeclaration, ModDeclaration, ModMetadataDocument, ModJarDetails, InstalledModSelection, InstanceModDetails } from '../desktop/mod-details-types'
+export type { ModImportAssessment, LocalModImportPlan, LocalModImportResult } from '../desktop/mod-import-types'

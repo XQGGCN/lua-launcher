@@ -27,6 +27,10 @@ import type { DatapackInstallResult, DatapackInstallSource } from './datapack-in
 import type { WorldDatapackInstallPlan } from './datapack-install-plan-types'
 import { inspectModJar, inspectInstalledMod } from './mod-jar'
 import type { InstanceModDetails, ModJarDetails, ModMetadataDocument, InstalledModSelection } from './mod-details-types'
+import { inspectModJarForImport } from './mod-jar'
+import { assessLocalModImport } from './mod-import-policy'
+import { importLocalModJar, inspectLocalModImportRecovery, LocalModImportError } from './mod-import'
+import type { LocalModImportPlan, LocalModImportSource, LocalModImportResult, ModImportAssessment } from './mod-import-types'
 import type { WorldSelection, WorldSource, WorldDetails, WorldSeed, WorldMetadata } from './world-types'
 import { createWorldDirectoryBackup, listWorldDirectoryBackups, worldBackupDirectory, WorldBackupError } from './world-backup'
 import type { WorldBackupTask, WorldBackupResult, WorldBackupList } from './world-backup-types'
@@ -262,6 +266,7 @@ interface CoreOptions {
   datapackInstaller?: typeof installWorldDatapack
   datapackArtifact?: { resolve: typeof resolveDatapackArtifact; download: typeof downloadDatapackArtifact }
   modDetailsReader?: { local: typeof inspectModJar; installed: typeof inspectInstalledMod }
+  localModImport?: { inspect: typeof inspectModJarForImport; assess: typeof assessLocalModImport; commit: typeof importLocalModJar }
   worldBackupCreator?: typeof createWorldDirectoryBackup
   worldBackupLister?: typeof listWorldDirectoryBackups
   worldBackupResolver?: typeof worldBackupDirectory
@@ -416,6 +421,11 @@ export class LauncherCore {
   private modDetailReads = new Map<string, { instanceId: string; controller: AbortController }>()
   private modDetailOperationIds = new Set<string>()
   private modDetailViews = new Map<string, object>()
+  private readonly localModImport: NonNullable<CoreOptions['localModImport']>
+  private localModImportOperations = new Map<string, { operationId: string; controller: AbortController }>()
+  private localModImportOperationIds = new Set<string>()
+  private localModImportCapabilities = new Map<string, { instanceId: string; source: LocalModImportSource; sourceIdentity: string;
+    contextFingerprint: string; policyFingerprint: string; expiresAt: number; generation: number; epoch: number; plan: LocalModImportPlan }>()
   private readonly datapackArtifact: NonNullable<CoreOptions['datapackArtifact']>
   private datapackInstallCapabilities = new Map<string, { instanceId: string; revision: string; proof: DatapackWorldProof;
     selection: WorldSelection; source: DatapackInstallSource; sourceIdentity: string; worldRevisionKey: string; worldVersion: string;
@@ -484,6 +494,7 @@ export class LauncherCore {
     this.datapackCatalog = options.datapackCatalog ?? { search: searchDatapackCatalog, versions: readDatapackProjectVersions }
     this.datapackInstaller = options.datapackInstaller ?? installWorldDatapack
     this.modDetailsReader = options.modDetailsReader ?? { local: inspectModJar, installed: inspectInstalledMod }
+    this.localModImport = options.localModImport ?? { inspect: inspectModJarForImport, assess: assessLocalModImport, commit: importLocalModJar }
     this.datapackArtifact = options.datapackArtifact ?? { resolve: resolveDatapackArtifact, download: downloadDatapackArtifact }
     this.worldBackupCreator = options.worldBackupCreator ?? createWorldDirectoryBackup
     this.worldBackupLister = options.worldBackupLister ?? listWorldDirectoryBackups
@@ -531,7 +542,7 @@ export class LauncherCore {
         this.installs.size || this.processes.size || this.launching.size || this.stopping.size ||
         this.launchControllers.size || this.instanceSettingsSaving.size || this.javaDownloads.size ||
         this.resourceDownloads.size || this.worldBackupOperations.size || this.worldExportOperation ||
-        this.worldRestores.size || this.inventoryScans.size || this.worldReads.size || this.datapackReads.size || this.datapackInstallOperations.size || this.modDetailReads.size ||
+        this.worldRestores.size || this.inventoryScans.size || this.worldReads.size || this.datapackReads.size || this.datapackInstallOperations.size || this.modDetailReads.size || this.localModImportOperations.size ||
         this.worldMapActive || this.worldMapQueue.length ||
         [...this.javaTasks.values()].some(task => ['queued', 'active', 'cancelling'].includes(task.status)) ||
         [...this.worldBackupHistory.values(), ...this.worldExportHistory.values()].some(task => ['active', 'cancelling'].includes(task.status)) ||
@@ -609,7 +620,10 @@ export class LauncherCore {
     this.instance(id)
     if (!['mods', 'resourcepacks', 'shaderpacks', 'worlds'].includes(kind)) throw new Error('无效的资源类型')
     if (this.installs.has(id)) throw new Error('此实例正在安装，请完成或取消后刷新资源清单')
-    if (kind === 'mods') this.modDetailViews.delete(id)
+    if (kind === 'mods') {
+      this.modDetailViews.delete(id)
+      for (const [token, value] of this.localModImportCapabilities) if (value.instanceId === id) this.localModImportCapabilities.delete(token)
+    }
     const generation = this.mutationGeneration.get(id) || 0
     const key = `${id}:${kind}`
     const active = this.inventoryScans.get(key)
@@ -651,6 +665,7 @@ export class LauncherCore {
     for (const [key, value] of this.worldViews) if (value.instanceId === id) this.worldViews.delete(key)
     this.datapackViews.delete(id)
     this.modDetailViews.delete(id)
+    for (const [token, value] of this.localModImportCapabilities) if (value.instanceId === id) this.localModImportCapabilities.delete(token)
     for (const read of this.modDetailReads.values()) if (read.instanceId === id) read.controller.abort(new DOMException('实例已变化', 'AbortError'))
     for (const [token, value] of this.datapackInstallCapabilities) if (value.instanceId === id) this.datapackInstallCapabilities.delete(token)
     for (const key of this.datapackCatalogViews.keys()) if (key.startsWith(`${id}:`)) this.datapackCatalogViews.delete(key)
@@ -682,6 +697,9 @@ export class LauncherCore {
     const datapackRecovery = await inspectDatapackInstallRecovery(this.instanceDirectory(id), { signal })
     signal?.throwIfAborted()
     if (datapackRecovery.blocked) throw new DatapackInstallError('RECOVERY_REQUIRED')
+    const localModRecovery = await inspectLocalModImportRecovery(this.instanceDirectory(id), { signal })
+    signal?.throwIfAborted()
+    if (localModRecovery.blocked) throw new LocalModImportError('RECOVERY_REQUIRED')
   }
 
   private worldSelection(input: unknown): WorldSelection {
@@ -907,6 +925,7 @@ export class LauncherCore {
     let operation: { instanceId: string; controller: AbortController } | undefined
     try {
       this.assertNoLauncherUpdate(); this.assertWorldReadable(id)
+      for (const [token, value] of this.localModImportCapabilities) if (value.instanceId === id) this.localModImportCapabilities.delete(token)
       if (typeof operationId !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(operationId) || this.modDetailOperationIds.has(operationId)) throw new Error('模组读取任务标识无效或已使用')
       if (this.modDetailReads.size >= 2 || [...this.modDetailReads.values()].some(value => value.instanceId === id)) throw new Error('模组详情仍在读取，请等待完成或取消后再试')
       operation = { instanceId: id, controller: new AbortController() }
@@ -963,6 +982,158 @@ export class LauncherCore {
     this.instance(id)
     const read = this.modDetailReads.get(operationId)
     if (read?.instanceId === id) read.controller.abort(new DOMException('模组详情读取已取消', 'AbortError'))
+  }
+
+  private async localModContext(id: string, signal: AbortSignal) {
+    const directory = this.instanceDirectory(id), parents = new Map<string, string>()
+    let current = path.parse(directory).root
+    for (const part of directory.slice(current.length).split(path.sep)) {
+      current = path.join(current, part); signal.throwIfAborted()
+      const info = await fs.lstat(current, { bigint: true })
+      if (info.isSymbolicLink()) {
+        const system = process.platform === 'darwin' && current !== directory && ((current === '/tmp' && await fs.realpath(current) === '/private/tmp') || (current === '/var' && await fs.realpath(current) === '/private/var'))
+        if (!system) throw new Error('实例资料祖先包含链接')
+      } else if (!info.isDirectory()) throw new Error('实例资料路径不是普通目录')
+      parents.set(current, [info.dev, info.ino, info.mode].map(String).join(':'))
+    }
+    const game = await fs.lstat(path.join(directory, 'game'), { bigint: true })
+    if (!game.isDirectory() || game.isSymbolicLink()) throw new Error('请先完成实例游戏目录安装')
+    // Pending mod-toggle journals are not cleaned by this preparation path.
+    const names = await fs.opendir(directory); let count = 0
+    try {
+      while (true) {
+        signal.throwIfAborted(); const entry = await names.read(); if (!entry) break
+        if (++count > 5000 || entry.name.startsWith('.mod-toggle-')) throw new Error('实例有待检查的模组操作资料或条目过多，请先重启检查')
+      }
+    } finally { await names.close() }
+    const file = path.join(directory, 'installed.json'), before = await this.datapackSourceIdentity(file)
+    const handle = await fs.open(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0))
+    let bytes: Buffer
+    try {
+      const opened = await handle.stat({ bigint: true })
+      const identity = [opened.dev, opened.ino, opened.mode, opened.size, opened.mtimeNs, opened.ctimeNs, opened.nlink].map(String).join(':')
+      if (!opened.isFile() || identity !== before || opened.size > 8n * 1024n ** 2n) throw new Error('已安装资料无效或变化')
+      const buffer = Buffer.alloc(Number(opened.size) + 1); let done = 0
+      while (done < buffer.length) { signal.throwIfAborted(); const read = await handle.read(buffer, done, buffer.length - done, done); if (!read.bytesRead) break; done += read.bytesRead }
+      if (done !== Number(opened.size) || before !== await this.datapackSourceIdentity(file)) throw new Error('已安装资料读取期间变化')
+      const after = await handle.stat({ bigint: true })
+      if (identity !== [after.dev, after.ino, after.mode, after.size, after.mtimeNs, after.ctimeNs, after.nlink].map(String).join(':')) throw new Error('已安装资料身份变化')
+      bytes = buffer.subarray(0, done)
+    } finally { await handle.close() }
+    for (const [parent, proof] of parents) {
+      const info = await fs.lstat(parent, { bigint: true })
+      if (proof !== [info.dev, info.ino, info.mode].map(String).join(':')) throw new Error('实例资料目录已变化')
+    }
+    const gameAfter = await fs.lstat(path.join(directory, 'game'), { bigint: true })
+    if (game.dev !== gameAfter.dev || game.ino !== gameAfter.ino || game.mode !== gameAfter.mode) throw new Error('游戏目录已变化')
+    const installed = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes!))
+    const instance = this.instance(id)
+    if (!installed || installed.schema !== 1 || !installed.version || installed.version.id !== instance.version || installed.platform !== this.platform ||
+        !Array.isArray(installed.classpath) || typeof installed.mainClass !== 'string') throw new Error('已安装版本与实例不一致，请先修复安装')
+    const context = { gameVersion: instance.version, loader: instance.loader, loaderVersion: instance.loaderVersion,
+      javaVersion: undefined as string | undefined, languageLoaderVersion: undefined as string | undefined }
+    // javaVersion deliberately stays unknown: the manifest's requirement is
+    // not a measurement of the currently selected runtime; no Java is executed.
+    const fingerprint = createHash('sha512').update(bytes!).update(before).update(JSON.stringify({ context, options: this.instanceOptions(id).values })).digest('hex')
+    signal.throwIfAborted()
+    return { context, fingerprint }
+  }
+
+  private publicModImportAssessment(value: ModImportAssessment): ModImportAssessment {
+    return { eligible: value.eligible, candidateIds: [...value.candidateIds], reasons: [...value.reasons], warnings: [...value.warnings], indexedFiles: value.indexedFiles }
+  }
+
+  private async withLocalModImport<T>(id: string, operationId: string, phase: 'prepare' | 'commit', work: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    this.assertNoLauncherUpdate(); this.assertDatapackIdle(id); this.assertWorldReadable(id)
+    const instance = this.instance(id)
+    if (instance.status !== 'ready' || instance.loader === 'vanilla' || this.modRecoveryBlocked.has(id)) throw new Error('请先安装并关闭受支持的模组实例，再导入本地模组')
+    if (typeof operationId !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(operationId) || this.localModImportOperationIds.has(operationId)) throw new Error('本地模组任务标识无效或已使用')
+    if (this.localModImportOperations.size) throw new Error('已有本地模组准备或导入正在进行，请等待实际任务结束')
+    const finish = this.beginLauncherOperation(), controller = new AbortController()
+    this.localModImportOperationIds.add(operationId)
+    while (this.localModImportOperationIds.size > 4096) this.localModImportOperationIds.delete(this.localModImportOperationIds.values().next().value!)
+    this.localModImportOperations.set(id, { operationId, controller }); this.installs.set(id, controller)
+    this.invalidateInventory(id)
+    try {
+      await this.assertWorldRestoreSafe(id, controller.signal)
+      return await work(controller.signal)
+    } catch (error) {
+      if (error instanceof LocalModImportError && error.code === 'RECOVERY_REQUIRED') {
+        instance.status = 'error'; instance.error = '本地模组导入结果需要人工检查，已保留 .mod-import-staging 和目标；不会自动删除或覆盖'
+        this.emit({ type: 'state', snapshot: this.snapshot() }); throw new Error(instance.error)
+      }
+      if (controller.signal.aborted || error instanceof Error && error.name === 'AbortError') throw new DOMException('本地模组任务已取消；已创建的准备资料保留，请等待读取和文件操作结算', 'AbortError')
+      throw new Error('本地模组准备或导入未完成；文件、实例或已安装清单可能变化/过期，请检查冲突、磁盘空间及权限后重新选择。已创建资料保留')
+    } finally {
+      if (phase === 'commit') this.invalidateInventory(id)
+      if (this.installs.get(id) === controller) this.installs.delete(id)
+      if (this.localModImportOperations.get(id)?.operationId === operationId) this.localModImportOperations.delete(id)
+      finish()
+    }
+  }
+
+  async prepareLocalModImport(id: string, operationId: string, chooseFile: () => Promise<string | undefined>): Promise<LocalModImportPlan | null> {
+    return this.withLocalModImport(id, operationId, 'prepare', async signal => {
+      const epoch = this.worldReadEpoch, generation = this.mutationGeneration.get(id) || 0
+      const context = await this.localModContext(id, signal)
+      const file = await chooseFile(); signal.throwIfAborted()
+      if (!file) return null
+      const sourceIdentity = await this.datapackSourceIdentity(file)
+      const inspection = await this.localModImport.inspect(file, { signal })
+      if (sourceIdentity !== await this.datapackSourceIdentity(file)) throw new Error('本地源文件已变化')
+      const policy = await this.localModImport.assess(this.instanceDirectory(id), inspection, context.context, { signal })
+      const freshContext = await this.localModContext(id, signal)
+      if (context.fingerprint !== freshContext.fingerprint || sourceIdentity !== await this.datapackSourceIdentity(file) || epoch !== this.worldReadEpoch || generation !== (this.mutationGeneration.get(id) || 0)) throw new Error('实例设置、版本或来源在准备期间变化')
+      const details = this.publicModJarDetails(inspection.details), assessment = this.publicModImportAssessment(policy.assessment)
+      if (!inspection.fullPayloadChecked || details.status !== 'metadata-read' || !details.sha512) {
+        assessment.eligible = false
+        assessment.reasons.push('此文件没有通过全部受支持载荷与可用模组声明检查')
+      }
+      const expiresAt = this.worldDetailsNow() + 120_000
+      const capabilityId = assessment.eligible && details.sha512 && details.archiveBytes ? randomUUID() : undefined
+      const plan: LocalModImportPlan = { instanceId: id, gameVersion: context.context.gameVersion, loader: context.context.loader, source: 'local',
+        filename: details.name, archiveBytes: details.archiveBytes, sha512: details.sha512, details, assessment,
+        capabilityId, expiresAt: new Date(expiresAt).toISOString() }
+      if (capabilityId) {
+        this.localModImportCapabilities.set(capabilityId, { instanceId: id, source: { file, filename: details.name, archiveBytes: details.archiveBytes!, sha512: details.sha512!, modIds: assessment.candidateIds },
+          sourceIdentity, contextFingerprint: context.fingerprint, policyFingerprint: policy.fingerprint, expiresAt, generation, epoch, plan })
+        while (this.localModImportCapabilities.size > 32) this.localModImportCapabilities.delete(this.localModImportCapabilities.keys().next().value!)
+      }
+      return structuredClone(plan)
+    })
+  }
+
+  async commitLocalModImport(id: string, capabilityId: string, input: unknown): Promise<LocalModImportResult> {
+    const value = this.localModImportCapabilities.get(capabilityId)
+    if (!value || value.instanceId !== id || value.expiresAt <= this.worldDetailsNow() || value.generation !== (this.mutationGeneration.get(id) || 0) || value.epoch !== this.worldReadEpoch) throw new Error('本地模组确认已失效，请重新选择并检查文件')
+    if (!input || typeof input !== 'object' || Array.isArray(input) || ![Object.prototype, null].includes(Object.getPrototypeOf(input)) || Reflect.ownKeys(input).length !== 2 ||
+        Reflect.ownKeys(input).some(key => typeof key !== 'string' || !['closedExternalGameConfirmed', 'operationId'].includes(key) || !('value' in Object.getOwnPropertyDescriptor(input, key)!))) throw new Error('本地模组导入确认格式无效')
+    const confirmation = input as { closedExternalGameConfirmed?: unknown; operationId?: unknown }
+    if (confirmation.closedExternalGameConfirmed !== true) throw new Error('请先关闭所有使用此实例的游戏或服务端，并确认导入目标')
+    if (typeof confirmation.operationId !== 'string') throw new Error('导入任务标识无效')
+    return this.withLocalModImport(id, confirmation.operationId, 'commit', async signal => {
+      const verifyPolicy = async () => {
+        signal.throwIfAborted()
+        if (value.sourceIdentity !== await this.datapackSourceIdentity(value.source.file)) throw new Error('源文件身份已变化')
+        const context = await this.localModContext(id, signal)
+        if (context.fingerprint !== value.contextFingerprint) throw new Error('实例设置或安装资料已变化')
+        const inspection = await this.localModImport.inspect(value.source.file, { signal })
+        if (inspection.details.sha512 !== value.source.sha512 || inspection.details.archiveBytes !== value.source.archiveBytes) throw new Error('源文件字节已变化')
+        const policy = await this.localModImport.assess(this.instanceDirectory(id), inspection, context.context, { signal })
+        if (!policy.assessment.eligible || policy.fingerprint !== value.policyFingerprint || JSON.stringify(policy.assessment.candidateIds) !== JSON.stringify(value.source.modIds)) throw new Error('已安装模组、依赖或冲突在确认后变化')
+      }
+      await verifyPolicy()
+      const result = await this.localModImport.commit(this.instanceDirectory(id), value.source, { instanceId: id, operationId: confirmation.operationId as string,
+        signal, verifyPolicy, inspect: this.localModImport.inspect })
+      return structuredClone({ operationId: result.operationId, instanceId: result.instanceId, filename: result.filename, archiveBytes: result.archiveBytes,
+        sha512: result.sha512, modIds: [...result.modIds], installedAt: result.installedAt, warnings: [...result.warnings] })
+    })
+  }
+
+  cancelLocalModImport(id: string, operationId: string): void {
+    this.instance(id)
+    const operation = this.localModImportOperations.get(id)
+    if (operation?.operationId === operationId) operation.controller.abort(new DOMException('本地模组任务已取消', 'AbortError'))
   }
 
   private async datapackSourceIdentity(file: string): Promise<string> {
@@ -1537,8 +1708,9 @@ export class LauncherCore {
       if (signal?.aborted) throw error
       this.invalidateModTokens(id)
       instance.status = 'error'
-      const recoveryError = error instanceof DatapackInstallError ? error : new WorldRestoreRecoveryError()
-      instance.error = recoveryError instanceof DatapackInstallError ? '数据包安装资料需要人工检查，已保留 .datapack-staging 和世界备份，不会自动覆盖或清理' : recoveryError.message
+      const recoveryError = error instanceof DatapackInstallError || error instanceof LocalModImportError ? error : new WorldRestoreRecoveryError()
+      instance.error = recoveryError instanceof LocalModImportError ? '本地模组导入资料需要人工检查，已保留 .mod-import-staging；不会自动删除或覆盖文件' :
+        recoveryError instanceof DatapackInstallError ? '数据包安装资料需要人工检查，已保留 .datapack-staging 和世界备份，不会自动覆盖或清理' : recoveryError.message
       this.emit({ type: 'state', snapshot: this.snapshot() })
       throw recoveryError
     }
@@ -1786,7 +1958,7 @@ export class LauncherCore {
       await this.assertInstanceUsable(id)
       await fs.cp(from, to, {
         recursive: true, errorOnExist: true, force: false, verbatimSymlinks: true,
-        filter: file => !/(^|[\\/])(\.restore-staging|\.datapack-staging|\.datapack-sources|\.mod-staging-[^\\/]*|\.mod-toggle-[^\\/]*)$/.test(path.relative(from, file)),
+        filter: file => !/(^|[\\/])(\.restore-staging|\.datapack-staging|\.datapack-sources|\.mod-import-staging|\.mod-staging-[^\\/]*|\.mod-toggle-[^\\/]*)$/.test(path.relative(from, file)),
       })
     } catch (error) {
       await fs.rm(to, { recursive: true, force: true }).catch(() => {})
@@ -2277,6 +2449,7 @@ export class LauncherCore {
   cancelInstall(id: string): void {
     if (this.worldBackupOperations.has(id)) throw new Error('这是世界备份任务，请使用该备份任务的取消按钮')
     if (this.datapackInstallOperations.has(id)) throw new Error('这是数据包安装任务，请使用该任务的精确取消按钮')
+    if (this.localModImportOperations.has(id)) throw new Error('这是本地模组导入任务，请使用该任务的精确取消按钮')
     const controller = this.installs.get(id)
     if (!controller) { this.instance(id); return }
     controller.abort(new DOMException('安装已取消', 'AbortError'))
@@ -2409,6 +2582,7 @@ export class LauncherCore {
     this.datapackRevisions.clear()
     this.datapackInstallCapabilities.clear()
     this.modDetailViews.clear()
+    this.localModImportCapabilities.clear()
     for (const read of this.modDetailReads.values()) read.controller.abort(new DOMException('启动器正在退出', 'AbortError'))
     for (const read of this.datapackReads.values()) read.controller.abort(new DOMException('启动器正在退出', 'AbortError'))
     for (const controller of [...this.installs.values(), ...this.javaDownloads.values(), ...this.launchControllers.values(),
