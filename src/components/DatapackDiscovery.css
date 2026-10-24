@@ -55,5 +55,8 @@
 .datapack-discovery-dependencies li strong{font-weight:500;margin-right:10px}
 .datapack-discovery-dependencies li small{display:block;color:var(--ink-2)}
 .datapack-discovery-dependencies>p{color:var(--ink-2);max-width:80ch}
+.datapack-discovery-prepare{display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap;margin:16px 0}
+.datapack-discovery-prepare>.button{flex-shrink:0}
+.datapack-discovery-prepare>span{font-size:12px;color:var(--ink-2);line-height:1.8;max-width:68ch;overflow-wrap:anywhere;flex:1;min-width:180px;padding-top:5px}
 @media(max-width:760px){.datapack-discovery-search>div{flex-wrap:wrap}.datapack-discovery-search input{flex-basis:calc(100% - 30px)}.datapack-discovery-search .button{margin-left:26px}.datapack-discovery-fields,.datapack-discovery-files dl{grid-template-columns:100px minmax(0,1fr);gap:6px 10px}}
 @media(max-width:480px){.datapack-discovery-fields,.datapack-discovery-files dl{grid-template-columns:minmax(0,1fr);gap:3px}.datapack-discovery-fields dd,.datapack-discovery-files dd{margin-bottom:6px}.datapack-discovery-pagination{gap:8px}}

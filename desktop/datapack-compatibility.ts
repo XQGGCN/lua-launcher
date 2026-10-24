@@ -3,8 +3,10 @@ import type { DatapackCompatibility, DatapackMetadata, DatapackInspectionStatus 
 // Exact release adapters only. Never infer adjacent patch versions, snapshots,
 // DataVersion or resource-pack format. Primary sources are recorded in docs.
 export const DATAPACK_VERSION_ADAPTERS = Object.freeze({
+  '1.20.1': { major: 15, minor: 0, generation: 'single' },
   '1.20.2': { major: 18, minor: 0, generation: 'range' },
   '1.21': { major: 48, minor: 0, generation: 'range' },
+  '1.21.1': { major: 48, minor: 0, generation: 'range' },
   '1.21.9': { major: 88, minor: 0, generation: 'minor' },
 } as const)
 
@@ -22,7 +24,13 @@ export function datapackCompatibility(
     return result('unknown', '包含未完整解释的特性、叠加层或扩展字段，兼容性未知')
   }
   let fits: boolean
-  if (adapter.generation === 'range') {
+  if (adapter.generation === 'single') {
+    if (metadata.packFormat === undefined) return result('declared-incompatible', '此游戏版本要求 pack_format，当前声明未提供')
+    // supported_formats was introduced in 1.20.2 and cannot expand 1.20.1's
+    // accepted declaration. Unresolved extension behavior remains unknown.
+    if (metadata.supportedFormats) return result('unknown', '此旧版本不使用 supported_formats，本版不确认带此字段的旧版安装')
+    fits = metadata.packFormat === adapter.major
+  } else if (adapter.generation === 'range') {
     if (metadata.packFormat === undefined) return result('declared-incompatible', '此游戏版本要求 pack_format，当前声明未提供')
     const range = metadata.supportedFormats ?? [metadata.packFormat, metadata.packFormat]
     if (metadata.packFormat < range[0] || metadata.packFormat > range[1]) return result('unknown', 'supported_formats 未包含 pack_format，无法确认声明')

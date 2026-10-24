@@ -16,6 +16,7 @@ const methods = new Set([
   'worldDetails', 'worldDetailsWithSeed',
   'worldDatapacks', 'inspectWorldDatapack', 'chooseDatapackZip', 'cancelDatapackRead',
   'searchDatapacks', 'datapackProjectVersions',
+  'prepareLocalDatapackInstall', 'prepareModrinthDatapackInstall', 'installDatapack', 'cancelDatapackInstall',
   'worldBackupTasks', 'worldBackups', 'backupWorld', 'cancelWorldBackup', 'openWorldBackup',
   'checkUpdate', 'installUpdate', 'deleteInstance', 'duplicateInstance', 'openCrashReports', 'minimizeWindow', 'setTitleBarTheme',
   'worldMap', 'worldMapTile', 'chooseWorldZip', 'importWorldZip', 'restoreWorldBackup', 'cancelWorldRestore',

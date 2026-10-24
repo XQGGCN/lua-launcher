@@ -21,6 +21,10 @@ import { datapackCompatibility } from './datapack-compatibility'
 import type { DatapackMetadata, DatapackPreview, WorldDatapackInventory, WorldDatapackPreview } from './datapack-types'
 import { searchDatapackCatalog, readDatapackProjectVersions } from './datapack-catalog'
 import type { DatapackCatalogFile, DatapackCatalogProject, DatapackCatalogVersion, WorldDatapackSearch, WorldDatapackVersions } from './datapack-discovery-types'
+import { installWorldDatapack, inspectDatapackInstallRecovery, DatapackInstallError } from './datapack-install'
+import { resolveDatapackArtifact, downloadDatapackArtifact } from './datapack-artifact'
+import type { DatapackInstallResult, DatapackInstallSource } from './datapack-install-types'
+import type { WorldDatapackInstallPlan } from './datapack-install-plan-types'
 import type { WorldSelection, WorldSource, WorldDetails, WorldSeed, WorldMetadata } from './world-types'
 import { createWorldDirectoryBackup, listWorldDirectoryBackups, worldBackupDirectory, WorldBackupError } from './world-backup'
 import type { WorldBackupTask, WorldBackupResult, WorldBackupList } from './world-backup-types'
@@ -253,6 +257,8 @@ interface CoreOptions {
   datapackEngine?: { capture: typeof captureDatapackWorld; inventory: typeof inventoryDatapacks; verify: typeof verifyDatapackWorld;
     item: typeof inspectDatapackItem; zip: typeof inspectDatapackZip }
   datapackCatalog?: { search: typeof searchDatapackCatalog; versions: typeof readDatapackProjectVersions }
+  datapackInstaller?: typeof installWorldDatapack
+  datapackArtifact?: { resolve: typeof resolveDatapackArtifact; download: typeof downloadDatapackArtifact }
   worldBackupCreator?: typeof createWorldDirectoryBackup
   worldBackupLister?: typeof listWorldDirectoryBackups
   worldBackupResolver?: typeof worldBackupDirectory
@@ -402,6 +408,12 @@ export class LauncherCore {
   private worldReadEpoch = 0
   private readonly datapackEngine: NonNullable<CoreOptions['datapackEngine']>
   private readonly datapackCatalog: NonNullable<CoreOptions['datapackCatalog']>
+  private readonly datapackInstaller: typeof installWorldDatapack
+  private readonly datapackArtifact: NonNullable<CoreOptions['datapackArtifact']>
+  private datapackInstallCapabilities = new Map<string, { instanceId: string; revision: string; proof: DatapackWorldProof;
+    selection: WorldSelection; source: DatapackInstallSource; sourceIdentity: string; worldRevisionKey: string; worldVersion: string;
+    gameVersion: string; expiresAt: number; plan: WorldDatapackInstallPlan }>()
+  private datapackInstallOperations = new Map<string, { operationId: string; controller: AbortController }>()
   private datapackCatalogViews = new Map<string, object>()
   private datapackReads = new Map<string, { instanceId: string; inspecting: boolean; controller: AbortController }>()
   private datapackOperationIds = new Set<string>()
@@ -463,6 +475,8 @@ export class LauncherCore {
     this.datapackEngine = options.datapackEngine ?? { capture: captureDatapackWorld, inventory: inventoryDatapacks,
       verify: verifyDatapackWorld, item: inspectDatapackItem, zip: inspectDatapackZip }
     this.datapackCatalog = options.datapackCatalog ?? { search: searchDatapackCatalog, versions: readDatapackProjectVersions }
+    this.datapackInstaller = options.datapackInstaller ?? installWorldDatapack
+    this.datapackArtifact = options.datapackArtifact ?? { resolve: resolveDatapackArtifact, download: downloadDatapackArtifact }
     this.worldBackupCreator = options.worldBackupCreator ?? createWorldDirectoryBackup
     this.worldBackupLister = options.worldBackupLister ?? listWorldDirectoryBackups
     this.worldBackupResolver = options.worldBackupResolver ?? worldBackupDirectory
@@ -509,7 +523,7 @@ export class LauncherCore {
         this.installs.size || this.processes.size || this.launching.size || this.stopping.size ||
         this.launchControllers.size || this.instanceSettingsSaving.size || this.javaDownloads.size ||
         this.resourceDownloads.size || this.worldBackupOperations.size || this.worldExportOperation ||
-        this.worldRestores.size || this.inventoryScans.size || this.worldReads.size || this.datapackReads.size ||
+        this.worldRestores.size || this.inventoryScans.size || this.worldReads.size || this.datapackReads.size || this.datapackInstallOperations.size ||
         this.worldMapActive || this.worldMapQueue.length ||
         [...this.javaTasks.values()].some(task => ['queued', 'active', 'cancelling'].includes(task.status)) ||
         [...this.worldBackupHistory.values(), ...this.worldExportHistory.values()].some(task => ['active', 'cancelling'].includes(task.status)) ||
@@ -627,6 +641,7 @@ export class LauncherCore {
     for (const [token, value] of this.worldRevisions) if (value.instanceId === id) this.worldRevisions.delete(token)
     for (const [key, value] of this.worldViews) if (value.instanceId === id) this.worldViews.delete(key)
     this.datapackViews.delete(id)
+    for (const [token, value] of this.datapackInstallCapabilities) if (value.instanceId === id) this.datapackInstallCapabilities.delete(token)
     for (const key of this.datapackCatalogViews.keys()) if (key.startsWith(`${id}:`)) this.datapackCatalogViews.delete(key)
     for (const [token, value] of this.datapackRevisions) if (value.instanceId === id) this.datapackRevisions.delete(token)
     for (const read of this.datapackReads.values()) if (read.instanceId === id) read.controller.abort(new DOMException('实例已变化', 'AbortError'))
@@ -653,6 +668,9 @@ export class LauncherCore {
     const recovery = await inspectWorldRestoreRecovery(safeJoin(this.instanceDirectory(id), '.restore-staging'), safeJoin(this.instanceDirectory(id), 'game/saves'))
     signal?.throwIfAborted()
     if (recovery.blocked) throw new WorldRestoreRecoveryError()
+    const datapackRecovery = await inspectDatapackInstallRecovery(this.instanceDirectory(id), { signal })
+    signal?.throwIfAborted()
+    if (datapackRecovery.blocked) throw new DatapackInstallError('RECOVERY_REQUIRED')
   }
 
   private worldSelection(input: unknown): WorldSelection {
@@ -727,6 +745,7 @@ export class LauncherCore {
     const view = {}
     // This view changes before any await, invalidating earlier reads of this instance.
     this.datapackViews.set(id, view)
+    for (const [token, value] of this.datapackInstallCapabilities) if (value.instanceId === id) this.datapackInstallCapabilities.delete(token)
     for (const key of this.datapackCatalogViews.keys()) if (key.startsWith(`${id}:`)) this.datapackCatalogViews.delete(key)
     for (const [key, value] of this.datapackRevisions) if (value.instanceId === id) this.datapackRevisions.delete(key)
     return this.withDatapackRead(id, operationId, false, async (signal, check) => {
@@ -755,6 +774,7 @@ export class LauncherCore {
 
   private async datapackPreview(id: string, revision: string, operationId: string,
     inspect: (view: ReturnType<LauncherCore['datapackRevision']>, signal: AbortSignal) => Promise<DatapackPreview | null>): Promise<WorldDatapackPreview | null> {
+    for (const [token, value] of this.datapackInstallCapabilities) if (value.instanceId === id) this.datapackInstallCapabilities.delete(token)
     return this.withDatapackRead(id, operationId, true, async (signal, check) => {
       const view = this.datapackRevision(id, revision)
       await this.datapackEngine.verify(view.proof, { signal })
@@ -798,6 +818,7 @@ export class LauncherCore {
     this.assertNoLauncherUpdate()
     this.assertWorldReadable(id)
     const view = this.datapackRevision(id, revision)
+    for (const [token, value] of this.datapackInstallCapabilities) if (value.instanceId === id) this.datapackInstallCapabilities.delete(token)
     const key = `${id}:${revision}:${kind}`, ticket = {}
     // Allocate before any await: a slow earlier request cannot become the current view.
     this.datapackCatalogViews.set(key, ticket)
@@ -837,6 +858,150 @@ export class LauncherCore {
       this.datapackCatalog.versions(projectId, { gameVersion, signal, fetch: this.fetcher, userAgent: USER_AGENT }))
     return { instanceId: id, revision, world, gameVersion, project: publicDatapackCatalogProject(value.project),
       versions: value.versions.map(publicDatapackCatalogVersion), upstreamVersionCount: value.upstreamVersionCount, omittedVersions: value.omittedVersions }
+  }
+
+  private async datapackSourceIdentity(file: string): Promise<string> {
+    const stat = await fs.lstat(file, { bigint: true })
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('数据包来源需要普通文件')
+    return [stat.dev, stat.ino, stat.mode, stat.size, stat.mtimeNs, stat.ctimeNs, stat.nlink].map(String).join(':')
+  }
+
+  private async prepareDatapackInstall(id: string, revision: string, operationId: string, origin: 'local' | 'modrinth',
+    sourceFile: (signal: AbortSignal, gameVersion: string) => Promise<{ file: string; filename?: string } | null>): Promise<WorldDatapackInstallPlan | null> {
+    this.assertNoLauncherUpdate()
+    this.assertWorldReadable(id)
+    const view = this.datapackRevision(id, revision)
+    for (const [token, value] of this.datapackInstallCapabilities) if (value.instanceId === id) this.datapackInstallCapabilities.delete(token)
+    return this.withDatapackRead(id, operationId, true, async (signal, check) => {
+      const gameVersion = this.instance(id).version
+      await this.datapackEngine.verify(view.proof, { signal })
+      const source = await sourceFile(signal, gameVersion)
+      signal.throwIfAborted(); check()
+      if (!source) return null
+      const sourceIdentity = await this.datapackSourceIdentity(source.file)
+      const preview = await this.datapackEngine.zip(source.file, { signal })
+      if (sourceIdentity !== await this.datapackSourceIdentity(source.file)) throw new Error('所选数据包文件已变化')
+      const saved = await this.worldDetailsReader(this.instanceDirectory(id), view.selection, { source: 'level.dat', includeSeed: false, signal })
+      await this.datapackEngine.verify(view.proof, { signal })
+      check()
+      if (this.datapackRevision(id, revision) !== view || this.instance(id).version !== gameVersion) throw new Error('世界或实例版本已变化')
+      const filename = source.filename ?? preview.name
+      const instanceCompatibility = datapackCompatibility(preview.metadata, gameVersion, preview.status)
+      const worldVersion = saved.details.metadata.savedVersionName
+      const worldCompatibility = datapackCompatibility(preview.metadata, worldVersion, preview.status)
+      const reasons: string[] = []
+      if (preview.status !== 'checked' || preview.kind !== 'zip' || !preview.sha512 || !preview.archiveBytes) reasons.push('此文件尚未通过完整的受支持 ZIP 检查')
+      if (instanceCompatibility.status !== 'declared-compatible') reasons.push('实例游戏版本的格式声明不匹配或尚未核实')
+      if (worldCompatibility.status !== 'declared-compatible' || !saved.revisionKey || !worldVersion) reasons.push('世界保存版本或主 level.dat 尚未核实，不能安装')
+      if (!/\.zip$/i.test(filename) || Buffer.byteLength(filename) > 255 || /[<>:"/\\|?*\p{Cc}\p{Cf}\ud800-\udfff\ufffd]/u.test(filename) || /[ .]$/.test(filename) || /^(?:CON|PRN|AUX|NUL|CLOCK\$|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.|$)/i.test(filename)) reasons.push('文件名不符合单层 ZIP 安装条件')
+      if (this.instance(id).status !== 'ready') reasons.push('请先完成此实例的安装或修复，再安装数据包')
+      const expiresAt = this.worldDetailsNow() + 120_000
+      const capabilityId = reasons.length ? undefined : randomUUID()
+      const plan: WorldDatapackInstallPlan = { ...publicDatapackPreview(preview), name: filename, instanceId: id, world: view.selection,
+        revision, previewId: randomUUID(), instanceCompatibility, worldCompatibility, source: origin, filename, expiresAt: new Date(expiresAt).toISOString(),
+        capabilityId, canInstall: Boolean(capabilityId), reasons }
+      if (capabilityId) {
+        this.datapackInstallCapabilities.set(capabilityId, { instanceId: id, revision, proof: view.proof, selection: view.selection,
+          source: { file: source.file, filename, sha512: preview.sha512!, archiveBytes: preview.archiveBytes! }, sourceIdentity,
+          worldRevisionKey: saved.revisionKey!, worldVersion: worldVersion!, gameVersion, expiresAt, plan })
+        while (this.datapackInstallCapabilities.size > 32) this.datapackInstallCapabilities.delete(this.datapackInstallCapabilities.keys().next().value!)
+      }
+      return plan
+    }, '数据包安装准备未完成；来源、世界或列表可能变化/过期，请关闭游戏并刷新后重试。已下载的准备资料保留在实例外层，不会自动安装')
+  }
+
+  /** A fresh main-only picker grants a separate one-use capability, never a preview ID. */
+  async prepareLocalDatapackInstall(id: string, revision: string, operationId: string,
+    chooseFile: () => Promise<string | undefined>): Promise<WorldDatapackInstallPlan | null> {
+    return this.prepareDatapackInstall(id, revision, operationId, 'local', async signal => {
+      const file = await chooseFile(); signal.throwIfAborted()
+      return file ? { file } : null
+    })
+  }
+
+  async prepareModrinthDatapackInstall(id: string, revision: string, selection: unknown, operationId: string): Promise<WorldDatapackInstallPlan | null> {
+    return this.prepareDatapackInstall(id, revision, operationId, 'modrinth', async (signal, gameVersion) => {
+      const artifact = await this.datapackArtifact.resolve(selection as Parameters<typeof resolveDatapackArtifact>[0], {
+        gameVersion, signal, fetch: this.fetcher, userAgent: USER_AGENT,
+      })
+      const source = await this.datapackArtifact.download(this.instanceDirectory(id), artifact, { signal, fetch: this.fetcher, userAgent: USER_AGENT })
+      return { file: source.file, filename: source.filename }
+    })
+  }
+
+  async installDatapack(id: string, capabilityId: string, input: unknown): Promise<DatapackInstallResult> {
+    this.assertNoLauncherUpdate()
+    this.assertDatapackIdle(id)
+    this.assertWorldReadable(id)
+    const instance = this.instance(id), capability = this.datapackInstallCapabilities.get(capabilityId)
+    if (instance.status !== 'ready' || !capability || capability.instanceId !== id || capability.expiresAt <= this.worldDetailsNow() ||
+        capability.gameVersion !== instance.version) throw new Error('安装确认已失效，请重新选择数据包并检查')
+    this.datapackRevision(id, capability.revision)
+    if (!input || typeof input !== 'object' || Array.isArray(input) || ![Object.prototype, null].includes(Object.getPrototypeOf(input)) ||
+        Reflect.ownKeys(input).length !== 2 || Reflect.ownKeys(input).some(key => typeof key !== 'string' ||
+          !['closedExternalWorldConfirmed', 'operationId'].includes(key) || !('value' in Object.getOwnPropertyDescriptor(input, key)!))) throw new Error('安装确认格式无效')
+    const confirmation = input as { closedExternalWorldConfirmed?: unknown; operationId?: unknown }
+    if (confirmation.closedExternalWorldConfirmed !== true) throw new Error('请先关闭使用此世界的所有游戏或服务端，再确认备份并安装')
+    const operationId = confirmation.operationId
+    if (typeof operationId !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(operationId) ||
+        this.datapackOperationIds.has(operationId)) throw new Error('数据包安装任务标识无效或已使用')
+    const finish = this.beginLauncherOperation(), controller = new AbortController()
+    this.datapackOperationIds.add(operationId)
+    this.datapackInstallCapabilities.delete(capabilityId)
+    this.installs.set(id, controller)
+    this.datapackInstallOperations.set(id, { operationId, controller })
+    this.invalidateInventory(id)
+    // The installer creates a datapacks child itself; retain only the original
+    // world/ancestor proof here, not the pre-install inventory's child proof.
+    const worldProof = { ...capability.proof, datapacks: undefined, entries: new Map() }
+    const verifyWorld = async () => {
+      controller.signal.throwIfAborted()
+      await this.datapackEngine.verify(worldProof, { signal: controller.signal })
+      if (capability.sourceIdentity !== await this.datapackSourceIdentity(capability.source.file)) throw new Error('数据包来源文件已变化')
+      const current = await this.worldDetailsReader(this.instanceDirectory(id), capability.selection, { source: 'level.dat', includeSeed: false, signal: controller.signal })
+      if (this.instance(id).version !== capability.gameVersion || current.revisionKey !== capability.worldRevisionKey ||
+          current.details.metadata.savedVersionName !== capability.worldVersion) throw new Error('世界保存版本或文件在确认后发生变化')
+      controller.signal.throwIfAborted()
+    }
+    try {
+      await this.assertWorldRestoreSafe(id, controller.signal)
+      await verifyWorld()
+      const result = await this.datapackInstaller(this.instanceDirectory(id), capability.selection, capability.source, {
+        backupRoot: this.worldBackupRoot(), instanceId: id, operationId, signal: controller.signal,
+        backupCreator: this.worldBackupCreator, verifyWorld,
+        onProgress: progress => {
+          try { this.emit({ type: 'progress', instanceId: id, phase: progress.phase === 'backup' ? '正在完整备份所选世界' : progress.phase === 'commit' ? '正在完成数据包安装' : '正在检查数据包文件',
+            completed: progress.bytesDone, total: progress.totalBytes ?? 0, bytesDownloaded: progress.bytesDone, unit: 'bytes' }) } catch { /* Observers cannot change disk outcome. */ }
+        },
+        authorizePreview: preview => {
+          if (preview.status !== 'checked' || preview.sha512 !== capability.source.sha512 || preview.archiveBytes !== capability.source.archiveBytes ||
+              datapackCompatibility(preview.metadata, capability.gameVersion, preview.status).status !== 'declared-compatible' ||
+              datapackCompatibility(preview.metadata, capability.worldVersion, preview.status).status !== 'declared-compatible') throw new Error('数据包内容或声明在确认后发生变化')
+        },
+      })
+      return structuredClone(result)
+    } catch (error) {
+      // Do not let cancellation conceal an unresolved publication, or leak a
+      // selected source path / raw network body through the renderer bridge.
+      if (error instanceof DatapackInstallError && error.code === 'RECOVERY_REQUIRED') {
+        instance.status = 'error'; instance.error = '数据包安装结果需要人工检查，已保留备份和安装资料；请保留 .datapack-staging 后重启检查'
+        this.emit({ type: 'state', snapshot: this.snapshot() })
+        throw new Error(instance.error)
+      }
+      if (controller.signal.aborted || error instanceof Error && error.name === 'AbortError') throw new DOMException('数据包安装已取消；已创建的备份和准备资料会保留，安装结果以磁盘凭据为准', 'AbortError')
+      throw new Error('数据包未完成安装；请检查文件冲突、世界变化、磁盘空间和权限。已创建的备份及准备资料保留，不会自动覆盖或清理')
+    } finally {
+      this.invalidateInventory(id)
+      if (this.datapackInstallOperations.get(id)?.operationId === operationId) this.datapackInstallOperations.delete(id)
+      if (this.installs.get(id) === controller) this.installs.delete(id)
+      finish()
+    }
+  }
+
+  cancelDatapackInstall(id: string, operationId: string): void {
+    this.instance(id)
+    const active = this.datapackInstallOperations.get(id)
+    if (active?.operationId === operationId) active.controller.abort(new DOMException('数据包安装已取消', 'AbortError'))
   }
 
   worldBackupTasks(): WorldBackupTask[] { return structuredClone([...this.worldBackupHistory.values()]) }
@@ -1267,9 +1432,10 @@ export class LauncherCore {
       if (signal?.aborted) throw error
       this.invalidateModTokens(id)
       instance.status = 'error'
-      instance.error = new WorldRestoreRecoveryError().message
+      const recoveryError = error instanceof DatapackInstallError ? error : new WorldRestoreRecoveryError()
+      instance.error = recoveryError instanceof DatapackInstallError ? '数据包安装资料需要人工检查，已保留 .datapack-staging 和世界备份，不会自动覆盖或清理' : recoveryError.message
       this.emit({ type: 'state', snapshot: this.snapshot() })
-      throw new WorldRestoreRecoveryError()
+      throw recoveryError
     }
     if (this.modRecoveryBlocked.has(id)) throw new Error(instance.error || '模组文件修改需要人工检查，请先保留恢复资料')
     let blocked = false
@@ -1515,7 +1681,7 @@ export class LauncherCore {
       await this.assertInstanceUsable(id)
       await fs.cp(from, to, {
         recursive: true, errorOnExist: true, force: false, verbatimSymlinks: true,
-        filter: file => !/(^|[\\/])(\.restore-staging|\.mod-staging-[^\\/]*|\.mod-toggle-[^\\/]*)$/.test(path.relative(from, file)),
+        filter: file => !/(^|[\\/])(\.restore-staging|\.datapack-staging|\.datapack-sources|\.mod-staging-[^\\/]*|\.mod-toggle-[^\\/]*)$/.test(path.relative(from, file)),
       })
     } catch (error) {
       await fs.rm(to, { recursive: true, force: true }).catch(() => {})
@@ -2005,6 +2171,7 @@ export class LauncherCore {
 
   cancelInstall(id: string): void {
     if (this.worldBackupOperations.has(id)) throw new Error('这是世界备份任务，请使用该备份任务的取消按钮')
+    if (this.datapackInstallOperations.has(id)) throw new Error('这是数据包安装任务，请使用该任务的精确取消按钮')
     const controller = this.installs.get(id)
     if (!controller) { this.instance(id); return }
     controller.abort(new DOMException('安装已取消', 'AbortError'))
@@ -2135,6 +2302,7 @@ export class LauncherCore {
     this.datapackViews.clear()
     this.datapackCatalogViews.clear()
     this.datapackRevisions.clear()
+    this.datapackInstallCapabilities.clear()
     for (const read of this.datapackReads.values()) read.controller.abort(new DOMException('启动器正在退出', 'AbortError'))
     for (const controller of [...this.installs.values(), ...this.javaDownloads.values(), ...this.launchControllers.values(),
       ...[...this.inventoryScans.values()].map(scan => scan.controller), ...[...this.worldReads.values()].map(read => read.controller), ...(this.worldExportOperation ? [this.worldExportOperation.controller] : [])]) {

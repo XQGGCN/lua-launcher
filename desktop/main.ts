@@ -266,6 +266,26 @@ if (hasLock) app.whenReady().then(async () => {
         if (launches.has(id)) throw new Error('请先完成或取消启动准备，再读取数据包版本')
         return core.datapackProjectVersions(id, text(args[1], 80), text(args[2], 128), text(args[3], 80))
       }
+      case 'prepareLocalDatapackInstall': {
+        const id = text(args[0], 80)
+        if (launches.has(id)) throw new Error('请先完成或取消启动准备，再准备数据包安装')
+        return core.prepareLocalDatapackInstall(id, text(args[1], 80), text(args[2], 80), async () => {
+          const selected = await dialog.showOpenDialog(dialogWindow(), { title: '选择准备安装的数据包 ZIP', properties: ['openFile'],
+            filters: [{ name: '数据包 ZIP', extensions: ['zip'] }] })
+          return selected.canceled ? undefined : selected.filePaths[0]
+        })
+      }
+      case 'prepareModrinthDatapackInstall': {
+        const id = text(args[0], 80)
+        if (launches.has(id)) throw new Error('请先完成或取消启动准备，再准备数据包安装')
+        return core.prepareModrinthDatapackInstall(id, text(args[1], 80), object(args[2]), text(args[3], 80))
+      }
+      case 'installDatapack': {
+        const id = text(args[0], 80)
+        if (launches.has(id)) throw new Error('请先完成或取消启动准备，再安装数据包')
+        return core.installDatapack(id, text(args[1], 80), object(args[2]))
+      }
+      case 'cancelDatapackInstall': return core.cancelDatapackInstall(text(args[0], 80), text(args[1], 80))
       case 'worldDetails': {
         const id = text(args[0], 80)
         if (launches.has(id)) throw new Error('请先完成或取消此实例的启动准备，再读取世界详情')

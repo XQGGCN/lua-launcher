@@ -8,10 +8,18 @@ const metadata = (patch: Partial<DatapackMetadata> = {}): DatapackMetadata => ({
 })
 test('only exact primary-sourced game versions receive a declared format assessment', () => {
   assert.equal(datapackCompatibility(metadata(), '1.21').status, 'declared-compatible')
-  for (const version of ['1.21.1', '1.21.0', '24w18a', '48', '__proto__', 'toString', undefined]) {
+  assert.equal(datapackCompatibility(metadata(), '1.21.1').status, 'declared-compatible')
+  assert.equal(datapackCompatibility(metadata({ packFormat: 15 }), '1.20.1').status, 'declared-compatible')
+  for (const version of ['1.20', '1.20.0', '1.21.2', '1.21.0', '24w18a', '48', '__proto__', 'toString', undefined]) {
     assert.equal(datapackCompatibility(metadata(), version).status, 'unknown')
   }
   assert.equal(datapackCompatibility(metadata(), '1.20.2').status, 'declared-incompatible')
+})
+test('1.20.1 single-format checks never borrow 1.20.2 supported-format ranges', () => {
+  assert.equal(datapackCompatibility(metadata({ packFormat: 18 }), '1.20.1').status, 'declared-incompatible')
+  assert.equal(datapackCompatibility(metadata({ packFormat: 18, supportedFormats: [15, 48] }), '1.20.1').status, 'unknown')
+  assert.equal(datapackCompatibility(metadata({ packFormat: 15, supportedFormats: [15, 48] }), '1.20.1').status, 'unknown')
+  assert.equal(datapackCompatibility(metadata({ packFormat: undefined }), '1.20.1').status, 'declared-incompatible')
 })
 test('legacy ranges must contain pack_format; new fields do not supply an old-version declaration', () => {
   assert.equal(datapackCompatibility(metadata({ packFormat: 18, supportedFormats: [18, 48] }), '1.20.2').status, 'declared-compatible')

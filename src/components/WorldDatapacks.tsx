@@ -1,9 +1,12 @@
 import { useEffect, useId, useRef, useState, type MutableRefObject } from 'react'
-import { FileArchive, FileSearch, Folder, RefreshCw, Search, X } from 'lucide-react'
+import { FileArchive, FileSearch, Folder, Plus, RefreshCw, Search, X } from 'lucide-react'
 import type { DatapackCompatibility, DatapackInventoryItem, DatapackMetadata, WorldDatapackInventory, WorldDatapackPreview } from '../../desktop/datapack-types'
+import type { DatapackArtifactSelection, WorldDatapackInstallPlan } from '../../desktop/datapack-install-plan-types'
+import type { DatapackInstallResult } from '../../desktop/datapack-install-types'
 import { call, errorText, isDesktop, type Instance, type InventoryItem } from '../api'
 import { ErrorBox, Spinner } from './ui'
 import DatapackDiscovery from './DatapackDiscovery'
+import DatapackInstallConfirmation from './DatapackInstallConfirmation'
 import { escapeWorldText, worldDetailsBlockedReason } from './WorldDetails'
 import './WorldDatapacks.css'
 
@@ -13,7 +16,7 @@ interface WorldDatapacksProps {
   busy: boolean
   refreshRevision?: number
 }
-type Operation = { id: string; context: string; phase: 'inventory' | 'item' | 'picker'; name?: string }
+type Operation = { id: string; context: string; phase: 'inventory' | 'item' | 'picker' | 'prepare-local' | 'prepare-modrinth' | 'install'; name?: string; cancelled?: boolean }
 type Preview = { context: string; value: WorldDatapackPreview; source: 'world' | 'local' }
 const pageSize = 20
 
@@ -66,6 +69,8 @@ function WorldDatapacksContext({ instance, item, busy, refreshRevision = 0, iden
   const [stopping, setStopping] = useState(false)
   const [result, setResult] = useState<{ context: string; value: WorldDatapackInventory }>()
   const [preview, setPreview] = useState<Preview>()
+  const [plan, setPlan] = useState<{ context: string; value: WorldDatapackInstallPlan }>()
+  const [installed, setInstalled] = useState<DatapackInstallResult>()
   const [error, setError] = useState<{ context: string; message: string }>()
   const [query, setQuery] = useState('')
   const [discoveryQuery, setDiscoveryQuery] = useState('')
@@ -75,13 +80,14 @@ function WorldDatapacksContext({ instance, item, busy, refreshRevision = 0, iden
   const [selectedId, setSelectedId] = useState('')
   const inventory = result?.context === context ? result.value : undefined
   const detail = preview?.context === context && preview.value.revision === inventory?.revision ? preview : undefined
+  const installPlan = plan?.context === context && plan.value.revision === inventory?.revision ? plan.value : undefined
   const currentOperation = operation?.context === context ? operation : undefined
   const message = error?.context === context ? error.message : ''
   const working = Boolean(currentOperation) || discoveryBusy
   const revision = useRef(inventory?.revision)
   revision.current = inventory?.revision
   const current = (key: string) => mounted.current && currentIdentity.current === identity && currentContext.current === key
-  const valid = (op: Operation) => current(op.context) && active.current === op
+  const valid = (op: Operation) => current(op.context) && active.current === op && (op.phase === 'install' || !op.cancelled)
   const matchingWorld = (value: WorldDatapackInventory | WorldDatapackPreview) => value.instanceId === instance.id && value.world.itemId === item.id && value.world.name === item.name
   const normalizedQuery = query.trim().toLocaleLowerCase('zh-CN')
   const filtered = (inventory?.items ?? []).filter(pack => pack.name.toLocaleLowerCase('zh-CN').includes(normalizedQuery))
@@ -92,7 +98,7 @@ function WorldDatapacksContext({ instance, item, busy, refreshRevision = 0, iden
 
   function cancel(op: Operation) {
     // Cancellation selects one operation, so an old world's cleanup cannot cancel a new world.
-    return call<void>('cancelDatapackRead', instance.id, op.id)
+    return call<void>(op.phase === 'install' ? 'cancelDatapackInstall' : 'cancelDatapackRead', instance.id, op.id)
   }
   function begin(phase: Operation['phase'], name?: string): Operation {
     const op: Operation = { id: crypto.randomUUID(), context, phase, name }
@@ -101,19 +107,20 @@ function WorldDatapacksContext({ instance, item, busy, refreshRevision = 0, iden
     return op
   }
   function finish(op: Operation) {
-    if (valid(op)) { setOperation(undefined); setStopping(false) }
+    if (current(op.context) && active.current === op) { setOperation(undefined); setStopping(false) }
     if (active.current === op) active.current = undefined
   }
   function refresh() {
     if (reason || active.current || discoveryOperations.current.size) return
-    setPreview(undefined); setResult(undefined); setSelectedId(''); setError(undefined); setRetry(value => value + 1)
+    setPreview(undefined); setPlan(undefined); setResult(undefined); setSelectedId(''); setError(undefined); setRetry(value => value + 1)
   }
   async function stop() {
     const op = active.current
     if (!op || !valid(op) || stopping) return
+    op.cancelled = true
     setStopping(true)
     try { await cancel(op) }
-    catch (failure) { if (valid(op)) { setStopping(false); setError({ context: op.context, message: `未能发送停止请求：${escapeWorldText(errorText(failure))}` }) } }
+    catch (failure) { if (current(op.context) && active.current === op) { setStopping(false); setError({ context: op.context, message: `未能发送停止请求：${escapeWorldText(errorText(failure))}` }) } }
     // Keep the busy state until the original promise actually settles.
   }
 
@@ -122,7 +129,7 @@ function WorldDatapacksContext({ instance, item, busy, refreshRevision = 0, iden
     return () => { mounted.current = false }
   }, [])
   useEffect(() => {
-    setResult(undefined); setPreview(undefined); setError(undefined); setSelectedId(''); setQuery(''); setPage(0)
+    setResult(undefined); setPreview(undefined); setPlan(undefined); setError(undefined); setSelectedId(''); setQuery(''); setPage(0)
     if (reason) { setOperation(undefined); setStopping(false); return }
     const op = begin('inventory')
     void call<WorldDatapackInventory>('worldDatapacks', instance.id, { itemId: item.id, name: item.name }, op.id).then(value => {
@@ -143,7 +150,7 @@ function WorldDatapacksContext({ instance, item, busy, refreshRevision = 0, iden
     const selectedRevision = inventory?.revision
     if (reason || !selectedRevision || active.current || discoveryOperations.current.size) return
     const op = begin(pack ? 'item' : 'picker', pack?.name)
-    setPreview(undefined); setSelectedId(pack?.itemId ?? '')
+    setPreview(undefined); setPlan(undefined); setSelectedId(pack?.itemId ?? '')
     try {
       const value = pack
         ? await call<WorldDatapackPreview>('inspectWorldDatapack', instance.id, selectedRevision, pack.itemId, op.id)
@@ -155,15 +162,60 @@ function WorldDatapacksContext({ instance, item, busy, refreshRevision = 0, iden
     finally { finish(op) }
   }
 
+  async function prepareInstall(selection?: DatapackArtifactSelection) {
+    const selectedRevision = inventory?.revision
+    if (reason || !selectedRevision || active.current || discoveryOperations.current.size) return
+    const op = begin(selection ? 'prepare-modrinth' : 'prepare-local', selection?.filename)
+    setPlan(undefined); setPreview(undefined); setSelectedId(''); setInstalled(undefined)
+    try {
+      const value = selection
+        ? await call<WorldDatapackInstallPlan>('prepareModrinthDatapackInstall', instance.id, selectedRevision, selection, op.id)
+        : await call<WorldDatapackInstallPlan | null>('prepareLocalDatapackInstall', instance.id, selectedRevision, op.id)
+      if (!valid(op) || revision.current !== selectedRevision || !value) return
+      if (!matchingWorld(value) || value.revision !== selectedRevision || value.source !== (selection ? 'modrinth' : 'local') ||
+          (selection && (value.filename !== selection.filename || value.status === 'checked' && (value.sha512 !== selection.sha512 || value.archiveBytes !== selection.size)))) throw new Error('安装检查结果与所选文件或世界不一致，请重新选择。')
+      setPlan({ context: op.context, value })
+    } catch (failure) { if (valid(op) && revision.current === selectedRevision) setError({ context: op.context, message: escapeWorldText(errorText(failure)) }) }
+    finally { finish(op) }
+  }
+
+  async function install() {
+    const value = installPlan
+    if (reason || !value || !value.canInstall || !value.capabilityId || active.current || discoveryOperations.current.size ||
+        value.status !== 'checked' || value.instanceCompatibility.status !== 'declared-compatible' || value.worldCompatibility.status !== 'declared-compatible' ||
+        !Number.isFinite(Date.parse(value.expiresAt)) || Date.parse(value.expiresAt) <= Date.now()) return
+    const op = begin('install', value.filename)
+    let completed = false
+    try {
+      const receipt = await call<DatapackInstallResult>('installDatapack', instance.id, value.capabilityId, { closedExternalWorldConfirmed: true, operationId: op.id })
+      // A completed commit wins over a late stop request. Never suppress success as cancelled.
+      if (!valid(op)) return
+      if (receipt.operationId !== op.id || receipt.instanceId !== instance.id || receipt.world.itemId !== item.id || receipt.world.name !== item.name ||
+          receipt.filename !== value.filename || receipt.sha512 !== value.sha512 || receipt.archiveBytes !== value.archiveBytes ||
+          receipt.backup.instanceId !== instance.id || receipt.backup.worldItemId !== item.id || receipt.backup.worldFolderName !== item.name) throw new Error('安装回执与当前文件或世界不一致，请保留恢复资料并重新读取状态。')
+      setInstalled(receipt); setPlan(undefined); completed = true
+    } catch (failure) { if (valid(op)) { setPlan(undefined); setError({ context: op.context, message: escapeWorldText(errorText(failure)) }) } }
+    finally {
+      finish(op)
+      if (completed && current(op.context)) {
+        // The receipt survives this read-only refresh; stale inventory/plan capabilities do not.
+        setPreview(undefined); setResult(undefined); setSelectedId(''); setRetry(value => value + 1)
+      }
+    }
+  }
+
   return <section className="world-datapacks" aria-labelledby={`${id}-title`} aria-busy={working}>
-    <div className="world-datapack-heading"><div><h3 id={`${id}-title`}>世界数据包</h3><p>实例「{escapeWorldText(instance.name)}」 · 世界「{escapeWorldText(item.name)}」</p></div><div className="world-datapack-actions"><button type="button" className="button secondary" disabled={Boolean(reason) || working || !inventory} onClick={() => void inspect()}><FileSearch size={15} aria-hidden="true" />预览本地 ZIP</button><button type="button" className="button secondary" disabled={Boolean(reason) || working} onClick={refresh}><RefreshCw size={15} aria-hidden="true" />刷新列表</button></div></div>
-    <p className="world-datapack-note">这里只查看此世界的 <code>datapacks</code> 目录和数据包声明，不安装或更改启用状态。</p>
+    <div className="world-datapack-heading"><div><h3 id={`${id}-title`}>世界数据包</h3><p>实例「{escapeWorldText(instance.name)}」 · 世界「{escapeWorldText(item.name)}」</p></div><div className="world-datapack-actions"><button type="button" className="button secondary" disabled={Boolean(reason) || working || !inventory} onClick={() => void inspect()}><FileSearch size={15} aria-hidden="true" />只读预览 ZIP</button><button type="button" className="button secondary" disabled={Boolean(reason) || working || !inventory} onClick={() => void prepareInstall()}><Plus size={15} aria-hidden="true" />选择待安装 ZIP</button><button type="button" className="button secondary" disabled={Boolean(reason) || working} onClick={refresh}><RefreshCw size={15} aria-hidden="true" />刷新列表</button></div></div>
+    <p className="world-datapack-note">查看此世界的 <code>datapacks</code> 目录，或检查新 ZIP 后先备份再安装。已有数据包的实际启用状态仍需在游戏内确认。</p>
+    {installed && <div className="world-datapack-installed" role="status"><strong>已将「{escapeWorldText(installed.filename)}」安装到世界「{escapeWorldText(installed.world.name)}」</strong><p>安装前已创建完整备份：<code>{installed.backup.backupId}</code>。可在本实例的世界备份列表中查看。</p><p>Lua 未修改启用列表；Minecraft 下次载入世界时可能应用此包。</p><Warnings warnings={installed.warnings} /></div>}
     {reason ? <p className="world-datapack-notice" role="status">{reason}</p> : <>
       {message && <ErrorBox message={message} retry={!working ? refresh : undefined} />}
-      {currentOperation && <div className="world-datapack-loading" role="status"><span><Spinner size={16} />{stopping ? '正在停止读取，请等待文件操作结束…' : currentOperation.phase === 'inventory' ? '正在读取此世界的数据包列表…' : currentOperation.phase === 'picker' ? '正在选择或检查本地 ZIP…' : `正在检查「${escapeWorldText(currentOperation.name ?? '')}」…`}</span><button type="button" className="text-button" disabled={stopping} onClick={() => void stop()}><X size={14} aria-hidden="true" />{stopping ? '正在停止' : '停止读取'}</button></div>}
+      {currentOperation && <div className="world-datapack-loading" role="status"><span><Spinner size={16} />{stopping ? '正在停止，请等待当前文件操作结束…' : currentOperation.phase === 'inventory' ? '正在读取此世界的数据包列表…' : currentOperation.phase === 'picker' ? '正在选择或检查本地 ZIP…' : currentOperation.phase === 'prepare-local' ? '正在选择并检查待安装 ZIP…' : currentOperation.phase === 'prepare-modrinth' ? '正在重新核对发布声明、下载并检查 ZIP；尚未写入世界…' : currentOperation.phase === 'install' ? '正在创建完整世界备份并安装 ZIP，请等待结束…' : `正在检查「${escapeWorldText(currentOperation.name ?? '')}」…`}</span><button type="button" className="text-button" disabled={stopping} onClick={() => void stop()}><X size={14} aria-hidden="true" />{stopping ? '正在停止' : currentOperation.phase === 'install' ? '停止安装' : '停止当前操作'}</button></div>}
+      {installPlan && <DatapackInstallConfirmation key={installPlan.previewId} plan={installPlan} instanceName={instance.name} busy={working} installing={currentOperation?.phase === 'install'} onInstall={() => void install()} onDismiss={() => setPlan(undefined)} />}
       {inventory && <>
         <DatapackDiscovery instanceId={instance.id} world={{ itemId: item.id, name: item.name }} revision={inventory.revision} gameVersion={instance.version}
           disabled={Boolean(reason) || Boolean(currentOperation)} queryDraft={discoveryQuery} setQueryDraft={setDiscoveryQuery} refreshWorld={refresh}
+          onPrepareInstall={selection => { void prepareInstall(selection) }} onSelectionChange={() => setPlan(undefined)}
           onActivityChange={(operationId, enabled) => {
             if (enabled) discoveryOperations.current.add(operationId)
             else discoveryOperations.current.delete(operationId)
@@ -188,6 +240,6 @@ function WorldDatapacksContext({ instance, item, busy, refreshRevision = 0, iden
         </>}
       </div>
     </>}
-    <p className="world-datapack-footnote">本页不会修改世界或执行 <code>/reload</code>。格式声明匹配也不保证兼容；将数据包放入世界后，游戏下次载入可能应用它。</p>
+    <p className="world-datapack-footnote">预览和搜索不会写入世界；安装需再次确认，并先完整备份。Lua 不修改 <code>level.dat</code> 或执行 <code>/reload</code>。将数据包放入世界后，游戏下次载入可能应用它。</p>
   </section>
 }

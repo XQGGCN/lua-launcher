@@ -1,7 +1,8 @@
 import { useEffect, useId, useRef, useState, type MutableRefObject } from 'react'
-import { ExternalLink, FileArchive, Search, X } from 'lucide-react'
+import { Download, ExternalLink, FileArchive, Search, X } from 'lucide-react'
 import { call, errorText } from '../api'
 import type { DatapackCatalogFile, DatapackCatalogHit, DatapackCatalogVersion, WorldDatapackSearch, WorldDatapackVersions } from '../../desktop/datapack-discovery-types'
+import type { DatapackArtifactSelection } from '../../desktop/datapack-install-plan-types'
 import { ErrorBox, Spinner } from './ui'
 import { escapeWorldText } from './WorldDetails'
 import './DatapackDiscovery.css'
@@ -16,6 +17,8 @@ export interface DatapackDiscoveryProps {
   setQueryDraft: (value: string) => void
   refreshWorld: () => void
   onActivityChange: (operationId: string, active: boolean) => void
+  onPrepareInstall: (selection: DatapackArtifactSelection) => void
+  onSelectionChange: () => void
 }
 type Operation = { id: string; kind: 'search' | 'versions'; query?: string; offset?: number; projectId?: string; cancelled?: boolean }
 type SearchResult = { query: string; value: WorldDatapackSearch }
@@ -57,7 +60,7 @@ export default function DatapackDiscovery(props: DatapackDiscoveryProps) {
   currentIdentity.current = identity
   return <DiscoveryContext key={identity} {...props} identity={identity} currentIdentity={currentIdentity} />
 }
-function DiscoveryContext({ instanceId, world, revision, gameVersion, disabled = false, queryDraft, setQueryDraft, refreshWorld, onActivityChange, identity, currentIdentity }: DatapackDiscoveryProps & { identity: string; currentIdentity: MutableRefObject<string> }) {
+function DiscoveryContext({ instanceId, world, revision, gameVersion, disabled = false, queryDraft, setQueryDraft, refreshWorld, onActivityChange, onPrepareInstall, onSelectionChange, identity, currentIdentity }: DatapackDiscoveryProps & { identity: string; currentIdentity: MutableRefObject<string> }) {
   const id = useId(), mounted = useRef(true), active = useRef<Operation | undefined>(undefined)
   const interaction = useRef(0)
   const disabledRef = useRef(disabled); disabledRef.current = disabled
@@ -72,10 +75,14 @@ function DiscoveryContext({ instanceId, world, revision, gameVersion, disabled =
   const valid = (op: Operation) => current() && active.current === op && !op.cancelled && !disabledRef.current
   const busy = Boolean(operation)
   const chosenVersion = versions?.versions.find(value => value.id === versionId)
+  const mainFile = chosenVersion?.mainFile
+  const canPrepare = Boolean(chosenVersion && !chosenVersion.externalOnly && chosenVersion.declaresCurrentGameVersion && chosenVersion.declaresDatapack &&
+    mainFile?.eligible && mainFile.role === 'main' && mainFile.size !== undefined && mainFile.sha512)
   const matching = (value: WorldDatapackSearch | WorldDatapackVersions) => value.instanceId === instanceId && value.world.itemId === world.itemId && value.world.name === world.name && value.revision === revision && value.gameVersion === gameVersion
   function cancel(op: Operation) { return call<void>('cancelDatapackRead', instanceId, op.id) }
   function begin(kind: Operation['kind'], values: Partial<Operation> = {}) {
     const op: Operation = { ...values, id: crypto.randomUUID(), kind }
+    onSelectionChange()
     interaction.current++
     active.current = op; setOperation(op); setStopping(false); setError(''); onActivityChange(op.id, true)
     return op
@@ -136,10 +143,15 @@ function DiscoveryContext({ instanceId, world, revision, gameVersion, disabled =
     try { await call<void>('openExternal', url) }
     catch (failure) { if (current() && interaction.current === generation) setError(`未能打开站点：${escapeWorldText(errorText(failure))}`) }
   }
+  function prepare() {
+    if (disabled || busy || !canPrepare || !chosenVersion || !mainFile || mainFile.size === undefined || !mainFile.sha512) return
+    onPrepareInstall({ projectId: chosenVersion.projectId, versionId: chosenVersion.id, filename: mainFile.filename,
+      size: mainFile.size, sha512: mainFile.sha512, ...(mainFile.sha1 ? { sha1: mainFile.sha1 } : {}) })
+  }
   const page = result?.value
   return <section className="datapack-discovery" aria-labelledby={`${id}-title`} aria-busy={busy}>
     <div className="datapack-discovery-heading"><div><h4 id={`${id}-title`}>从 Modrinth 查找数据包</h4><p>按实例游戏版本 {escapeWorldText(gameVersion)} 筛选站点声明，目标世界「{escapeWorldText(world.name)}」。</p></div><button type="button" className="text-button" disabled={busy} onClick={() => void open('https://bbsmc.net')}><ExternalLink size={14} aria-hidden="true" />BBSMC 站点</button></div>
-    <p className="datapack-discovery-note">这里只浏览项目和发布声明，不下载、安装或写入世界。世界保存版本与 ZIP 内容仍需分别检查；BBSMC 数据包接口支持尚未核实。</p>
+    <p className="datapack-discovery-note">搜索仅浏览站点声明。选择版本后可单独下载并检查 ZIP；检查完成还需确认目标世界并完整备份，才会安装。BBSMC 数据包接口支持尚未核实。</p>
     <form className="datapack-discovery-search" onSubmit={event => { event.preventDefault(); void search() }}><label htmlFor={`${id}-query`}>搜索 Modrinth 数据包</label><div><Search size={16} aria-hidden="true" /><input id={`${id}-query`} type="search" placeholder="输入名称或关键词，也可留空浏览" value={queryDraft} maxLength={200} disabled={disabled || busy} onChange={event => setQueryDraft(event.target.value)} /><button type="submit" className="button secondary" disabled={disabled || busy}>搜索数据包</button></div></form>
     {error && <div className="datapack-discovery-error"><ErrorBox message={error} /><button type="button" className="text-button" disabled={busy || disabled} onClick={refreshWorld}>刷新世界列表后重试</button><span>搜索关键词会保留，刷新后请重新搜索。</span></div>}
     {operation && <div className="datapack-discovery-loading" role="status"><span><Spinner size={16} />{stopping ? '正在停止站点请求，请等待结束…' : operation.kind === 'search' ? '正在读取 Modrinth 搜索结果…' : '正在读取此项目的发布声明…'}</span><button type="button" className="text-button" disabled={stopping} onClick={() => void stop()}><X size={14} aria-hidden="true" />{stopping ? '正在停止' : '停止请求'}</button></div>}
@@ -155,7 +167,7 @@ function DiscoveryContext({ instanceId, world, revision, gameVersion, disabled =
       <p className="datapack-discovery-note">{escapeWorldText(versions?.project.description ?? selectedProject.description)}</p>
       {versions && <>
         {versions.omittedVersions > 0 && <p className="datapack-discovery-warning">站点返回 {versions.upstreamVersionCount} 条发布记录，省略 {versions.omittedVersions} 条不符合当前上下文的记录。</p>}
-        {versions.versions.length ? <><label className="datapack-discovery-version-label" htmlFor={`${id}-version`}>选择发布版本<select id={`${id}-version`} value={versionId} disabled={disabled || busy} onChange={event => setVersionId(event.target.value)}><option value="" disabled>选择一个版本查看文件与依赖声明</option>{versions.versions.map(version => <option value={version.id} key={version.id}>{version.name} · {version.versionNumber} · {dateLabel(version.datePublished)}</option>)}</select></label>{chosenVersion && <VersionMetadata version={chosenVersion} />}</> : <p className="datapack-discovery-empty">没有可展示的当前版本数据包发布。可前往作者页面查看其他交付方式与要求。</p>}
+        {versions.versions.length ? <><label className="datapack-discovery-version-label" htmlFor={`${id}-version`}>选择发布版本<select id={`${id}-version`} value={versionId} disabled={disabled || busy} onChange={event => { setVersionId(event.target.value); onSelectionChange() }}><option value="" disabled>选择一个版本查看文件与依赖声明</option>{versions.versions.map(version => <option value={version.id} key={version.id}>{version.name} · {version.versionNumber} · {dateLabel(version.datePublished)}</option>)}</select></label>{chosenVersion && <><VersionMetadata version={chosenVersion} /><div className="datapack-discovery-prepare"><button type="button" className="button secondary" disabled={disabled || busy || !canPrepare} onClick={prepare}><Download size={15} aria-hidden="true" />下载并检查 ZIP</button><span>{canPrepare ? '仅准备所选主 ZIP，暂不写入世界；可选资源包不会自动安装。' : '此发布的主文件或前置条件不符合当前安装范围，请前往作者页面。'}</span></div></>}</> : <p className="datapack-discovery-empty">没有可展示的当前版本数据包发布。可前往作者页面查看其他交付方式与要求。</p>}
       </>}
     </>}</div>
   </section>

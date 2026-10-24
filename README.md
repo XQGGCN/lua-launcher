@@ -2,7 +2,7 @@
 
 一个面向 Windows、macOS 和 Linux 的独立开源 Minecraft Java 启动器。夜色侧栏加「启动台」首页：选中实例、看一眼账户和 Java，按下月光色按钮就开始游戏。
 
-**当前公开版本：0.10.2 Alpha**（[下载](https://github.com/XQGGCN/lua-launcher/releases/tag/v0.10.2)）。0.10.3、0.10.4、0.11.0 与 0.11.1 本地实现和独立审核已完成，待各自提交的三平台发行验收。
+**当前公开版本：0.10.2 Alpha**（[下载](https://github.com/XQGGCN/lua-launcher/releases/tag/v0.10.2)）。0.10.3、0.10.4、0.11.0、0.11.1 与 0.11.2 本地实现和独立审核已完成，待各自提交的三平台发行验收。
 
 ### 0.10 有什么
 
@@ -268,3 +268,5 @@ Electron 禁用 renderer Node 集成、启用 context isolation / sandbox、验�
 原创代码采用 [MIT](LICENSE) 许可。依赖保留各自许可，见 [第三方说明](THIRD_PARTY_NOTICES.md)。贡献请参阅 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 每个小版本的变更见 [CHANGELOG](CHANGELOG.md)，详细开发日志见 [docs/devlog](docs/devlog)，独立审查见 [docs/reviews](docs/reviews)。完整需求与状态见 [功能矩阵](docs/FEATURE_MATRIX.md)，每个验证等级的边界见 [验收矩阵](docs/ACCEPTANCE_MATRIX.md)。
+
+0.11.2 新增本地/Modrinth数据包的明确世界安装：文件检查、一次性确认、完整新备份、无覆盖归位与重启保护。完整777项、独立205项、构建与本地包通过；原创夹具的生产Electron IPC/文件系统流程已验，HTTP/ZIP/picker明确注入，没有运行游戏。新增准确1.20.1/1.21.1官方格式证据，其余未知范围不强制安装。见[安装用法](docs/DATAPACK_INSTALL.md)、[开发](docs/devlog/0.11.2.md)和[审核](docs/reviews/0.11.2.md)；本版尚未公开。

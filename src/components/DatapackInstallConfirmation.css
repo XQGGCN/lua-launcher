@@ -1,0 +1,24 @@
+.datapack-install-confirmation{border:1px solid var(--line-strong);border-radius:var(--radius-sm);background:var(--surface);padding:16px;margin:18px 0;min-width:0;color:var(--ink);font-size:12px;line-height:1.8}
+.datapack-install-heading,.datapack-install-actions{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px}
+.datapack-install-heading h4{display:flex;align-items:center;gap:8px;margin:0;font-size:13px;font-weight:500}
+.datapack-install-fields{display:grid;grid-template-columns:110px minmax(0,1fr);gap:8px 14px;margin:16px 0}
+.datapack-install-fields dt{color:var(--ink-2)}
+.datapack-install-fields dd{margin:0;overflow-wrap:anywhere;min-width:0}
+.datapack-install-fields strong{font-weight:500}
+.datapack-install-fields small{display:block;font-size:12px;color:var(--ink-2);margin-top:3px}
+.datapack-install-digest,.datapack-install-warnings{margin:12px 0}
+.datapack-install-confirmation summary{cursor:pointer;padding:6px 0;min-height:32px}
+.datapack-install-confirmation code{display:inline;font:12px/1.8 var(--mono);overflow-wrap:anywhere}
+.datapack-install-digest code{display:block;background:var(--surface-2);padding:8px 10px;margin:6px 0}
+.datapack-install-backup{display:flex;align-items:flex-start;gap:9px;padding:10px 12px;background:var(--surface-2);border:1px solid var(--line);border-radius:var(--radius-sm);margin:14px 0;overflow-wrap:anywhere}
+.datapack-install-backup svg{flex-shrink:0;margin-top:3px;color:var(--accent-strong)}
+.datapack-install-note{color:var(--ink-2);margin:12px 0;max-width:86ch;overflow-wrap:anywhere}
+.datapack-install-blockers,.datapack-install-blocked{color:var(--warn);overflow-wrap:anywhere}
+.datapack-install-blockers,.datapack-install-warnings ul{padding-left:20px}
+.datapack-install-checkbox{display:flex;align-items:flex-start;gap:9px;cursor:pointer;margin:16px 0;min-height:36px;overflow-wrap:anywhere}
+.datapack-install-checkbox input{margin:4px 0 0;flex-shrink:0;accent-color:var(--accent-strong);width:16px;height:16px}
+.datapack-install-actions{justify-content:flex-start;align-items:flex-start;margin-top:12px}
+.datapack-install-actions>span{color:var(--ink-2);max-width:64ch;overflow-wrap:anywhere;flex:1;min-width:160px;padding-top:6px}
+.datapack-install-confirmation button:focus-visible,.datapack-install-confirmation input:focus-visible,.datapack-install-confirmation summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+@media(max-width:760px){.datapack-install-confirmation{padding:12px}.datapack-install-fields{grid-template-columns:90px minmax(0,1fr);gap:7px 10px}}
+@media(max-width:480px){.datapack-install-fields{grid-template-columns:minmax(0,1fr);gap:3px}.datapack-install-fields dd{margin-bottom:7px}.datapack-install-actions>span{min-width:0;flex-basis:100%}}
