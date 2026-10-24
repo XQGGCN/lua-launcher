@@ -1,6 +1,6 @@
 # 验收矩阵
 
-更新：2026-10-24。公开版本为 [0.10.2 Alpha](https://github.com/XQGGCN/lua-launcher/releases/tag/v0.10.2)，0.10.3、0.10.4、0.11.0、0.11.1、0.11.2、0.12.0、0.12.1与0.13.0本地完成待发行。L1静态/类型、L2确定性测试、L3真实网络与文件、L4原生桌面、L5真实账户/游戏/联机分别记录；测试桥不代替原生，CI不代替游玩。
+更新：2026-10-24。公开版本为 [0.10.2 Alpha](https://github.com/XQGGCN/lua-launcher/releases/tag/v0.10.2)，0.10.3、0.10.4、0.11.0、0.11.1、0.11.2、0.12.0、0.12.1、0.13.0与0.14.0本地完成待发行。L1静态/类型、L2确定性测试、L3真实网络与文件、L4原生桌面、L5真实账户/游戏/联机分别记录；测试桥不代替原生，CI不代替游玩。
 
 W=Windows x64，M=macOS ARM64，L=Linux x64。新架构单独列证据，官方有 Java 包不等于 Lua 安装包或游戏已支持。每次结果关联版本/commit、平台、命令/步骤和证据路径；私有日志与截图留在被忽略目录，不保存令牌。
 
@@ -23,6 +23,7 @@ W=Windows x64，M=macOS ARM64，L=Linux x64。新架构单独列证据，官方�
 | 0.11.1本地完成 | 完整701/701、独立新增34/34及相关60/60、构建/本地包核对；最终生产Core真实官方metadata3GET，20hit/3version及7源/state不变；隔离Electron真实IPC验发现/分页/版本/取消/刷新保留/A→B/11源state不变 | 原生UI的HTTP与shell打开端口明确注入，不冒充真实网络或站点窗口；无ZIP下载/安装/游戏/用户世界，当前提交CI/公开资产/签名及性能矩阵另验，构建500kB提示保留 |
 | 0.12.1本地完成 | 完整928/928、独立254/254=78新增受管+9原创探针+167不重叠旧相关、构建及未签名macARM版本/架构/ASAR六文件核验通过；生产Electron真实IPC/FS验11项，Fabric/Forge2次导入/回执与hardlink独立重建，11源/state文件不变 | 仅picker回调注入，原创惰性JAR及ready/profile记录非实际游戏安装；0网络/子进程/外部打开，进程已关，包未执行。真实OS picker/第三方模组/游戏、当前提交CI与公开资产另验；CRC/hash非代码安全或全语法兼容 |
 | 0.13.0本地完成 | 完整991/991（新增63项）与构建通过；生产Electron真实main/preload/Core/parser/selector/installer/FS验7项，准备不创建实例/下载内容/调用Java属性，确认selected[]仅写必需+客户端覆盖，保存选择/schema/hash/digest/操作ID，3源/无关文件hash与BigInt身份不变 | HTTP与picker全部原创注入；提交阶段9次Java属性回调及2次空系统枚举为替身，不是实际Java/加载器/游戏执行。独立139/139（63新受管+9原创探针+67不重叠旧相关）通过；未签名macARM包版本/架构/hash与ASAR六文件精确匹配，包未执行；1240浅色/920深色完整视口及modal/内容/工具/表格宽度无横向溢出。当前提交CI/资产、OS选择/真实整合包另验；原全包事务不冒充单JAR或完整崩溃/断电保证 |
+| 0.14.0本地完成 | 完整1056/1056（新增65：image16/layout9/library33/Core7）、独立112/112=65新受管+11原创探针+36旧相关、构建通过；两实际P2历史链接与NFC扩张红→绿。UI14注入+1NFC定向/实际Canvas分别记录，非生产后端证据 | 生产Electron真实main/preload/Core/PNG/图库/布局/原创FS7项通过，6源/state不变、实际12439B规范PNG导出/2blob保留；仅原生打开/保存回调注入，0HTTP/进程/Java/game，无真实认证/账户写入/纹理下载，920容器与只读重启确认深色通过。未签名macARM包版本/架构/hash/ASAR八文件与完整PNG许可核同，包未执行；当前提交CI/公开资产、OS选择/保存及真实图片游戏另验；没有账户纹理、账号写入/披风、外部图或Java/game，2D非实际游戏渲染 |
 
 ## 历史快照说明
 
@@ -207,3 +208,18 @@ W=Windows x64，M=macOS ARM64，L=Linux x64。新架构单独列证据，官方�
 | AC-PACKPLAN-05 | 选择schema/双hash关联规划摘要先保存；取消/失败/重启重试精确复用，空选择非缺记录 | `modpack-selection-record.test.ts`、`core-modpack-plan.test.ts`；坏记录阻断，旧未完成无记录明确legacy-all，已应用不重写 |
 | AC-PACKPLAN-06 | 精确操作ID→实例ID；取消等原任务，关闭安装窗可后台继续，迟到准备/查询不污染新选择 | `App.tsx`、`ModpacksView.tsx`、`ModpackPlan.tsx`和Core；生产Electron已验停止等待、跨页选择与空选择实际写入，OS窗口及真实游戏另验 |
 | AC-PACKPLAN-07 | full/build/独立审核/包版本架构内容、当前提交三平台CI/Release | 991/991、独立139/139与构建通过；未签名macARM版本/架构/hash/ASAR六文件精确核对与1240浅/920深视口通过；当前提交CI/签名公证/公开资产待，旧CI/单JAR审核不能替代 |
+
+
+## 0.14.0 本地皮肤收藏验收
+
+本地PNG库独立于实例、世界和账户；只明确选择自己的图片，不调用账号外观接口。完整1056项、独立112项与构建通过；生产Electron真实main/preload/Core/PNG/图库/布局及原创FS7项通过，6源/state不变；仅原生打开/保存回调注入，不代表OS窗口实测。实际12439B规范PNG导出、移出保留2blob、920容器宽度与只读重启已核，0HTTP/进程/Java/game，无真实认证/账户写入/纹理下载；未签名macARM包版本/架构/hash与ASAR八文件及完整PNG许可核同，包未执行。
+
+| ID | 场景与通过条件 | 当前结果与边界 | 证据 |
+| --- | --- | --- | --- |
+| AC-LOCALSKIN-01 | PNG签名/chunk/CRC/位深/尺寸/精确scanline/128KiB硬inflate、附加信息剥离与像素不变 | image16项；只8bit非交错RGB/RGBA/gray/grayalpha/palette，其他明确不支持，输入2MiB，非官方上传检查 | `skin-image.test.ts`；[用法](LOCAL_SKINS.md) |
+| AC-LOCALSKIN-02 | 64×64明确Classic/Slim，64×32Classic镜像、正反/外层/整数缩放，透明诊断 | layout9项，UI实际Canvas编号像素核对；UV参考为维护者一手实现，非Mojang API或游戏显示证明 | `skin-layout.test.ts`；`src/skin-layout.ts` |
+| AC-LOCALSKIN-03 | 源/私有副本/图库文件身份和双读回、120秒能力与revision、wx新增导出 | library33项，源不改，导出规范化PNG不覆盖；图库清单无全量图片，选中后另读 | `skin-library.test.ts`；Main/preload |
+| AC-LOCALSKIN-04 | Core在懒初始化首await前预留、精确cancel等实际worker，页面列表/详情串行与迟到隔离 | Core7项，UI14注入流程/1NFC定向通过；生产Electron已验精确停止等注入picker、真实保存/编辑与读回；实际OS选择/保存窗口另验 | `core-skin-library.test.ts`；`SkinsView.tsx` |
+| AC-LOCALSKIN-05 | 索引先检查/备份/排他准备/完成保护，未知结果保留并阻断；容量先到停止 | library33及独立探针覆盖；历史.previous链接与NFC扩张实际P2已修。启动不全rehash旧备份，无恢复/GC向导或断电保证 | [独立审核](reviews/0.14.0.md)；[库边界](LOCAL_SKINS.md) |
+| AC-LOCALSKIN-06 | 收藏/模型/标签改名/搜索24分页、移出索引保留blob、导出，UI账户边界 | 注入UI14项+1NFC实际Canvas通过；不含生产Core/codec/FS，生产Electron真实图库/FS7项另记，原生打开/保存回调明确注入；任何本地选择不当账户已应用 | `.local/ui-skins-implementation-v0140.json`，证据不随源码发布 |
+| AC-LOCALSKIN-07 | 全量/build/独立/准确许可/包内容架构hash/当前提交三平台CI | 1056全量/112独立与构建通过，pngjs7.0.0 MIT完整source notice/desktop banner；生产原生7组及未签名macARM版本/架构/hash/ASAR八文件通过；包未执行，当前CI/资产/签名公证另验 | [开发](devlog/0.14.0.md)、[审核](reviews/0.14.0.md) |

@@ -488,6 +488,20 @@ if (hasLock) app.whenReady().then(async () => {
         if (launches.has(id)) throw new Error('请先完成或取消此实例的启动准备')
         return core.installMod(id, text(args[1], 80), resourceSource(args[2]))
       }
+      case 'skinLibrary': return core.skinLibrary(args[0] === undefined ? {} : object(args[0]))
+      case 'prepareSkin': return core.prepareSkin(text(args[0], 80), async () => {
+        const selected = await dialog.showOpenDialog(dialogWindow(), { title: '选择本地 PNG 皮肤', properties: ['openFile'], filters: [{ name: 'PNG 皮肤', extensions: ['png'] }] })
+        return selected.canceled || !selected.filePaths[0] ? null : selected.filePaths[0]
+      })
+      case 'saveSkin': return core.saveSkin(text(args[0], 80), object(args[1]) as unknown as Parameters<LauncherCore['saveSkin']>[1])
+      case 'skinDetails': return core.skinDetails(text(args[0], 80), args[1] === undefined ? {} : object(args[1]))
+      case 'updateSkin': return core.updateSkin(text(args[0], 80), text(args[1], 256), object(args[2]) as unknown as Parameters<LauncherCore['updateSkin']>[2])
+      case 'removeSkin': return core.removeSkin(text(args[0], 80), text(args[1], 256), text(args[2], 80))
+      case 'exportSkin': return core.exportSkin(text(args[0], 80), text(args[1], 256), text(args[2], 80), async () => {
+        const selected = await dialog.showSaveDialog(dialogWindow(), { title: '导出已检查的本地皮肤副本', buttonLabel: '导出新副本', message: '请选择新文件名；Lua不会覆盖已有文件。', defaultPath: 'Lua-skin.png', filters: [{ name: 'PNG 皮肤', extensions: ['png'] }] })
+        return selected.canceled || !selected.filePath ? null : selected.filePath
+      })
+      case 'cancelSkinOperation': return core.cancelSkinOperation(text(args[0], 80))
       case 'prepareModpackLocal': return core.prepareModpackLocal(text(args[0], 80), async () => {
         const selected = await dialog.showOpenDialog(dialogWindow(), { title: '选择要预览的 Minecraft 整合包', properties: ['openFile'], filters: [{ name: 'Modrinth 整合包', extensions: ['mrpack', 'zip'] }] })
         return selected.canceled || !selected.filePaths[0] ? null : selected.filePaths[0]

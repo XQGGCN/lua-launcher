@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import {
   ArrowDownToLine, ArrowRight, ArrowUpRight, Boxes, Check,
   Download, FolderOpen, Gamepad2, Layers3, MemoryStick, Monitor, Moon, Palette, Puzzle,
@@ -27,13 +27,16 @@ import { categoryLabel, type ModCategory } from './mod-categories'
 import { APP_VERSION } from './version'
 import { defaultDownloadSource } from '../desktop/download-mirror'
 
-type View = 'library' | 'discover' | 'downloads' | 'modpacks' | 'settings' | 'account' | 'logs' | 'instance-settings' | 'instance-content' | 'resources'
+const SkinsView = lazy(() => import('./components/SkinsView'))
+
+type View = 'skins' | 'library' | 'discover' | 'downloads' | 'modpacks' | 'settings' | 'account' | 'logs' | 'instance-settings' | 'instance-content' | 'resources'
 const navigation = [
   { id: 'library' as const, label: '启动', icon: Play },
   { id: 'downloads' as const, label: '下载游戏', icon: ArrowDownToLine },
   { id: 'discover' as const, label: '模组', icon: Puzzle },
   { id: 'resources' as const, label: '资源包与光影', icon: Palette },
   { id: 'modpacks' as const, label: '整合包', icon: Boxes },
+  { id: 'skins' as const, label: '本地皮肤', icon: Palette },
 ]
 type ThemeMode = 'system' | 'light' | 'dark'
 const themeLabels: Record<ThemeMode, string> = { system: '跟随系统', light: '浅色', dark: '深色' }
@@ -505,7 +508,7 @@ export default function App() {
     return instance.status === 'error' ? '重新安装' : '安装游戏'
   }
   const deckProgress = selectedInstance && (busy[selectedInstance.id] || selectedInstance.status === 'installing') ? progress[selectedInstance.id] : undefined
-  const pageTitles: Record<View, string> = { library: '启动', discover: '模组', downloads: '下载游戏', modpacks: '整合包', settings: '设置', account: '账户', logs: '运行日志', 'instance-settings': '实例设置', 'instance-content': '实例内容', resources: '资源包与光影' }
+  const pageTitles: Record<View, string> = { skins: '本地皮肤', library: '启动', discover: '模组', downloads: '下载游戏', modpacks: '整合包', settings: '设置', account: '账户', logs: '运行日志', 'instance-settings': '实例设置', 'instance-content': '实例内容', resources: '资源包与光影' }
   useEffect(() => { document.title = view === 'library' ? 'Lua · 未央' : `${pageTitles[view]} · Lua` }, [view])
   const nextTheme: ThemeMode = theme === 'system' ? 'light' : theme === 'light' ? 'dark' : 'system'
 
@@ -586,6 +589,7 @@ export default function App() {
         {resourcesOpened && <div hidden={view !== 'resources'}><ResourcesView source={resourceSource} setSource={setResourceSource} instances={instances} tasks={resourceTasks} progress={progress} install={installResource} cancel={cancelResource} showContent={showInstanceContent} openUrl={openUrl} /></div>}
         {view === 'discover' && <Discover source={resourceSource} setSource={setResourceSource} openUrl={openUrl} instances={instances} installed={async name => { await refresh(); setToast(`${name} 已安装，必需依赖已一并处理。`) }} />}
         {view === 'downloads' && <DownloadsView tab={downloadTab} setTab={setDownloadTab} instances={instances} progress={progress} busy={busy} taskErrors={taskErrors} packTasks={packTasks} javaTasks={javaTasks} resourceTasks={resourceTasks} cancelResource={cancelResource} backupTasks={backupTasks} cancelBackup={cancelWorldBackup} openBackup={openWorldBackup} showContent={showInstanceContent} cancelJava={async id => { await call('cancelJavaInstall', id) }} retryJava={async major => { await call('installJava', major) }} download={downloadGame} install={installInstance} cancel={cancelDownload} showGame={id => { setSelectedId(id); changeView('library') }} showLogs={id => { setSelectedId(id); changeView('logs') }} showPacks={source => { if (source && source !== 'local') setResourceSource(source); changeView('modpacks') }} />}
+        {view === 'skins' && <Suspense fallback={<div role="status"><Spinner />正在读取本地皮肤页面…</div>}><SkinsView /></Suspense>}
         {view === 'modpacks' && <ModpacksView source={resourceSource} setSource={setResourceSource} tasks={packTasks} progress={progress} commitPlan={commitPackPlan} cancel={cancelDownload} showTasks={showTasks} openUrl={openUrl} />}
         {settingsOpened && snapshot && <div hidden={view !== 'settings'}><SettingsView autoUpdate={autoUpdate} setAutoUpdate={setAutoUpdate} checkUpdate={() => checkUpdate(true)} update={update} openUpdate={() => setUpdateOpen(true)} theme={theme} setTheme={setTheme} minimizeOnLaunch={minimizeOnLaunch} setMinimizeOnLaunch={setMinimizeOnLaunch} instance={selectedInstance} settings={snapshot.settings} rootDir={snapshot.rootDir} javaTasks={javaTasks} save={async settings => {
           const next = await call<Snapshot>('updateSettings', settings)

@@ -1,4 +1,6 @@
 import { build } from 'esbuild'
+import { readFile } from 'node:fs/promises'
+const pngLicense = await readFile(new URL('../node_modules/pngjs/LICENSE', import.meta.url), 'utf8')
 // Public application identifier registered for Lua Launcher, not a credential.
 const defaultMicrosoftClientId = '8e83a566-71f8-4164-9040-5cf61bb12740'
 await build({
@@ -6,6 +8,7 @@ await build({
   outdir: 'dist-electron',
   outExtension: { '.js': '.cjs' },
   bundle: true,
+  banner: { js: `/*! pngjs 7.0.0\n${pngLicense}\n*/` },
   platform: 'node',
   target: 'node22',
   format: 'cjs',

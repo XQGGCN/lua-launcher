@@ -267,3 +267,5 @@ export function errorText(error: unknown) {
 }
 export type { ModDependencyDeclaration, ModDeclaration, ModMetadataDocument, ModJarDetails, InstalledModSelection, InstanceModDetails } from '../desktop/mod-details-types'
 export type { ModImportAssessment, LocalModImportPlan, LocalModImportResult } from '../desktop/mod-import-types'
+
+export type { SkinModel, SkinLayout, SkinSummary, SkinItem, SkinDiagnostics, SkinPreview, SkinReadResult, SkinLibraryPage, SkinMetadata, SkinMutationInput, SkinListOptions, SkinReadOptions, SkinRemoveResult, SkinExportResult } from '../desktop/skin-library-types'

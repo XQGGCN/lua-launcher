@@ -7,6 +7,7 @@ const methods = new Set([
   'openInstance', 'openExternal', 'account', 'login', 'cancelLogin', 'logout',
   'logs',
   'fabricVersions', 'loaderVersions', 'memoryInfo', 'searchModpacks',
+  'skinLibrary', 'prepareSkin', 'saveSkin', 'skinDetails', 'updateSkin', 'removeSkin', 'exportSkin', 'cancelSkinOperation',
   'prepareModpackLocal', 'prepareModpackOnline', 'modpackPlanPage', 'commitModpackPlan', 'cancelModpackPreparation',
   'modpackVersions', 'authConfig', 'saveAuthConfig', 'authState',
   'managedJava', 'runtimeRequirement', 'runtimeTasks', 'installJava', 'cancelJavaInstall', 'chooseJava', 'cancelLaunch',

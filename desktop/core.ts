@@ -6,6 +6,7 @@ import os from 'node:os'
 import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import { promisify } from 'node:util'
 import AdmZip from 'adm-zip'
+import { SkinLibrary } from './skin-library'
 import { PackSelections } from './pack-selection'
 import { createModpackPlan, modpackPlanPage, applyOptionalSelection, type ModpackPlan } from './modpack-plan'
 import type { PackPlanSummary, PackPlanPageOptions } from './modpack-plan-types'
@@ -476,12 +477,16 @@ export class LauncherCore {
     source: Pick<NonNullable<Instance['modpack']>, 'source' | 'projectId' | 'remoteVersionId' | 'modrinthVersionId'> }>()
   private packOperations = new Map<string, AbortController>()
   private packOperationIds = new Set<string>()
+  private readonly skinLibraryService: SkinLibrary
+  private skinLibraryReady?: Promise<void>
+  private skinOperations = new Map<string, { cancelled: boolean; done: Promise<void>; finish: () => void }>()
   private initialized = false
   private manifestCache?: { at: number; value: ManifestIndex }
   readonly rootDir: string
 
   constructor(rootDir: string, private readonly emit: (event: CoreEvent) => void = () => {}, options: CoreOptions = {}) {
     this.rootDir = path.resolve(rootDir)
+    this.skinLibraryService = new SkinLibrary(this.rootDir)
     this.preparedPackSources = new PackSelections(this.rootDir, async file => createModpackPlan(await readModpack(file)))
     // Injected fetchers (tests) are used as-is; the real network goes through the optional mirror.
     this.fetcher = options.fetch ?? createMirrorFetch(globalThis.fetch, {
@@ -2600,6 +2605,8 @@ export class LauncherCore {
     this.preparedPacks.clear()
     for (const operation of this.packOperations.values()) operation.abort(new DOMException('启动器正在退出', 'AbortError'))
     void this.preparedPackSources.close().catch(() => {})
+    for (const operation of this.skinOperations.values()) operation.cancelled = true
+    void this.skinLibraryService.close().catch(() => {})
     for (const read of this.modDetailReads.values()) read.controller.abort(new DOMException('启动器正在退出', 'AbortError'))
     for (const read of this.datapackReads.values()) read.controller.abort(new DOMException('启动器正在退出', 'AbortError'))
     for (const controller of [...this.installs.values(), ...this.javaDownloads.values(), ...this.launchControllers.values(),
@@ -3093,6 +3100,42 @@ export class LauncherCore {
       version.loaders.some(loader => ['fabric', 'forge', 'neoforge', 'minecraft', 'vanilla'].includes(loader)) &&
       (source === 'bbsmc' || version.files.some(file => file.filename.toLowerCase().endsWith('.mrpack'))),
     ).map(version => this.resourceVersion(version, source, 'modpack'))
+  }
+
+  /** Local images remain separate from accounts, launcher state and game files. */
+  private async withSkinLibrary<T>(operationId: string, work: () => Promise<T>): Promise<T> {
+    if (!this.initialized) throw new Error('启动器尚未准备就绪')
+    if (typeof operationId !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(operationId)) throw new Error('无效的皮肤操作标识')
+    if (this.skinOperations.size) throw new Error('本地皮肤任务尚未结束，请等待当前操作结算')
+    const finishLease = this.beginLauncherOperation()
+    let settle!: () => void
+    const operation = { cancelled: false, done: new Promise<void>(resolve => { settle = resolve }), finish: () => settle() }
+    this.skinOperations.set(operationId, operation)
+    try {
+      this.skinLibraryReady ??= this.skinLibraryService.init()
+      try { await this.skinLibraryReady } catch (error) { this.skinLibraryReady = undefined; throw error }
+      if (operation.cancelled) throw new Error('皮肤操作已取消')
+      return await work()
+    } finally { this.skinOperations.delete(operationId); operation.finish(); finishLease() }
+  }
+  skinLibrary(options: Parameters<SkinLibrary['list']>[0] = {}) {
+    const operationId = options.operationId ?? randomUUID()
+    return this.withSkinLibrary(operationId, () => this.skinLibraryService.list({ ...options, operationId }))
+  }
+  prepareSkin(operationId: string, pick: () => Promise<string | null | undefined>) { return this.withSkinLibrary(operationId, () => this.skinLibraryService.prepare(operationId, pick)) }
+  saveSkin(viewId: string, options: Parameters<SkinLibrary['save']>[1]) { return this.withSkinLibrary(options.operationId, () => this.skinLibraryService.save(viewId, options)) }
+  skinDetails(itemId: string, options: Parameters<SkinLibrary['read']>[1] = {}) {
+    const operationId = options.operationId ?? randomUUID()
+    return this.withSkinLibrary(operationId, () => this.skinLibraryService.read(itemId, { ...options, operationId }))
+  }
+  updateSkin(itemId: string, revision: string, options: Parameters<SkinLibrary['update']>[2]) { return this.withSkinLibrary(options.operationId, () => this.skinLibraryService.update(itemId, revision, options)) }
+  removeSkin(itemId: string, revision: string, operationId: string) { return this.withSkinLibrary(operationId, () => this.skinLibraryService.remove(itemId, revision, operationId)) }
+  exportSkin(itemId: string, revision: string, operationId: string, pick: () => Promise<string | null | undefined>) { return this.withSkinLibrary(operationId, () => this.skinLibraryService.export(itemId, revision, operationId, pick)) }
+  async cancelSkinOperation(operationId: string): Promise<void> {
+    const operation = this.skinOperations.get(operationId)
+    if (operation) operation.cancelled = true
+    await this.skinLibraryService.cancel(operationId)
+    if (operation) await operation.done
   }
 
   private async withPackOperation<T>(operationId: string, work: (signal: AbortSignal) => Promise<T>): Promise<T> {
